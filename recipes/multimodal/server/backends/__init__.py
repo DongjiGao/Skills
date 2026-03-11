@@ -40,6 +40,7 @@ __all__ = [
 BACKEND_REGISTRY = {
     "magpie_tts": ("magpie_tts_backend", "MagpieTTSBackend"),
     "nemo_asr": ("nemo_asr_backend", "NeMoASRBackend"),
+    "vllm_asr": ("vllm_asr_backend", "VLLMASRBackend"),
 }
 
 
