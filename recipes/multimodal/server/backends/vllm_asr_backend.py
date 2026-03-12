@@ -42,6 +42,7 @@ class VLLMASRConfig(BackendConfig):
         "<|im_start|>user\n"
         "Transcribe the following: <|audio|>"
         "<|im_end|>\n<|im_start|>assistant\n"
+        "<think>\n"
     )
     vllm_plugins: str = "nemotron_nano_asr"
     sampling_max_tokens: int = 256
