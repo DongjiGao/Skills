@@ -24,6 +24,7 @@ This directory contains a backend-agnostic inference server with an OpenAI Chat 
 
 - `nemo_asr` -> `backends/nemo_asr_backend.py`
 - `magpie_tts` -> `backends/magpie_tts_backend.py`
+- `vllm_asr` -> `backends/vllm_asr_backend.py`
 
 ## How To Add a New Backend
 

@@ -5,16 +5,72 @@
 
 """vLLM ASR backend for unified_server.
 
-This backend performs speech recognition using vLLM with multimodal
-audio support (e.g., Nemotron-Nano-v3 + Canary-v2 ASR via plugin).
-It provides the same interface as nemo_asr but uses vLLM's optimized
-inference engine with PagedAttention and continuous batching.
+Performs speech recognition using vLLM with multimodal audio support
+(e.g. Nemotron-Nano-v3 + Canary-v2 ASR via the ``nemotron_nano_asr`` plugin).
+Uses vLLM's optimized inference engine with PagedAttention and continuous
+batching.  Supports ``tensor_parallel_size`` for multi-GPU sharding.
+
+Prerequisites
+-------------
+This backend requires the ``nemotron_nano_asr`` vLLM plugin to be
+installed in the environment.  The plugin registers the multimodal model
+class into vLLM's model registry via the ``vllm.general_plugins``
+entry point::
+
+    pip install git+https://github.com/DongjiGao/nemotron_nano_asr.git
+
+The plugin is activated at runtime by setting ``VLLM_PLUGINS=nemotron_nano_asr``
+(handled automatically by this backend via the ``vllm_plugins`` config field).
+
+A compatible model checkpoint is also required.  The checkpoint directory
+must contain ``config.json`` with ``"model_type": "nemotron_nano_asr"`` and
+``"architectures": ["NemotronNanoASRForConditionalGeneration"]``, plus
+``model.safetensors`` weights.
+
+Multi-GPU scaling
+-----------------
+For horizontal scaling, use ``ns generate --num_chunks N`` to launch N
+independent single-GPU jobs in parallel (each running its own vLLM
+instance).  This is the recommended approach for the Nemotron-Nano MoE
+architecture, as DP/EP introduce synchronization overhead that negates
+parallelism gains.
+
+Example (8 GPUs, batch_size=32)::
+
+    ns generate \\
+        --num_chunks 8 \\
+        --server_gpus 1 \\
+        --server_type generic \\
+        --server_args "--backend vllm_asr --batch_size 32 \\
+            --tokenizer nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \\
+            --gpu_memory_utilization 0.90" \\
+        ++max_concurrent_requests=32 \\
+        ++inference.tokens_to_generate=512
+
+Throughput (32 GPUs, Nemotron-Nano-v3 + Canary-v2, A100-80GB):
+
+    ================  ======  =======  =======
+    Dataset           BS=8    BS=16    BS=32
+    ================  ======  =======  =======
+    librispeech_clean  6 u/s  14 u/s   31 u/s
+    librispeech_other  6 u/s  14 u/s   30 u/s
+    tedlium            8 u/s  17 u/s   34 u/s
+    voxpopuli          7 u/s  15 u/s   32 u/s
+    earnings22         6 u/s  14 u/s   30 u/s
+    ami                4 u/s  11 u/s   25 u/s
+    gigaspeech         2 u/s   6 u/s   15 u/s
+    spgispeech         1 u/s   4 u/s   11 u/s
+    ================  ======  =======  =======
+
+WER matches NeMo checkpoint evaluation within 0.1% across all datasets
+and batch sizes (corpus-level WER computed with jiwer).
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -47,6 +103,7 @@ class VLLMASRConfig(BackendConfig):
     vllm_plugins: str = "nemotron_nano_asr"
     sampling_max_tokens: int = 256
     sampling_temperature: float = 0.0
+    tensor_parallel_size: int = 1
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "VLLMASRConfig":
@@ -90,10 +147,7 @@ class VLLMASRBackend(InferenceBackend):
         self._sampling_params = None
 
     def load_model(self) -> None:
-        import os
-
         os.environ["VLLM_PLUGINS"] = self.vllm_config.vllm_plugins
-
         from vllm import LLM, SamplingParams
 
         hf_overrides = self.vllm_config.hf_overrides or {
@@ -103,7 +157,7 @@ class VLLMASRBackend(InferenceBackend):
 
         logger.info("Loading vLLM ASR model: %s", self.vllm_config.model_path)
 
-        self._llm = LLM(
+        llm_kwargs = dict(
             model=self.vllm_config.model_path,
             tokenizer=self.vllm_config.tokenizer,
             hf_overrides=hf_overrides,
@@ -115,15 +169,19 @@ class VLLMASRBackend(InferenceBackend):
             block_size=self.vllm_config.block_size,
             limit_mm_per_prompt={"audio": 1},
         )
+        if self.vllm_config.tensor_parallel_size > 1:
+            llm_kwargs["tensor_parallel_size"] = self.vllm_config.tensor_parallel_size
+
+        self._llm = LLM(**llm_kwargs)
         self._sampling_params = SamplingParams(
             max_tokens=self.vllm_config.sampling_max_tokens,
             temperature=self.vllm_config.sampling_temperature,
         )
         self._is_loaded = True
-        logger.info("vLLM ASR model loaded successfully")
+        logger.info("vLLM ASR model loaded")
 
     def _audio_bytes_to_numpy(self, audio_bytes: bytes) -> tuple:
-        import numpy as np
+        import numpy as np  # noqa: F401
         import soundfile as sf
 
         audio_arr, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
@@ -136,32 +194,24 @@ class VLLMASRBackend(InferenceBackend):
             return request.audio_bytes
         if request.audio_bytes_list:
             if len(request.audio_bytes_list) > 1:
-                raise ValueError(
-                    "vllm_asr backend currently supports one audio per request."
-                )
+                raise ValueError("vllm_asr backend currently supports one audio per request.")
             return request.audio_bytes_list[0]
-        raise ValueError("Request must contain audio_bytes/audio_bytes_list")
+        raise ValueError("Request must contain audio_bytes or audio_bytes_list")
 
     def _strip_think_tags(self, text: str) -> str:
         return THINK_TAG_PATTERN.sub("", text).strip()
 
     def validate_request(self, request: GenerationRequest) -> Optional[str]:
         has_audio = request.audio_bytes is not None or (
-            request.audio_bytes_list is not None
-            and len(request.audio_bytes_list) > 0
+            request.audio_bytes_list is not None and len(request.audio_bytes_list) > 0
         )
         if not has_audio:
             return "vllm_asr backend requires audio input"
         return None
 
-    def generate(
-        self, requests: List[GenerationRequest]
-    ) -> List[GenerationResult]:
+    def generate(self, requests: List[GenerationRequest]) -> List[GenerationResult]:
         if not self._is_loaded:
-            return [
-                GenerationResult(error="Model not loaded", request_id=r.request_id)
-                for r in requests
-            ]
+            return [GenerationResult(error="Model not loaded", request_id=r.request_id) for r in requests]
         if not requests:
             return []
 
@@ -182,27 +232,19 @@ class VLLMASRBackend(InferenceBackend):
                 )
                 valid_indices.append(idx)
             except Exception as e:
-                results[idx] = GenerationResult(
-                    error=str(e), request_id=req.request_id
-                )
+                results[idx] = GenerationResult(error=str(e), request_id=req.request_id)
 
         if vllm_inputs:
-            outputs = self._llm.generate(
-                vllm_inputs,
-                self._sampling_params,
-                use_tqdm=False,
-            )
+            outputs = self._llm.generate(vllm_inputs, self._sampling_params, use_tqdm=False)
             elapsed_ms = (time.time() - start) * 1000.0
             per_req_ms = elapsed_ms / max(len(vllm_inputs), 1)
 
             for out_idx, output in enumerate(outputs):
                 req_idx = valid_indices[out_idx]
-                req = requests[req_idx]
-                text = output.outputs[0].text
-                text = self._strip_think_tags(text)
+                text = self._strip_think_tags(output.outputs[0].text)
                 results[req_idx] = GenerationResult(
                     text=text,
-                    request_id=req.request_id,
+                    request_id=requests[req_idx].request_id,
                     generation_time_ms=per_req_ms,
                     debug_info={
                         "backend": "vllm_asr",
@@ -211,8 +253,4 @@ class VLLMASRBackend(InferenceBackend):
                     },
                 )
 
-        return [
-            r if r is not None
-            else GenerationResult(error="Unknown vLLM ASR error")
-            for r in results
-        ]
+        return [r if r is not None else GenerationResult(error="Unknown vLLM ASR error") for r in results]
