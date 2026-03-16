@@ -87,7 +87,7 @@ THINK_TAG_PATTERN = re.compile(r"^<think>.*?</think>", re.DOTALL)
 class VLLMASRConfig(BackendConfig):
     """Configuration for vLLM ASR backend."""
 
-    tokenizer: str = ""
+    tokenizer: Optional[str] = None
     hf_overrides: Optional[Dict[str, Any]] = None
     gpu_memory_utilization: float = 0.85
     max_model_len: int = 4096
@@ -159,7 +159,6 @@ class VLLMASRBackend(InferenceBackend):
 
         llm_kwargs = dict(
             model=self.vllm_config.model_path,
-            tokenizer=self.vllm_config.tokenizer,
             hf_overrides=hf_overrides,
             trust_remote_code=True,
             dtype=self.vllm_config.dtype,
@@ -169,6 +168,8 @@ class VLLMASRBackend(InferenceBackend):
             block_size=self.vllm_config.block_size,
             limit_mm_per_prompt={"audio": 1},
         )
+        if self.vllm_config.tokenizer:
+            llm_kwargs["tokenizer"] = self.vllm_config.tokenizer
         if self.vllm_config.tensor_parallel_size > 1:
             llm_kwargs["tensor_parallel_size"] = self.vllm_config.tensor_parallel_size
 
@@ -207,6 +208,16 @@ class VLLMASRBackend(InferenceBackend):
         )
         if not has_audio:
             return "vllm_asr backend requires audio input"
+        unsupported = {
+            "max_new_tokens": request.max_new_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "top_k": request.top_k,
+            "seed": request.seed,
+        }
+        set_fields = [k for k, v in unsupported.items() if v is not None]
+        if set_fields:
+            return f"vllm_asr backend does not support per-request overrides: {', '.join(set_fields)}"
         return None
 
     def generate(self, requests: List[GenerationRequest]) -> List[GenerationResult]:
@@ -231,7 +242,7 @@ class VLLMASRBackend(InferenceBackend):
                     }
                 )
                 valid_indices.append(idx)
-            except Exception as e:
+            except (ValueError, TypeError, OSError) as e:
                 results[idx] = GenerationResult(error=str(e), request_id=req.request_id)
 
         if vllm_inputs:
