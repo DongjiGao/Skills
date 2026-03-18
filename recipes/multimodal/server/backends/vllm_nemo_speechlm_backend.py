@@ -95,7 +95,7 @@ class VLLMNeMoSpeechLMConfig(BackendConfig):
     max_model_len: int = 4096
     enforce_eager: bool = True
     block_size: int = 64
-    prompt: str = "Transcribe the following: <|audio|>"
+    prompt: str = "Transcribe the following:"
     sampling_max_tokens: int = 256
     sampling_temperature: float = 0.0
     tensor_parallel_size: int = 1
@@ -177,7 +177,10 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         )
 
         tokenizer = self._llm.get_tokenizer()
-        messages = [{"role": "user", "content": self.vllm_config.prompt}]
+        hf_config = self._llm.llm_engine.model_config.hf_config
+        audio_tag = getattr(hf_config, "audio_locator_tag", "<|audio|>")
+        prompt_with_audio = f"{self.vllm_config.prompt} {audio_tag}"
+        messages = [{"role": "user", "content": prompt_with_audio}]
         self._prompt_text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
         )
@@ -213,16 +216,16 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         )
         if not has_audio:
             return "vllm_nemo_speechlm backend requires audio input"
-        unsupported = {
+        ignored = {
             "max_new_tokens": request.max_new_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
             "top_k": request.top_k,
             "seed": request.seed,
         }
-        set_fields = [k for k, v in unsupported.items() if v is not None]
+        set_fields = [k for k, v in ignored.items() if v is not None]
         if set_fields:
-            return f"vllm_nemo_speechlm backend does not support per-request overrides: {', '.join(set_fields)}"
+            logger.warning("Ignoring per-request overrides (using backend defaults): %s", ", ".join(set_fields))
         return None
 
     def generate(self, requests: List[GenerationRequest]) -> List[GenerationResult]:
