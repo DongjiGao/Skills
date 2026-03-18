@@ -18,7 +18,7 @@ Backend implementations for the Unified NeMo Inference Server.
 Available backends:
 - magpie_tts: MagpieTTS text-to-speech (audio output from text input)
 - nemo_asr: NeMo ASR speech-to-text (text output from audio input)
-- vllm_asr: vLLM multimodal ASR (text output from audio input via vLLM plugin)
+- vllm_nemo_speechlm: vLLM NeMo Speech LM (text output from audio input via vLLM plugin)
 
 Backends are lazily loaded to avoid importing heavy dependencies upfront.
 """
@@ -41,7 +41,7 @@ __all__ = [
 BACKEND_REGISTRY = {
     "magpie_tts": ("magpie_tts_backend", "MagpieTTSBackend"),
     "nemo_asr": ("nemo_asr_backend", "NeMoASRBackend"),
-    "vllm_asr": ("vllm_asr_backend", "VLLMASRBackend"),
+    "vllm_nemo_speechlm": ("vllm_nemo_speechlm_backend", "VLLMNeMoSpeechLMBackend"),
 }
 
 

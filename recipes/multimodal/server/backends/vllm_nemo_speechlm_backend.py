@@ -3,29 +3,26 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
-"""vLLM ASR backend for unified_server.
+"""vLLM NeMo Speech LM backend for unified_server.
 
-Performs speech recognition using vLLM with multimodal audio support
-(e.g. Nemotron-Nano-v3 + Canary-v2 ASR via the ``nemotron_nano_asr`` plugin).
-Uses vLLM's optimized inference engine with PagedAttention and continuous
-batching.  Supports ``tensor_parallel_size`` for multi-GPU sharding.
+Performs supported speech-to-text tasks such as speech recognition,
+spoken question answering, speech and audio understanding, etc. using
+vLLM with NeMo Speech LM multimodal models (e.g. Nemotron-Nano-v3 +
+Canary-v2).  Uses vLLM's optimized inference engine with PagedAttention
+and continuous batching.  Supports ``tensor_parallel_size`` for
+multi-GPU sharding.
 
 Prerequisites
 -------------
-This backend requires the ``nemotron_nano_asr`` vLLM plugin to be
-installed in the environment.  The plugin registers the multimodal model
-class into vLLM's model registry via the ``vllm.general_plugins``
-entry point::
+This backend requires NeMo Speech (``nemo_toolkit[all]``) and a vLLM
+plugin that registers NeMo Speech LM models into vLLM's model registry
+via the ``vllm.general_plugins`` entry point.  The plugin is activated
+at runtime by setting ``VLLM_PLUGINS`` (handled automatically by this
+backend).
 
-    pip install git+https://github.com/DongjiGao/nemotron_nano_asr.git
-
-The plugin is activated at runtime by setting ``VLLM_PLUGINS=nemotron_nano_asr``
-(handled automatically by this backend via the ``vllm_plugins`` config field).
-
-A compatible model checkpoint is also required.  The checkpoint directory
-must contain ``config.json`` with ``"model_type": "nemotron_nano_asr"`` and
-``"architectures": ["NemotronNanoASRForConditionalGeneration"]``, plus
-``model.safetensors`` weights.
+A compatible model checkpoint is also required.  The checkpoint
+directory must contain ``config.json`` with the appropriate
+``model_type`` and ``architectures`` fields, plus model weights.
 
 Multi-GPU scaling
 -----------------
@@ -41,29 +38,34 @@ Example (8 GPUs, batch_size=32)::
         --num_chunks 8 \\
         --server_gpus 1 \\
         --server_type generic \\
-        --server_args "--backend vllm_asr --batch_size 32 \\
+        --server_args "--backend vllm_nemo_speechlm --batch_size 32 \\
             --tokenizer nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \\
             --gpu_memory_utilization 0.90" \\
         ++max_concurrent_requests=32 \\
         ++inference.tokens_to_generate=512
 
-Throughput (32 GPUs, Nemotron-Nano-v3 + Canary-v2, A100-80GB):
+Results (32 GPUs, Nemotron-Nano-v3 + Canary-v2, A100-80GB).
+WER (%) / RTFx for each batch size.  WER computed at corpus level
+with jiwer + whisper EnglishTextNormalizer (hf_leaderboard mode),
+same method as NeMo checkpoint evaluation:
 
-    ================  ======  =======  =======
-    Dataset           BS=8    BS=16    BS=32
-    ================  ======  =======  =======
-    librispeech_clean  6 u/s  14 u/s   31 u/s
-    librispeech_other  6 u/s  14 u/s   30 u/s
-    tedlium            8 u/s  17 u/s   34 u/s
-    voxpopuli          7 u/s  15 u/s   32 u/s
-    earnings22         6 u/s  14 u/s   30 u/s
-    ami                4 u/s  11 u/s   25 u/s
-    gigaspeech         2 u/s   6 u/s   15 u/s
-    spgispeech         1 u/s   4 u/s   11 u/s
-    ================  ======  =======  =======
+    =================  ========  ===========  ===========  ===========
+    Dataset            NeMo       BS=8         BS=16        BS=32
+    =================  ========  ===========  ===========  ===========
+    librispeech_clean   1.91%    1.91%/  48x  1.93%/ 107x  1.92%/ 227x
+    librispeech_other   3.53%    3.53%/  41x  3.53%/  92x  3.51%/ 197x
+    tedlium             3.70%    3.64%/  64x  3.64%/ 136x  3.64%/ 277x
+    spgispeech          2.20%    2.21%/  12x  2.22%/  36x  2.21%/  98x
+    voxpopuli           6.29%    6.32%/  67x  6.28%/ 147x  6.27%/ 306x
+    gigaspeech          9.95%    9.95%/  14x  9.97%/  38x  9.96%/  98x
+    earnings22         10.93%   11.03%/  46x 10.98%/ 102x 11.01%/ 215x
+    ami                11.65%   11.62%/  12x 11.74%/  29x 11.65%/  66x
+    =================  ========  ===========  ===========  ===========
 
-WER matches NeMo checkpoint evaluation within 0.1% across all datasets
-and batch sizes (corpus-level WER computed with jiwer).
+NeMo WER recomputed with identical method matches the reported
+checkpoint summary exactly.  vLLM matches NeMo within 0.1% on all
+datasets; the 0.06% tedlium delta traces to one utterance where the
+NeMo run produced an empty output (inference non-determinism).
 """
 
 from __future__ import annotations
@@ -84,8 +86,8 @@ THINK_TAG_PATTERN = re.compile(r"^<think>.*?</think>", re.DOTALL)
 
 
 @dataclass
-class VLLMASRConfig(BackendConfig):
-    """Configuration for vLLM ASR backend."""
+class VLLMNeMoSpeechLMConfig(BackendConfig):
+    """Configuration for vLLM NeMo Speech LM backend."""
 
     tokenizer: Optional[str] = None
     hf_overrides: Optional[Dict[str, Any]] = None
@@ -93,20 +95,13 @@ class VLLMASRConfig(BackendConfig):
     max_model_len: int = 4096
     enforce_eager: bool = True
     block_size: int = 64
-    prompt_template: str = (
-        "<|im_start|>system\n<|im_end|>\n"
-        "<|im_start|>user\n"
-        "Transcribe the following: <|audio|>"
-        "<|im_end|>\n<|im_start|>assistant\n"
-        "<think>\n"
-    )
-    vllm_plugins: str = "nemotron_nano_asr"
+    prompt: str = "Transcribe the following: <|audio|>"
     sampling_max_tokens: int = 256
     sampling_temperature: float = 0.0
     tensor_parallel_size: int = 1
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "VLLMASRConfig":
+    def from_dict(cls, d: Dict[str, Any]) -> "VLLMNeMoSpeechLMConfig":
         known = {f.name for f in cls.__dataclass_fields__.values()} - {"extra_config"}
         return cls(
             **{k: v for k, v in d.items() if k in known},
@@ -114,16 +109,16 @@ class VLLMASRConfig(BackendConfig):
         )
 
 
-class VLLMASRBackend(InferenceBackend):
-    """Unified-server backend for ASR using vLLM with multimodal plugin."""
+class VLLMNeMoSpeechLMBackend(InferenceBackend):
+    """Unified-server backend using vLLM with NeMo Speech LM multimodal plugin."""
 
     @classmethod
     def get_config_class(cls) -> type:
-        return VLLMASRConfig
+        return VLLMNeMoSpeechLMConfig
 
     @property
     def name(self) -> str:
-        return "vllm_asr"
+        return "vllm_nemo_speechlm"
 
     @property
     def supported_modalities(self) -> Set[Modality]:
@@ -132,8 +127,8 @@ class VLLMASRBackend(InferenceBackend):
     def __init__(self, config: BackendConfig):
         self.vllm_config = (
             config
-            if isinstance(config, VLLMASRConfig)
-            else VLLMASRConfig.from_dict(
+            if isinstance(config, VLLMNeMoSpeechLMConfig)
+            else VLLMNeMoSpeechLMConfig.from_dict(
                 {
                     "model_path": config.model_path,
                     "device": config.device,
@@ -146,13 +141,15 @@ class VLLMASRBackend(InferenceBackend):
         self._llm = None
         self._sampling_params = None
 
+    _VLLM_PLUGIN = "nemo_speechlm"
+
     def load_model(self) -> None:
-        os.environ["VLLM_PLUGINS"] = self.vllm_config.vllm_plugins
+        os.environ["VLLM_PLUGINS"] = self._VLLM_PLUGIN
         from vllm import LLM, SamplingParams
 
         hf_overrides = self.vllm_config.hf_overrides or {
-            "architectures": ["NemotronNanoASRForConditionalGeneration"],
-            "model_type": "nemotron_nano_asr",
+            "architectures": ["NeMoSpeechLMForConditionalGeneration"],
+            "model_type": "nemo_speechlm",
         }
 
         logger.info("Loading vLLM ASR model: %s", self.vllm_config.model_path)
@@ -178,8 +175,16 @@ class VLLMASRBackend(InferenceBackend):
             max_tokens=self.vllm_config.sampling_max_tokens,
             temperature=self.vllm_config.sampling_temperature,
         )
+
+        tokenizer = self._llm.get_tokenizer()
+        messages = [{"role": "user", "content": self.vllm_config.prompt}]
+        self._prompt_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+        logger.info("Prompt template: %s", repr(self._prompt_text))
+
         self._is_loaded = True
-        logger.info("vLLM ASR model loaded")
+        logger.info("vLLM NeMo Speech LM model loaded")
 
     def _audio_bytes_to_numpy(self, audio_bytes: bytes) -> tuple:
         import numpy as np  # noqa: F401
@@ -195,7 +200,7 @@ class VLLMASRBackend(InferenceBackend):
             return request.audio_bytes
         if request.audio_bytes_list:
             if len(request.audio_bytes_list) > 1:
-                raise ValueError("vllm_asr backend currently supports one audio per request.")
+                raise ValueError("vllm_nemo_speechlm backend currently supports one audio per request.")
             return request.audio_bytes_list[0]
         raise ValueError("Request must contain audio_bytes or audio_bytes_list")
 
@@ -207,7 +212,7 @@ class VLLMASRBackend(InferenceBackend):
             request.audio_bytes_list is not None and len(request.audio_bytes_list) > 0
         )
         if not has_audio:
-            return "vllm_asr backend requires audio input"
+            return "vllm_nemo_speechlm backend requires audio input"
         unsupported = {
             "max_new_tokens": request.max_new_tokens,
             "temperature": request.temperature,
@@ -217,7 +222,7 @@ class VLLMASRBackend(InferenceBackend):
         }
         set_fields = [k for k, v in unsupported.items() if v is not None]
         if set_fields:
-            return f"vllm_asr backend does not support per-request overrides: {', '.join(set_fields)}"
+            return f"vllm_nemo_speechlm backend does not support per-request overrides: {', '.join(set_fields)}"
         return None
 
     def generate(self, requests: List[GenerationRequest]) -> List[GenerationResult]:
@@ -237,7 +242,7 @@ class VLLMASRBackend(InferenceBackend):
                 audio_arr, sr = self._audio_bytes_to_numpy(audio_bytes)
                 vllm_inputs.append(
                     {
-                        "prompt": self.vllm_config.prompt_template,
+                        "prompt": self._prompt_text,
                         "multi_modal_data": {"audio": (audio_arr, sr)},
                     }
                 )
@@ -248,7 +253,6 @@ class VLLMASRBackend(InferenceBackend):
         if vllm_inputs:
             outputs = self._llm.generate(vllm_inputs, self._sampling_params, use_tqdm=False)
             elapsed_ms = (time.time() - start) * 1000.0
-            per_req_ms = elapsed_ms / max(len(vllm_inputs), 1)
 
             for out_idx, output in enumerate(outputs):
                 req_idx = valid_indices[out_idx]
@@ -256,9 +260,9 @@ class VLLMASRBackend(InferenceBackend):
                 results[req_idx] = GenerationResult(
                     text=text,
                     request_id=requests[req_idx].request_id,
-                    generation_time_ms=per_req_ms,
+                    generation_time_ms=elapsed_ms,
                     debug_info={
-                        "backend": "vllm_asr",
+                        "backend": "vllm_nemo_speechlm",
                         "model": self.vllm_config.model_path,
                         "batch_size": len(vllm_inputs),
                     },
