@@ -96,12 +96,13 @@ class VLLMNeMoSpeechLMConfig(BackendConfig):
     enforce_eager: bool = True
     block_size: int = 64
     prompt: str = "Transcribe the following:"
-    sampling_max_tokens: int = 256
+    sampling_max_tokens: int = 512
     sampling_temperature: float = 0.0
     tensor_parallel_size: int = 1
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "VLLMNeMoSpeechLMConfig":
+        """Create config from a dict, separating known fields from extra_config."""
         known = {f.name for f in cls.__dataclass_fields__.values()} - {"extra_config"}
         return cls(
             **{k: v for k, v in d.items() if k in known},
@@ -114,17 +115,21 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
 
     @classmethod
     def get_config_class(cls) -> type:
+        """Return the config class for this backend."""
         return VLLMNeMoSpeechLMConfig
 
     @property
     def name(self) -> str:
+        """Backend identifier used in --backend flag."""
         return "vllm_nemo_speechlm"
 
     @property
     def supported_modalities(self) -> Set[Modality]:
+        """This backend accepts audio input and produces text output."""
         return {Modality.AUDIO_IN, Modality.TEXT}
 
     def __init__(self, config: BackendConfig):
+        """Initialize backend, converting generic config to VLLMNeMoSpeechLMConfig if needed."""
         self.vllm_config = (
             config
             if isinstance(config, VLLMNeMoSpeechLMConfig)
@@ -144,6 +149,7 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
     _VLLM_PLUGIN = "nemo_speechlm"
 
     def load_model(self) -> None:
+        """Load the vLLM model, configure sampling params, and build prompt template."""
         os.environ["VLLM_PLUGINS"] = self._VLLM_PLUGIN
         from vllm import LLM, SamplingParams
 
@@ -190,6 +196,7 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         logger.info("vLLM NeMo Speech LM model loaded")
 
     def _audio_bytes_to_numpy(self, audio_bytes: bytes) -> tuple:
+        """Convert raw audio bytes to a numpy array and sample rate."""
         import numpy as np  # noqa: F401
         import soundfile as sf
 
@@ -199,6 +206,7 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         return audio_arr, sr
 
     def _get_request_audio(self, request: GenerationRequest) -> bytes:
+        """Extract audio bytes from a request (supports audio_bytes or audio_bytes_list)."""
         if request.audio_bytes:
             return request.audio_bytes
         if request.audio_bytes_list:
@@ -208,9 +216,11 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         raise ValueError("Request must contain audio_bytes or audio_bytes_list")
 
     def _strip_think_tags(self, text: str) -> str:
+        """Remove <think>...</think> tags from NemotronH model output."""
         return THINK_TAG_PATTERN.sub("", text).strip()
 
     def validate_request(self, request: GenerationRequest) -> Optional[str]:
+        """Validate request has audio input. Logs warning for ignored per-request overrides."""
         has_audio = request.audio_bytes is not None or (
             request.audio_bytes_list is not None and len(request.audio_bytes_list) > 0
         )
@@ -229,6 +239,7 @@ class VLLMNeMoSpeechLMBackend(InferenceBackend):
         return None
 
     def generate(self, requests: List[GenerationRequest]) -> List[GenerationResult]:
+        """Generate transcriptions for a batch of audio requests via vLLM."""
         if not self._is_loaded:
             return [GenerationResult(error="Model not loaded", request_id=r.request_id) for r in requests]
         if not requests:
