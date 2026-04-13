@@ -262,7 +262,7 @@ def _remove_non_speech_elements(text: str) -> str:
     return re.sub(non_speech_patterns, "", text)
 
 
-VALID_NORMALIZATION_MODES = ("standard", "audiobench", "hf_leaderboard", "none", "no_tn_itn")
+VALID_NORMALIZATION_MODES = ("standard", "audiobench", "hf_leaderboard", "hf_leaderboard_multilingual", "basic_multilingual", "none", "no_tn_itn")
 
 
 def resolve_asr_normalization_mode(config: AudioEvaluatorConfig) -> str:
@@ -282,9 +282,11 @@ def preprocess_asr_text(text: str, mode: str = "standard") -> str:
     Args:
         text: Raw text.
         mode: Normalization mode:
-            - "standard": Whisper normalization (default) - converts number words to digits
+            - "standard": Whisper EnglishTextNormalizer (default)
             - "audiobench": Full AudioBench normalization (whisper + digits to words + more)
-            - "hf_leaderboard": HuggingFace leaderboard style (whisper normalization)
+            - "hf_leaderboard": HuggingFace leaderboard style — English normalizer
+            - "hf_leaderboard_multilingual": dispatched per-sample; should not reach here directly
+            - "basic_multilingual": Whisper BasicTextNormalizer (language-agnostic)
             - "none": No normalization (whitespace only)
             - "no_tn_itn": Lowercase + remove punctuation, no number word conversion (for TN/ITN eval)
     """
@@ -297,19 +299,23 @@ def preprocess_asr_text(text: str, mode: str = "standard") -> str:
         return re.sub(r"\s+", " ", text).strip()
 
     if mode == "no_tn_itn":
-        # Lowercase + remove punctuation + whitespace normalization
         text = text.lower()
         text = re.sub(r"[^\w\s]", "", text)
         return re.sub(r"\s+", " ", text).strip()
 
-    # "standard", "audiobench", and "hf_leaderboard" all use whisper normalization
+    if mode == "basic_multilingual":
+        from whisper_normalizer.basic import BasicTextNormalizer
+
+        text = BasicTextNormalizer()(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    # "standard", "audiobench", and "hf_leaderboard" all use English whisper normalization
     from whisper_normalizer.english import EnglishTextNormalizer
 
     text = text.lower()
     text = EnglishTextNormalizer()(text)
 
     if mode == "audiobench":
-        # Additional audiobench-specific normalization
         import jiwer
 
         text = _normalize_digits_to_words(text)
@@ -329,6 +335,25 @@ def preprocess_asr_text(text: str, mode: str = "standard") -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _wer_with_counts(ref: str, hyp: str) -> dict[str, Any]:
+    """Compute WER and return both the score and raw error/reference counts for corpus-level aggregation."""
+    import jiwer
+
+    wer_score = jiwer.wer(ref, hyp)
+    measures = jiwer.process_words(ref, hyp)
+    wer_errors = measures.substitutions + measures.deletions + measures.insertions
+    wer_ref_words = measures.substitutions + measures.deletions + measures.hits
+
+    return {
+        "wer": wer_score,
+        "wer_errors": wer_errors,
+        "wer_ref_words": wer_ref_words,
+        "wer_substitutions": measures.substitutions,
+        "wer_insertions": measures.insertions,
+        "wer_deletions": measures.deletions,
+    }
+
+
 def evaluate_asr(reference: str, hypothesis: str, normalization_mode: str = "standard") -> dict[str, Any]:
     """Evaluate ASR: computes WER with normalization.
 
@@ -337,8 +362,6 @@ def evaluate_asr(reference: str, hypothesis: str, normalization_mode: str = "sta
         hypothesis: Model output transcription.
         normalization_mode: "standard", "audiobench", "hf_leaderboard", "none", or "no_tn_itn".
     """
-    import jiwer
-
     ref = preprocess_asr_text(reference, mode=normalization_mode)
     hyp = preprocess_asr_text(hypothesis, mode=normalization_mode)
 
@@ -347,14 +370,11 @@ def evaluate_asr(reference: str, hypothesis: str, normalization_mode: str = "sta
     if not hyp:
         hyp = "empty"
 
-    wer_score = jiwer.wer(ref, hyp)
-
-    return {
-        "wer": wer_score,
-        "is_correct": wer_score < 0.5,
-        "text": ref,
-        "pred_text": hyp,
-    }
+    result = _wer_with_counts(ref, hyp)
+    result["is_correct"] = result["wer"] < 0.5
+    result["text"] = ref
+    result["pred_text"] = hyp
+    return result
 
 
 def evaluate_translation(reference: str, hypothesis: str) -> dict[str, Any]:
@@ -501,6 +521,20 @@ def eval_audio(cfg):
     asyncio.run(evaluator.eval_full())
 
 
+def _resolve_multilingual_mode(sample: dict[str, Any], base_mode: str) -> str:
+    """For hf_leaderboard_multilingual, pick English or basic normalizer per sample.
+
+    Matches the HF Open ASR Leaderboard: EnglishTextNormalizer for ``_en``
+    subsets, BasicTextNormalizer for everything else.
+    """
+    if base_mode != "hf_leaderboard_multilingual":
+        return base_mode
+    subset = sample.get("subset_for_metrics", "")
+    if subset.endswith("_en") or subset == "en":
+        return "hf_leaderboard"
+    return "basic_multilingual"
+
+
 def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dict[str, Any]:
     """Evaluate single sample based on task_type. Returns dict of updates to merge."""
     updates = {}
@@ -508,12 +542,11 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
     generation = sample["generation"].strip()
     expected_answer = sample.get("expected_answer", "").strip()
 
-    # Strip helpful prefixes for ASR tasks (e.g., "The audio says: ...")
     if config.strip_helpful_prefixes:
         generation = strip_helpful_prefixes(generation)
 
     if task_type == "ASR-PC":
-        mode = resolve_asr_normalization_mode(config)
+        mode = _resolve_multilingual_mode(sample, resolve_asr_normalization_mode(config))
         metrics = evaluate_asr_pc(
             expected_answer,
             generation,
@@ -523,13 +556,13 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         updates.update(metrics)
 
     elif task_type == "ASR":
-        mode = resolve_asr_normalization_mode(config)
+        mode = _resolve_multilingual_mode(sample, resolve_asr_normalization_mode(config))
         metrics = evaluate_asr(expected_answer, generation, normalization_mode=mode)
         updates.update(metrics)
         updates["predicted_answer"] = generation
 
     elif task_type == "ASR_LEADERBOARD":
-        mode = resolve_asr_normalization_mode(config)
+        mode = _resolve_multilingual_mode(sample, resolve_asr_normalization_mode(config))
         metrics = evaluate_asr(expected_answer, generation, normalization_mode=mode)
         updates.update(metrics)
 

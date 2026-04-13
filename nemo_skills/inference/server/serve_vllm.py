@@ -36,10 +36,12 @@ def main():
     else:
         logging_args = ""
 
+    served_model_name = "" if "--served-model-name" in unknown else f'--served-model-name="{args.model}"'
+
     cmd = (
         f"python3 -m vllm.entrypoints.openai.api_server "
         f'    --model="{args.model}" '
-        f'    --served-model-name="{args.model}"'
+        f"    {served_model_name} "
         f"    --trust-remote-code "
         f'    --host="0.0.0.0" '
         f"    --port={args.port} "
