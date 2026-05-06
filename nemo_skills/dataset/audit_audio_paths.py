@@ -87,6 +87,10 @@ def looks_like_audio_path(s: str) -> bool:
 def audit_jsonl(jsonl_path: Path, audio_prefix: str, data_dir: Path) -> AuditStats:
     """Audit one JSONL file. Returns per-file ``AuditStats``."""
     audio_prefix = audio_prefix.rstrip("/")
+    # Skip the stale-/dataset/ check when the user is intentionally using
+    # /dataset/ as the configured prefix; otherwise legitimate paths would
+    # be flagged as historical leftovers.
+    stale_check_enabled = audio_prefix != STALE_TOKEN.rstrip("/")
     stats = AuditStats()
 
     with jsonl_path.open(encoding="utf-8") as f:
@@ -101,7 +105,7 @@ def audit_jsonl(jsonl_path: Path, audio_prefix: str, data_dir: Path) -> AuditSta
                 continue
 
             for s in walk_strings(row):
-                if STALE_TOKEN in s:
+                if stale_check_enabled and s.startswith(STALE_TOKEN):
                     stats.stale.append((line_num, s))
                 if not looks_like_audio_path(s):
                     continue
