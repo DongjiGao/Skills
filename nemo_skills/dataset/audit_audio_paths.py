@@ -80,8 +80,14 @@ def walk_strings(value) -> Iterator[str]:
 
 
 def looks_like_audio_path(s: str) -> bool:
-    """Return True if ``s`` ends with a known audio file extension."""
-    return s.endswith(AUDIO_EXTS)
+    """Return True if ``s`` looks like an absolute audio path.
+
+    Requires both an absolute path prefix and a known audio extension. The
+    absolute-path requirement avoids false positives on identifier-like
+    strings that happen to end with ``.wav`` (e.g. HF dataset ``id`` fields
+    like ``"4483338/281.wav"``).
+    """
+    return s.startswith("/") and s.endswith(AUDIO_EXTS)
 
 
 def audit_jsonl(jsonl_path: Path, audio_prefix: str, data_dir: Path) -> AuditStats:

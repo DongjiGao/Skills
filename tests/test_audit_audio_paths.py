@@ -183,6 +183,31 @@ def test_audit_skips_non_audio_strings(monkeypatch, tmp_path):
     assert not stats.has_issues
 
 
+def test_audit_skips_non_absolute_audio_extension_strings(monkeypatch, tmp_path):
+    """Identifier-like strings ending in audio extensions but not absolute paths are not flagged.
+
+    Real HF datasets surface fields like ``id`` whose values are e.g.
+    ``"4483338/281.wav"`` -- a relative identifier that happens to look
+    like a wav filename. These must not trigger wrong_prefix because they
+    are not container audio paths.
+    """
+    _stub_audio_grader_deps(monkeypatch)
+    from nemo_skills.dataset.audit_audio_paths import audit_jsonl
+
+    bench_audio = tmp_path / "asr-leaderboard" / "data" / "earnings22"
+    bench_audio.mkdir(parents=True)
+    (bench_audio / "4483338_281.flac").touch()
+
+    jsonl = tmp_path / "asr-leaderboard" / "earnings22.jsonl"
+    record = _make_record("/data/asr-leaderboard/data/earnings22/4483338_281.flac")
+    # mimic the HF identifier on the prepared record -- .wav extension, no leading slash
+    record["id"] = "4483338/281.wav"
+    _write_jsonl(jsonl, [record])
+
+    stats = audit_jsonl(jsonl, "/data", tmp_path)
+    assert not stats.has_issues, f"Identifier 'id' field should not have been flagged; stats={stats}"
+
+
 def test_audit_data_dir_returns_zero_when_clean(monkeypatch, tmp_path, capsys):
     _stub_audio_grader_deps(monkeypatch)
     from nemo_skills.dataset.audit_audio_paths import audit_data_dir
