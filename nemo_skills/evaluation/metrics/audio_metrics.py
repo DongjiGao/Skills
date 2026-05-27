@@ -82,6 +82,9 @@ class AudioMetrics(BaseMetrics):
         self.cap_accuracy_scores = []
         self.total_hallucinated_chars = 0
         self.total_audio_seconds = 0.0
+        self.total_hallucination_audio_seconds = 0.0
+        self.min_generation_task_start_time = float("inf")
+        self.max_generation_task_end_time = float("-inf")
 
         # Judge scores (AudioBench-style rating 0-5, or legacy binary Yes/No mapped to 1/0)
         self.judge_ratings = []
@@ -123,6 +126,43 @@ class AudioMetrics(BaseMetrics):
             return False, 0.0
 
         return False, 0.0
+
+    def _extract_audio_duration(self, prediction: dict) -> float:
+        """Return input audio duration from common Skills audio schemas."""
+        duration = 0.0
+        for message in prediction.get("messages", []) or []:
+            if not isinstance(message, dict):
+                continue
+
+            audio = message.get("audio")
+            if isinstance(audio, dict) and isinstance(audio.get("duration"), (int, float)):
+                duration += float(audio["duration"])
+
+            audios = message.get("audios")
+            if isinstance(audios, list):
+                for audio in audios:
+                    if isinstance(audio, dict) and isinstance(audio.get("duration"), (int, float)):
+                        duration += float(audio["duration"])
+
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    audio = item.get("audio") or item.get("input_audio") or item.get("audio_url")
+                    if isinstance(audio, dict) and isinstance(audio.get("duration"), (int, float)):
+                        duration += float(audio["duration"])
+                    if str(item.get("type", "")).startswith("audio") and isinstance(item.get("duration"), (int, float)):
+                        duration += float(item["duration"])
+
+        if duration > 0:
+            return duration
+
+        for key in ("audio_duration", "duration"):
+            if isinstance(prediction.get(key), (int, float)):
+                return float(prediction[key])
+
+        return 0.0
 
     def _get_score_dict(self, prediction: dict) -> dict[str, bool | int | float]:
         """Extract correctness scores from prediction.
@@ -184,6 +224,9 @@ class AudioMetrics(BaseMetrics):
         agg_dict["avg_tokens"] = int(self.avg_tokens / self.total) if self.total > 0 else 0
         if self.max_end_time > float("-inf") and self.min_start_time < float("inf"):
             agg_dict["gen_seconds"] = int(self.max_end_time - self.min_start_time)
+            agg_dict["client_side_inference_time_seconds"] = self.max_end_time - self.min_start_time
+        if self.max_generation_task_end_time > float("-inf") and self.min_generation_task_start_time < float("inf"):
+            agg_dict["total_time_seconds"] = self.max_generation_task_end_time - self.min_generation_task_start_time
 
     def update(self, predictions):
         """Update metrics with new predictions.
@@ -197,9 +240,22 @@ class AudioMetrics(BaseMetrics):
         super().update(predictions)
 
         predicted_answers = [pred.get("generation", "").strip() or None for pred in predictions]
+        if predictions:
+            audio_duration = self._extract_audio_duration(predictions[0])
+            if audio_duration > 0:
+                self.total_audio_seconds += audio_duration
 
         # Collect existing metrics: WER, PnC, and BLEU scores
         for pred in predictions:
+            if "generation_task_start_time" in pred:
+                self.min_generation_task_start_time = min(
+                    self.min_generation_task_start_time, float(pred["generation_task_start_time"])
+                )
+            if "generation_task_end_time" in pred:
+                self.max_generation_task_end_time = max(
+                    self.max_generation_task_end_time, float(pred["generation_task_end_time"])
+                )
+
             if "wer_errors" in pred and "wer_ref_words" in pred:
                 self.wer_total_errors += pred["wer_errors"]
                 self.wer_total_ref_words += pred["wer_ref_words"]
@@ -236,7 +292,7 @@ class AudioMetrics(BaseMetrics):
                 audio_duration = pred.get("audio_duration", 0.0)
                 if audio_duration > 0:
                     self.total_hallucinated_chars += len(predicted_text.strip())
-                    self.total_audio_seconds += audio_duration
+                    self.total_hallucination_audio_seconds += audio_duration
 
             # Collect judge ratings (0-5) from judge datasets if available
             score_dict = self._get_score_dict(pred)
@@ -328,7 +384,13 @@ class AudioMetrics(BaseMetrics):
                     100.0 * sum(self.cap_accuracy_scores) / len(self.cap_accuracy_scores), 2
                 )
             if self.total_audio_seconds > 0:
-                total_minutes = self.total_audio_seconds / 60.0
+                agg_metrics["audio_duration_seconds"] = round(self.total_audio_seconds, 2)
+                client_side_inference_time = agg_metrics.get("client_side_inference_time_seconds", 0.0)
+                if client_side_inference_time > 0:
+                    agg_metrics["client_side_rtfx"] = round(self.total_audio_seconds / client_side_inference_time, 2)
+
+            if self.total_hallucination_audio_seconds > 0:
+                total_minutes = self.total_hallucination_audio_seconds / 60.0
                 agg_metrics["char_rate"] = round(self.total_hallucinated_chars / total_minutes, 2)
 
             # Dataset-specific WER variants from additional reference fields.
@@ -363,6 +425,12 @@ class AudioMetrics(BaseMetrics):
             "gen_seconds": as_int,
             "success_rate": as_percentage,
         }
+        if self.max_end_time > float("-inf") and self.min_start_time < float("inf"):
+            base_metrics["client_side_inference_time_seconds"] = as_float
+        if self.max_generation_task_end_time > float("-inf") and self.min_generation_task_start_time < float("inf"):
+            base_metrics["total_time_seconds"] = as_float
+        if self.total_audio_seconds > 0 and self.max_end_time > float("-inf") and self.min_start_time < float("inf"):
+            base_metrics["client_side_rtfx"] = as_float
 
         if self.compute_no_answer:
             base_metrics["no_answer"] = as_percentage
@@ -403,6 +471,8 @@ class AudioMetrics(BaseMetrics):
         if self.cap_accuracy_scores:
             base_metrics["cap_accuracy"] = as_percentage
         if self.total_audio_seconds > 0:
+            base_metrics["audio_duration_seconds"] = as_float
+        if self.total_hallucination_audio_seconds > 0:
             base_metrics["char_rate"] = as_float
 
         # Dataset-specific WER variants from additional reference fields.

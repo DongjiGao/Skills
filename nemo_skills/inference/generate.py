@@ -549,7 +549,32 @@ class GenerationTask:
 
         Data is already saved to self.cfg.output_file, so it can be read and re-saved from there.
         """
-        pass
+        if not getattr(self, "_generation_task_ran", False):
+            return
+
+        output_path = Path(self.cfg.output_file)
+        if not output_path.exists():
+            return
+
+        task_start_time = getattr(self, "generation_task_start_time", None)
+        if task_start_time is None:
+            return
+
+        task_end_time = time.time()
+        task_total_time = task_end_time - task_start_time
+        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp-timing")
+
+        with open(output_path, "rt", encoding="utf-8") as fin, open(tmp_path, "wt", encoding="utf-8") as fout:
+            for line in fin:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                row["generation_task_start_time"] = task_start_time
+                row["generation_task_end_time"] = task_end_time
+                row["generation_task_total_time"] = task_total_time
+                fout.write(json.dumps(row) + "\n")
+
+        tmp_path.replace(output_path)
 
     def run_batch_evaluation(self):
         """Run final evaluation consuming all data together if configured."""
@@ -955,6 +980,8 @@ class GenerationTask:
             shutil.rmtree(self.litellm_cache_dir)
 
     def generate(self):
+        self.generation_task_start_time = time.time()
+        self._generation_task_ran = False
         Path(self.cfg.output_file).absolute().parent.mkdir(parents=True, exist_ok=True)
 
         data = self.load_data()
@@ -979,6 +1006,7 @@ class GenerationTask:
 
             self.wait_for_server()
             self.wait_for_sandbox()
+            self._generation_task_ran = True
             asyncio.run(self.async_loop(data))
 
         if self.should_run_evaluation and self.evaluator is None:
