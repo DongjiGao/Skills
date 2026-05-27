@@ -33,6 +33,7 @@ audio-specific metrics as the field evolves.
 """
 
 import logging
+from collections import defaultdict
 
 from nemo_skills.evaluation.metrics.base import BaseMetrics, as_float, as_int, as_percentage
 from nemo_skills.utils import get_logger_name
@@ -85,6 +86,17 @@ class AudioMetrics(BaseMetrics):
         self.total_hallucination_audio_seconds = 0.0
         self.min_generation_task_start_time = float("inf")
         self.max_generation_task_end_time = float("-inf")
+        self.chunk_metrics = defaultdict(
+            lambda: {
+                "chunk_id": None,
+                "num_entries": 0,
+                "audio_duration_seconds": 0.0,
+                "min_start_time": float("inf"),
+                "max_end_time": float("-inf"),
+                "min_task_start_time": float("inf"),
+                "max_task_end_time": float("-inf"),
+            }
+        )
 
         # Judge scores (AudioBench-style rating 0-5, or legacy binary Yes/No mapped to 1/0)
         self.judge_ratings = []
@@ -163,6 +175,77 @@ class AudioMetrics(BaseMetrics):
                 return float(prediction[key])
 
         return 0.0
+
+    def _update_chunk_metrics(self, predictions: list[dict], audio_duration: float) -> None:
+        """Track per-chunk client-side timing for the aggregate benchmark."""
+        if not predictions:
+            return
+
+        first_prediction = predictions[0]
+        explicit_chunk_id = first_prediction.get("generation_task_chunk_id")
+        task_start_time = first_prediction.get("generation_task_start_time")
+        task_end_time = first_prediction.get("generation_task_end_time")
+
+        if explicit_chunk_id is not None:
+            chunk_key = ("chunk_id", int(explicit_chunk_id))
+        elif task_start_time is not None and task_end_time is not None:
+            # Older outputs did not store chunk_id. Task timing is constant for
+            # every row emitted by the same chunk, so it is a stable fallback.
+            chunk_key = ("task_span", float(task_start_time), float(task_end_time))
+        else:
+            return
+
+        chunk = self.chunk_metrics[chunk_key]
+        chunk["num_entries"] += 1
+        chunk["audio_duration_seconds"] += audio_duration
+
+        if explicit_chunk_id is not None:
+            chunk["chunk_id"] = int(explicit_chunk_id)
+
+        if task_start_time is not None:
+            chunk["min_task_start_time"] = min(chunk["min_task_start_time"], float(task_start_time))
+        if task_end_time is not None:
+            chunk["max_task_end_time"] = max(chunk["max_task_end_time"], float(task_end_time))
+
+        start_times = [float(pred["generation_start_time"]) for pred in predictions if "generation_start_time" in pred]
+        end_times = [float(pred["generation_end_time"]) for pred in predictions if "generation_end_time" in pred]
+        if start_times:
+            chunk["min_start_time"] = min(chunk["min_start_time"], min(start_times))
+        if end_times:
+            chunk["max_end_time"] = max(chunk["max_end_time"], max(end_times))
+
+    def _get_client_side_metrics_by_chunk(self) -> dict[str, dict]:
+        """Return per-chunk timing metrics sorted by chunk id or task start."""
+        chunk_rows = {}
+        fallback_chunk_id = 0
+        for chunk in sorted(
+            self.chunk_metrics.values(),
+            key=lambda c: (
+                c["chunk_id"] is None,
+                c["chunk_id"] if c["chunk_id"] is not None else c["min_task_start_time"],
+            ),
+        ):
+            chunk_id = chunk["chunk_id"]
+            if chunk_id is None:
+                chunk_id = fallback_chunk_id
+                fallback_chunk_id += 1
+
+            row = {
+                "chunk_id": chunk_id,
+                "num_entries": chunk["num_entries"],
+                "audio_duration_seconds": round(chunk["audio_duration_seconds"], 2),
+            }
+            if chunk["max_end_time"] > float("-inf") and chunk["min_start_time"] < float("inf"):
+                client_side_inference_time = chunk["max_end_time"] - chunk["min_start_time"]
+                row["client_side_inference_time_seconds"] = client_side_inference_time
+                if client_side_inference_time > 0:
+                    row["client_side_rtfx"] = round(chunk["audio_duration_seconds"] / client_side_inference_time, 2)
+            if chunk["max_task_end_time"] > float("-inf") and chunk["min_task_start_time"] < float("inf"):
+                row["total_time_seconds"] = chunk["max_task_end_time"] - chunk["min_task_start_time"]
+
+            chunk_rows[f"chunk{chunk_id + 1}"] = row
+
+        return chunk_rows
 
     def _get_score_dict(self, prediction: dict) -> dict[str, bool | int | float]:
         """Extract correctness scores from prediction.
@@ -244,6 +327,7 @@ class AudioMetrics(BaseMetrics):
             audio_duration = self._extract_audio_duration(predictions[0])
             if audio_duration > 0:
                 self.total_audio_seconds += audio_duration
+            self._update_chunk_metrics(predictions, audio_duration)
 
         # Collect existing metrics: WER, PnC, and BLEU scores
         for pred in predictions:
@@ -383,12 +467,6 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["cap_accuracy"] = round(
                     100.0 * sum(self.cap_accuracy_scores) / len(self.cap_accuracy_scores), 2
                 )
-            if self.total_audio_seconds > 0:
-                agg_metrics["audio_duration_seconds"] = round(self.total_audio_seconds, 2)
-                client_side_inference_time = agg_metrics.get("client_side_inference_time_seconds", 0.0)
-                if client_side_inference_time > 0:
-                    agg_metrics["client_side_rtfx"] = round(self.total_audio_seconds / client_side_inference_time, 2)
-
             if self.total_hallucination_audio_seconds > 0:
                 total_minutes = self.total_hallucination_audio_seconds / 60.0
                 agg_metrics["char_rate"] = round(self.total_hallucinated_chars / total_minutes, 2)
@@ -397,6 +475,22 @@ class AudioMetrics(BaseMetrics):
             for metric_name, metric_values in self.reference_wer_scores.items():
                 if metric_values:
                     agg_metrics[metric_name] = round(100.0 * sum(metric_values) / len(metric_values), 2)
+
+            # Keep aggregate timing and chunk blocks at the end of pass@1.
+            aggregated_client_side_inference_time = agg_metrics.pop("client_side_inference_time_seconds", None)
+            aggregated_total_time = agg_metrics.pop("total_time_seconds", None)
+            if aggregated_total_time is not None:
+                agg_metrics["aggregated_total_time_seconds"] = aggregated_total_time
+            if aggregated_client_side_inference_time is not None:
+                agg_metrics["aggregated_client_side_inference_time_seconds"] = aggregated_client_side_inference_time
+            if self.total_audio_seconds > 0:
+                agg_metrics["aggregated_audio_duration_seconds"] = round(self.total_audio_seconds, 2)
+                if aggregated_client_side_inference_time and aggregated_client_side_inference_time > 0:
+                    agg_metrics["aggregated_client_side_rtfx"] = round(
+                        self.total_audio_seconds / aggregated_client_side_inference_time, 2
+                    )
+
+            agg_metrics.update(self._get_client_side_metrics_by_chunk())
 
         return metrics_dict
 
@@ -426,11 +520,11 @@ class AudioMetrics(BaseMetrics):
             "success_rate": as_percentage,
         }
         if self.max_end_time > float("-inf") and self.min_start_time < float("inf"):
-            base_metrics["client_side_inference_time_seconds"] = as_float
+            base_metrics["aggregated_client_side_inference_time_seconds"] = as_float
         if self.max_generation_task_end_time > float("-inf") and self.min_generation_task_start_time < float("inf"):
-            base_metrics["total_time_seconds"] = as_float
+            base_metrics["aggregated_total_time_seconds"] = as_float
         if self.total_audio_seconds > 0 and self.max_end_time > float("-inf") and self.min_start_time < float("inf"):
-            base_metrics["client_side_rtfx"] = as_float
+            base_metrics["aggregated_client_side_rtfx"] = as_float
 
         if self.compute_no_answer:
             base_metrics["no_answer"] = as_percentage
@@ -471,7 +565,7 @@ class AudioMetrics(BaseMetrics):
         if self.cap_accuracy_scores:
             base_metrics["cap_accuracy"] = as_percentage
         if self.total_audio_seconds > 0:
-            base_metrics["audio_duration_seconds"] = as_float
+            base_metrics["aggregated_audio_duration_seconds"] = as_float
         if self.total_hallucination_audio_seconds > 0:
             base_metrics["char_rate"] = as_float
 

@@ -84,6 +84,16 @@ class ComputeMetrics:
             metrics[data_subset] = calculator.get_metrics()
             # we are removing pass@1[avg-of-1] as it's the same as pass@1
             metrics[data_subset].pop("pass@1[avg-of-1]", None)
+            if data_subset != "_all_":
+                # Subsets in a mixed/chunked benchmark are interleaved with
+                # other subsets. Only the aggregate benchmark has a meaningful
+                # client-side RTFx and per-chunk timing breakdown.
+                for eval_metrics in metrics[data_subset].values():
+                    for metric_name in list(eval_metrics):
+                        if metric_name.startswith("aggregated_"):
+                            eval_metrics.pop(metric_name, None)
+                        if metric_name.startswith("chunk"):
+                            eval_metrics.pop(metric_name, None)
         return metrics
 
     def metrics_to_print(self):

@@ -572,6 +572,8 @@ class GenerationTask:
                 row["generation_task_start_time"] = task_start_time
                 row["generation_task_end_time"] = task_end_time
                 row["generation_task_total_time"] = task_total_time
+                row["generation_task_chunk_id"] = self.cfg.chunk_id
+                row["generation_task_num_chunks"] = self.cfg.num_chunks
                 fout.write(json.dumps(row) + "\n")
 
         tmp_path.replace(output_path)
