@@ -17,6 +17,7 @@ import json
 import logging
 import random
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -562,6 +563,16 @@ class GenerationTask:
 
         task_end_time = time.time()
         task_total_time = task_end_time - task_start_time
+
+        # Record where generation ran so downstream efficiency tooling can join
+        # each chunk to its server-side telemetry files (named by node host + port).
+        # In self-hosted burst eval the server and client are colocated on one
+        # node, so the client node hostname matches the server-metrics filenames.
+        server_cfg = self.cfg.server or {}
+        node_host = socket.gethostname()
+        server_host = server_cfg.get("host")
+        server_port = server_cfg.get("port")
+        server_base_url = server_cfg.get("base_url")
         tmp_path = output_path.with_suffix(output_path.suffix + ".tmp-timing")
 
         with open(output_path, "rt", encoding="utf-8") as fin, open(tmp_path, "wt", encoding="utf-8") as fout:
@@ -574,6 +585,10 @@ class GenerationTask:
                 row["generation_task_total_time"] = task_total_time
                 row["generation_task_chunk_id"] = self.cfg.chunk_id
                 row["generation_task_num_chunks"] = self.cfg.num_chunks
+                row["generation_task_node_host"] = node_host
+                row["generation_task_server_host"] = server_host
+                row["generation_task_server_port"] = server_port
+                row["generation_task_server_base_url"] = server_base_url
                 fout.write(json.dumps(row) + "\n")
 
         tmp_path.replace(output_path)
@@ -775,6 +790,8 @@ class GenerationTask:
             output.pop("generation_time", None)
             output.pop("num_generated_tokens", None)
             output.pop("num_input_tokens", None)
+            output.pop("request_send_time", None)
+            output.pop("request_recv_time", None)
 
         for key in output:
             original_data_point.pop(key, None)
@@ -843,6 +860,12 @@ class GenerationTask:
         as long as those requests also use this function.
         """
         async with self.semaphore:
+            # Stamp the actual send/receive around the real server call (after the
+            # semaphore is acquired), so downstream tooling can reconstruct TRUE
+            # client in-flight concurrency. This differs from generation_start_time
+            # (stamped at task creation, before the semaphore), which is why the
+            # latter can't reveal request delivery dynamics.
+            send_time = time.time()
             result = await self.llm.generate_async(**generation_params)
             # When streaming, generate_async returns an async generator.
             # Drain it and return only the final result dict.
@@ -853,7 +876,11 @@ class GenerationTask:
                         final = chunk
                 if final is None:
                     raise RuntimeError("Streaming generation did not produce a final result")
-                return final
+                result = final
+            recv_time = time.time()
+            if isinstance(result, dict):
+                result.setdefault("request_send_time", send_time)
+                result.setdefault("request_recv_time", recv_time)
             return result
 
     async def evaluate_single_datapoint(self, data_point):
