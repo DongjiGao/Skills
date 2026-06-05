@@ -15,6 +15,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import shutil
 import socket
@@ -916,6 +917,30 @@ class GenerationTask:
 
     async def async_loop(self, data):
         """Async loop to generate generations using asyncio."""
+
+        # Optional client-side self-profiling (NEMO_SPEECHLM_CLIENT_PYSPY=1). Used to
+        # diagnose whether the asyncio event loop / LiteLLM is the request-delivery
+        # bottleneck that starves the engine input queue (GPU-idle red zones).
+        if os.environ.get("NEMO_SPEECHLM_CLIENT_PYSPY") == "1":
+            try:
+                out = self.cfg.output_file + ".client_pyspy.folded"
+                bin_dir = os.path.dirname(sys.executable)
+                pyspy = os.path.join(bin_dir, "py-spy")
+                if not os.path.exists(pyspy):
+                    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "py-spy"], check=False)
+                    pyspy = os.path.join(bin_dir, "py-spy")
+                subprocess.Popen(
+                    [
+                        pyspy if os.path.exists(pyspy) else "py-spy",
+                        "record", "-p", str(os.getpid()), "--subprocesses", "--threads",
+                        "--idle", "--rate", "100", "--duration", "120",
+                        "--format", "raw", "-o", out,
+                    ],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                logging.info("client py-spy launched -> %s", out)
+            except Exception as e:  # noqa: BLE001
+                logging.warning("client py-spy launch failed: %s", e)
 
         # Initialize output lock for thread-safe writing
         if self.output_lock is None:
