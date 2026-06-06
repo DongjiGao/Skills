@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+import os
 import subprocess
 from shlex import join
 
@@ -40,9 +41,7 @@ def main():
     if args.num_nodes > 1:
         distributed_backend_args = " --distributed-executor-backend=ray "
 
-    cmd = (
-        f"python3 -m vllm.entrypoints.openai.api_server "
-        f'    --model="{args.model}" '
+    common_args = (
         f'    --served-model-name="{args.model}"'
         f"    --trust-remote-code "
         f'    --host="0.0.0.0" '
@@ -50,8 +49,21 @@ def main():
         f"    --tensor-parallel-size={args.num_gpus * args.num_nodes} "  # TODO: is this a good default for multinode setup?
         f"    {distributed_backend_args} "
         f"    {logging_args} "
-        f"    {extra_arguments} " + (' | grep -v "200 OK"' if args.no_verbose else "")
+        f"    {extra_arguments} "
     )
+    tail = ' | grep -v "200 OK"' if args.no_verbose else ""
+
+    # Opt-in: launch via the `vllm serve` CLI so multiple frontend (API server)
+    # processes can be forked with --api-server-count. The `python -m
+    # vllm.entrypoints.openai.api_server` path silently IGNORES --api-server-count
+    # (only the CLI forks frontends). Used to parallelize request ingress when the
+    # single-process frontend's large-body intake dominates round-trip latency.
+    api_server_count = int(os.environ.get("NEMO_VLLM_API_SERVER_COUNT", "0") or "0")
+    if api_server_count >= 1:
+        print(f"Launching via `vllm serve` with --api-server-count={api_server_count}")
+        cmd = f'vllm serve "{args.model}" --api-server-count={api_server_count} ' + common_args + tail
+    else:
+        cmd = f'python3 -m vllm.entrypoints.openai.api_server --model="{args.model}" ' + common_args + tail
 
     subprocess.run(cmd, shell=True, check=True)
 

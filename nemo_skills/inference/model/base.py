@@ -160,7 +160,17 @@ class BaseModel:
             base_url=self.base_url,
             api_base=self.base_url,  # Used in later versions with responses API
         )
-        httpx_limits = httpx.Limits(max_keepalive_connections=None, max_connections=None)
+        # Connection-pool limits. Default (None) = unlimited, kept because a too-small
+        # cap historically made httpx hang under high concurrency. BUT an unlimited pool
+        # makes httpcore's per-request _assign_requests_to_connections O(open connections),
+        # which dominates the client event loop and serializes request delivery at high
+        # concurrency (~51% of the loop; see vllm-efficiency-monitoring). Allow a bounded
+        # pool via env so that O(N) dispatch cost can be capped.
+        _maxconn = os.environ.get("NEMO_SKILLS_HTTPX_MAX_CONNECTIONS")
+        _maxconn = int(_maxconn) if _maxconn else None
+        _maxkeep = os.environ.get("NEMO_SKILLS_HTTPX_MAX_KEEPALIVE_CONNECTIONS")
+        _maxkeep = int(_maxkeep) if _maxkeep else _maxconn  # default: keep all bounded conns alive (reuse)
+        httpx_limits = httpx.Limits(max_keepalive_connections=_maxkeep, max_connections=_maxconn)
         litellm.client_session = httpx.Client(limits=httpx_limits)
         litellm.aclient_session = httpx.AsyncClient(limits=httpx_limits)
         # Controlling concurrent requests using semaphore since large
