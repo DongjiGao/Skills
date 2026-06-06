@@ -942,6 +942,55 @@ class GenerationTask:
             except Exception as e:  # noqa: BLE001
                 logging.warning("client py-spy launch failed: %s", e)
 
+        # Optional: replace httpcore's connection-pool assignment with a behavior-
+        # identical O(N+M) version (httpcore 1.0.9 is O(N^2 + N*M); see encode/
+        # httpcore#1035). This routine is the client request-delivery hot path (~51%
+        # of the event loop at high concurrency) and dominates send->arrival latency.
+        # Gated by NEMO_SKILLS_HTTPCORE_FIX=1. Equivalences: len([c.is_idle() for c in
+        # conns]) == len(conns); idle list only needed in the (pool-full) branch;
+        # available[0] == first available via next().
+        if os.environ.get("NEMO_SKILLS_HTTPCORE_FIX") == "1":
+            try:
+                import httpcore._async.connection_pool as _hcp
+
+                def _fast_assign(self):
+                    closing = []
+                    for c in list(self._connections):
+                        if c.is_closed():
+                            self._connections.remove(c)
+                        elif c.has_expired():
+                            self._connections.remove(c)
+                            closing.append(c)
+                        elif c.is_idle() and len(self._connections) > self._max_keepalive_connections:
+                            self._connections.remove(c)
+                            closing.append(c)
+                    for pr in [r for r in self._requests if r.is_queued()]:
+                        origin = pr.request.url.origin
+                        conn = next(
+                            (c for c in self._connections if c.can_handle_request(origin) and c.is_available()),
+                            None,
+                        )
+                        if conn is not None:
+                            pr.assign_to_connection(conn)
+                        elif len(self._connections) < self._max_connections:
+                            conn = self.create_connection(origin)
+                            self._connections.append(conn)
+                            pr.assign_to_connection(conn)
+                        else:
+                            conn = next((c for c in self._connections if c.is_idle()), None)
+                            if conn is not None:
+                                self._connections.remove(conn)
+                                closing.append(conn)
+                                conn = self.create_connection(origin)
+                                self._connections.append(conn)
+                                pr.assign_to_connection(conn)
+                    return closing
+
+                _hcp.AsyncConnectionPool._assign_requests_to_connections = _fast_assign
+                logging.info("Patched httpcore AsyncConnectionPool._assign_requests_to_connections -> O(N+M)")
+            except Exception as e:  # noqa: BLE001
+                logging.warning("httpcore O(N+M) patch failed: %s", e)
+
         # Initialize output lock for thread-safe writing
         if self.output_lock is None:
             self.output_lock = asyncio.Lock()
