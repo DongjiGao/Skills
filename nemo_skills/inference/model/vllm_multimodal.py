@@ -106,6 +106,13 @@ class VLLMMultimodalModel(VLLMModel):
             raise ValueError(f"Unsupported audio_format '{audio_format}'. Use 'audio_url' or 'input_audio'.")
         self.audio_format = audio_format
 
+        # Opt-in: send audio as a local-file URL instead of inlining base64
+        # (NEMO_SKILLS_AUDIO_AS_PATH=1). The server reads the file directly (needs
+        # --allowed-local-media-path), eliminating the ~1.3MB base64 payload + the
+        # client-side encode. Requires the audio path to be mounted in the server
+        # container and client-side audio chunking OFF. See vllm-efficiency-monitoring.
+        self._audio_as_path = os.environ.get("NEMO_SKILLS_AUDIO_AS_PATH") == "1"
+
         # Audio OUTPUT config
         self.output_audio_dir = None
         if self.output_dir:
@@ -326,16 +333,18 @@ class VLLMMultimodalModel(VLLMModel):
 
         audio_items = []
 
-        if "audio" in result:
-            audio = result.pop("audio")
+        def _audio_block(audio):
             audio_path = os.path.join(self.data_dir, audio["path"])
-            base64_audio = audio_file_to_base64(audio_path)
-            audio_items.append(make_audio_content_block(base64_audio, self.audio_format))
+            if self._audio_as_path:
+                # Local-file URL; vLLM reads it server-side (--allowed-local-media-path).
+                return {"type": "audio_url", "audio_url": {"url": "file://" + audio_path}}
+            return make_audio_content_block(audio_file_to_base64(audio_path), self.audio_format)
+
+        if "audio" in result:
+            audio_items.append(_audio_block(result.pop("audio")))
         elif "audios" in result:
             for audio in result.pop("audios"):
-                audio_path = os.path.join(self.data_dir, audio["path"])
-                base64_audio = audio_file_to_base64(audio_path)
-                audio_items.append(make_audio_content_block(base64_audio, self.audio_format))
+                audio_items.append(_audio_block(audio))
 
         if audio_items:
             result["content"] = audio_items + result["content"]
