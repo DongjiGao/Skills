@@ -60,6 +60,7 @@ DATASETS = [
     ("apptek-callcenter-dialogues", ["test"]),
     ("audiobench", ["test"]),
     ("librispeech-pc", ["test"]),
+    ("librispeechmix-sot", ["test"]),
     ("musan", ["test"]),
     ("compute-eval", ["eval"]),
 ]
