@@ -190,6 +190,21 @@ def test_content_text_to_list_no_audio(mock_vllm_multimodal_model):
     assert "audio" not in result
 
 
+def test_content_text_to_list_preserves_structured_content_dict(mock_vllm_multimodal_model, tmp_path):
+    """Structured content dicts are preserved when audio blocks are prepended."""
+    audio_path = tmp_path / "test.wav"
+    with open(audio_path, "wb") as f:
+        f.write(b"RIFF" + b"\x00" * 100)
+
+    content = {"type": "text", "text": "Describe this audio", "cache_control": {"type": "ephemeral"}}
+    message = {"role": "user", "content": content, "audio": {"path": "test.wav"}}
+
+    result = mock_vllm_multimodal_model.content_text_to_list(message)
+
+    assert _is_valid_audio_content(result["content"][0])
+    assert result["content"][1] == content
+
+
 def test_preprocess_messages_preserves_no_think(mock_vllm_multimodal_model):
     """Test that /no_think is preserved in system messages."""
     messages = [

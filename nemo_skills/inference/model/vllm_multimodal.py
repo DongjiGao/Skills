@@ -335,6 +335,8 @@ class VLLMMultimodalModel(VLLMModel):
             if set(content) == {"type", "text"} and content["type"] == "text":
                 text = content["text"]
                 result["content"] = [] if text is None else [{"type": "text", "text": str(text)}]
+            elif "type" in content:
+                result["content"] = [content]
             else:
                 raise TypeError(f"Unexpected content dict: {content}")
         elif not isinstance(content, list):
@@ -459,6 +461,8 @@ class VLLMMultimodalModel(VLLMModel):
                         if set(content) == {"type", "text"} and content["type"] == "text":
                             text = content["text"]
                             text_content = [] if text is None else [{"type": "text", "text": str(text)}]
+                        elif "type" in content:
+                            text_content = [content]
                         else:
                             raise TypeError(f"Unexpected content dict: {content}")
                     elif isinstance(content, list):
