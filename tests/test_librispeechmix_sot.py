@@ -72,7 +72,8 @@ def test_rttm_generation_and_stable_sot_tags():
     }
 
     assert prepare.speaker_tag_map(row) == {"a_spk": "s0", "b_spk": "s1"}
-    assert prepare.sot_text(row) == "[s0] first [s1] second"
+    assert prepare.sot_text(row) == "<spk:0> first <spk:1> second"
+    assert prepare.sot_text(row, speaker_tag_style="s_bracket") == "[s0] first [s1] second"
     assert prepare.num_speaker_changes(row) == 1
 
     lines = prepare.rttm_lines(row, "mix0")
@@ -132,53 +133,63 @@ def test_materialize_mixed_wav(tmp_path):
 
 
 def test_sot_parser_and_cpwer_permutation_invariance():
-    parsed = parse_sot_speaker_streams("[s0] Hello, [s1] YES! [s0] again")
+    parsed = parse_sot_speaker_streams("<spk:0> Hello, <spk:1> YES! <spk:0> again")
     assert parsed == {"s0": "hello again", "s1": "yes"}
 
-    result = cpwer("[s0] hello world [s1] good morning", "[s0] good morning [s1] hello world")
+    result = cpwer("<spk:0> hello world <spk:1> good morning", "<spk:0> good morning <spk:1> hello world")
     assert result["errors"] == 0
     assert result["cpwer"] == 0.0
 
 
 
-def test_sot_canonical_parser_accepts_exact_bracket_tags():
-    parsed = parse_sot_canonical("[s0] hello")
+def test_sot_canonical_parser_accepts_exact_spk_tags():
+    parsed = parse_sot_canonical("<spk:0> hello")
     assert parsed["format_parse_status"] == "exact"
     assert parsed["canonical_prediction"] == {"segments": [{"speaker": "s0", "text": "hello"}]}
 
-    result = cpwer("[s0] hello", "[s0] hello")
+    result = cpwer("<spk:0> hello", "<spk:0> hello")
     assert result["errors"] == 0
     assert result["format_parse_status"] == "exact"
 
 
-def test_sot_canonical_parser_accepts_spk_tags_but_strict_keeps_contract():
+def test_sot_canonical_parser_accepts_spk_tags_and_strict_default_contract():
     parsed = parse_sot_canonical("<spk:0> hello")
-    assert parsed["format_parse_status"] == "recovered"
-    assert parsed["speaker_mapping"] == {"<spk:0>": "s0"}
+    assert parsed["format_parse_status"] == "exact"
+    assert parsed["speaker_mapping"] == {}
 
-    canonical_result = cpwer("[s0] hello", "<spk:0> hello")
-    strict_result = cpwer("[s0] hello", "<spk:0> hello", hypothesis_mode="strict")
+    canonical_result = cpwer("<spk:0> hello", "<spk:0> hello")
+    strict_result = cpwer("<spk:0> hello", "<spk:0> hello", hypothesis_mode="strict")
     assert canonical_result["errors"] == 0
-    assert strict_result["errors"] > 0
+    assert strict_result["errors"] == 0
+
+
+def test_sot_bracket_style_remains_configurable():
+    strict_result = cpwer(
+        "[s0] hello",
+        "[s0] hello",
+        hypothesis_mode="strict",
+        reference_tag_style="s_bracket",
+    )
+    assert strict_result["errors"] == 0
 
 
 def test_sot_canonical_parser_accepts_speaker_dash_dialect():
-    result = cpwer("[s0] hello", "Speaker 0 - hello")
+    result = cpwer("<spk:0> hello", "Speaker 0 - hello")
     assert result["errors"] == 0
     assert result["format_parse_status"] == "recovered"
     assert result["speaker_mapping"] == {"speaker_0": "s0"}
 
 
 def test_sot_canonical_parser_concatenates_repeated_speaker_segments():
-    result = cpwer("[s0] hello world", "<spk:0> hello <spk:0> world")
+    result = cpwer("<spk:0> hello world", "<spk:0> hello <spk:0> world")
     assert result["errors"] == 0
     assert result["hypothesis_streams"] == {"s0": "hello world"}
 
 
 def test_sot_untagged_single_speaker_is_canonical_recovered_but_not_strict():
-    canonical = cpwer("[s0] hello", "hello")
-    strict = cpwer("[s0] hello", "hello", hypothesis_mode="strict")
-    flat = content_wer("[s0] hello", "hello")
+    canonical = cpwer("<spk:0> hello", "hello")
+    strict = cpwer("<spk:0> hello", "hello", hypothesis_mode="strict")
+    flat = content_wer("<spk:0> hello", "hello")
 
     assert canonical["format_parse_status"] == "recovered"
     assert "untagged_text_assigned_single_reference_speaker" in canonical["format_warnings"]
@@ -189,8 +200,8 @@ def test_sot_untagged_single_speaker_is_canonical_recovered_but_not_strict():
 
 
 def test_sot_untagged_multi_speaker_keeps_flattened_content_diagnostic_separate():
-    result = cpwer("[s0] hello [s1] world", "hello world")
-    flat = content_wer("[s0] hello [s1] world", "hello world")
+    result = cpwer("<spk:0> hello <spk:1> world", "hello world")
+    flat = content_wer("<spk:0> hello <spk:1> world", "hello world")
 
     assert result["format_parse_status"] == "failed"
     assert result["errors"] > 0
@@ -198,9 +209,9 @@ def test_sot_untagged_multi_speaker_keeps_flattened_content_diagnostic_separate(
 
 
 def test_sot_canonical_collapses_extra_predicted_speakers_for_single_reference_speaker():
-    canonical = cpwer("[s0] a b c", "[s0] a [s1] b c")
-    strict = cpwer("[s0] a b c", "[s0] a [s1] b c", hypothesis_mode="strict")
-    flat = content_wer("[s0] a b c", "[s0] a [s1] b c")
+    canonical = cpwer("<spk:0> a b c", "<spk:0> a <spk:1> b c")
+    strict = cpwer("<spk:0> a b c", "<spk:0> a <spk:1> b c", hypothesis_mode="strict")
+    flat = content_wer("<spk:0> a b c", "<spk:0> a <spk:1> b c")
 
     assert canonical["format_parse_status"] == "recovered"
     assert "collapsed_predicted_speakers_single_reference" in canonical["format_warnings"]
@@ -212,25 +223,25 @@ def test_sot_canonical_collapses_extra_predicted_speakers_for_single_reference_s
 @pytest.mark.parametrize(
     ("hypothesis", "errors", "ref_words"),
     [
-        ("[s0] hello", 2, 3),
-        ("[s0] hello [s1] there [s2] extra words", 3, 3),
+        ("<spk:0> hello", 2, 3),
+        ("<spk:0> hello <spk:1> there <spk:2> extra words", 3, 3),
         ("", 3, 3),
     ],
 )
 def test_cpwer_missing_extra_empty_hypothesis(hypothesis, errors, ref_words):
-    result = cpwer("[s0] hello [s1] there now", hypothesis)
+    result = cpwer("<spk:0> hello <spk:1> there now", hypothesis)
     assert result["errors"] == errors
     assert result["ref_words"] == ref_words
 
 
 def test_cpwer_punctuation_case_normalization():
-    result = cpwer("[s0] Hello, WORLD!", "[s0] hello world")
+    result = cpwer("<spk:0> Hello, WORLD!", "<spk:0> hello world")
     assert result["errors"] == 0
     assert result["canonical_reference"] == {"segments": [{"speaker": "s0", "text": "Hello, WORLD!"}]}
 
 
 def test_cpwer_uses_asr_standard_number_normalization():
-    result = cpwer("[s0] ten seconds", "[s0] 10 seconds")
+    result = cpwer("<spk:0> ten seconds", "<spk:0> 10 seconds")
     assert result["errors"] == 0
 
 
@@ -294,11 +305,22 @@ def test_metrics_use_corpus_level_raw_counts():
 def test_evaluator_reads_pred_text_before_generation():
     evaluator = LibriSpeechMixSOTEvaluator({})
     result = asyncio.run(
-        evaluator.eval_single({"text": "[s0] hello", "pred_text": "[s0] hello", "generation": "[s0] wrong"})
+        evaluator.eval_single({"text": "<spk:0> hello", "pred_text": "<spk:0> hello", "generation": "<spk:0> wrong"})
     )
 
     assert result["cpwer_errors"] == 0
     assert result["is_correct"] is True
+
+
+def test_evaluator_primary_cpwer_is_strict_not_canonical():
+    evaluator = LibriSpeechMixSOTEvaluator({})
+    result = asyncio.run(evaluator.eval_single({"text": "<spk:0> hello", "pred_text": "hello"}))
+
+    assert result["canonical_cpwer_errors"] == 0
+    assert result["strict_cpwer_errors"] > 0
+    assert result["cpwer_errors"] == result["strict_cpwer_errors"]
+    assert result["cpwer"] == result["strict_cpwer"]
+    assert result["is_correct"] is False
 
 
 def test_rtmtasr_command_and_generation_fake(monkeypatch, tmp_path):
@@ -319,12 +341,12 @@ def test_rtmtasr_command_and_generation_fake(monkeypatch, tmp_path):
 
     def fake_run(cmd, check, env):
         assert cmd == command
-        output_file.write_text(json.dumps({"text": "[s0] hi", "pred_text": "[s0] hi"}) + "\n")
+        output_file.write_text(json.dumps({"text": "<spk:0> hi", "pred_text": "<spk:0> hi"}) + "\n")
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     module.RTMTASRGenerationTask(cfg).generate()
     row = json.loads(output_file.read_text())
-    assert row["generation"] == "[s0] hi"
+    assert row["generation"] == "<spk:0> hi"
 
 
 def test_multitalker_parakeet_command_and_generation_fake(monkeypatch, tmp_path):
@@ -332,7 +354,7 @@ def test_multitalker_parakeet_command_and_generation_fake(monkeypatch, tmp_path)
     input_file = tmp_path / "input.jsonl"
     output_file = tmp_path / "out.jsonl"
     input_file.write_text(
-        json.dumps({"sample_id": "mix0", "audio_filepath": "/audio/mix0.wav", "text": "[s0] hi [s1] there"}) + "\n"
+        json.dumps({"sample_id": "mix0", "audio_filepath": "/audio/mix0.wav", "text": "<spk:0> hi <spk:1> there"}) + "\n"
     )
     cfg = module.MultitalkerParakeetGenerationConfig(
         input_file=str(input_file),
@@ -368,8 +390,8 @@ def test_multitalker_parakeet_command_and_generation_fake(monkeypatch, tmp_path)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     module.MultitalkerParakeetGenerationTask(cfg).generate()
     row = json.loads(output_file.read_text())
-    assert row["text"] == "[s0] hi [s1] there"
-    assert row["generation"] == "[s0] hi [s1] there"
+    assert row["text"] == "<spk:0> hi <spk:1> there"
+    assert row["generation"] == "<spk:0> hi <spk:1> there"
     assert row["hypothesis_seglst"][0]["speaker"] == "speaker_a"
 
 
@@ -415,7 +437,7 @@ def test_multitalker_parakeet_unified_backend_fake(monkeypatch, tmp_path):
     monkeypatch.setattr(backend, "_run_inprocess_manifest", fake_run_inprocess)
     result = backend.generate([module.GenerationRequest(audio_bytes=audio_path.read_bytes())])[0]
     assert result.error is None
-    assert result.text == "[s0] hi [s1] there"
+    assert result.text == "<spk:0> hi <spk:1> there"
     assert result.debug_info["backend"] == "multitalker_parakeet"
     assert result.debug_info["persistent_inprocess"] is True
 

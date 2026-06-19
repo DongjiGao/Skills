@@ -58,6 +58,7 @@ def compute_score(combined_metrics: dict) -> dict:
         "1mix": {k: v for k, v in combined_metrics.items() if k.endswith("-1mix")},
         "2mix": {k: v for k, v in combined_metrics.items() if k.endswith("-2mix")},
         "3mix": {k: v for k, v in combined_metrics.items() if k.endswith("-3mix")},
+        "4mix": {k: v for k, v in combined_metrics.items() if k.endswith("-4mix")},
         "under20s": {k: v for k, v in combined_metrics.items() if ".under20s-" in k},
         "over20s": {k: v for k, v in combined_metrics.items() if ".over20s-" in k},
         "test_clean": {k: v for k, v in combined_metrics.items() if "-test-clean-" in k},

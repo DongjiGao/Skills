@@ -49,15 +49,22 @@ if os.path.isfile(output_done_file) and os.path.isfile(output_file):
     print(f"Info: {output_file} is already merged. Exiting.")
     sys.exit(0)
 
-# Check for .done files and actual input files
+# Check for .done files and actual input files. A chunk may be empty when
+# num_chunks exceeds the number of examples; in that case Skills creates the
+# .done marker but there is no JSONL to concatenate. Treat those chunks as
+# empty instead of preventing the final merge.
+existing_input_files = []
+empty_done_files = []
 for file_ in input_files:
     done_file = f"{file_}.done"
     if not os.path.isfile(done_file):
         print(f"Info: {done_file} not found. Skipping the rest of the script.")
         sys.exit(0)
-    if not os.path.isfile(file_):
-        print(f"Info: {file_} not found. Exiting.")
-        sys.exit(0)
+    if os.path.isfile(file_):
+        existing_input_files.append(file_)
+    else:
+        empty_done_files.append(file_)
+        print(f"Info: {file_} not found but {done_file} exists; treating as an empty chunk.")
 
 output_dir = os.path.dirname(output_file) or "."
 
@@ -65,9 +72,13 @@ output_dir = os.path.dirname(output_file) or "."
 try:
     with tempfile.NamedTemporaryFile("w", dir=output_dir, prefix=f".{os.path.basename(output_file)}.", delete=False) as out_f:
         tmp_output_file = out_f.name
-        subprocess.run(["cat"] + input_files, stdout=out_f, check=True)
+        if existing_input_files:
+            subprocess.run(["cat"] + existing_input_files, stdout=out_f, check=True)
     os.replace(tmp_output_file, output_file)
-    print(f"Successfully concatenated {len(input_files)} files to {output_file}")
+    print(
+        f"Successfully concatenated {len(existing_input_files)} non-empty files "
+        f"from {len(input_files)} chunks to {output_file}"
+    )
 
     # Create .done file. Keep chunk files because sibling workers may still be
     # attempting the same idempotent merge.

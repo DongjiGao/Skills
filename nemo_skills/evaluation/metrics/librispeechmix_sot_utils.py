@@ -22,9 +22,13 @@ from typing import Any
 
 LOG = logging.getLogger(__name__)
 
-SOT_STRICT_TAG_RE = re.compile(r"\[(s\d+)\]", re.IGNORECASE)
+SOT_STRICT_TAG_RES = {
+    "spk": re.compile(r"<spk:(?P<spk>\d+)>", re.IGNORECASE),
+    "s_bracket": re.compile(r"\[(?P<bracket>s\d+)\]", re.IGNORECASE),
+    "both": re.compile(r"\[(?P<bracket>s\d+)\]|<spk:(?P<spk>\d+)>", re.IGNORECASE),
+}
 SOT_CANONICAL_TAG_RE = re.compile(
-    r"\[(s\d+)\]|<spk:(\d+)>|(?:^|\s)speaker[_\s-]*(\d+)\s*[:\-]",
+    r"\[(?P<bracket>s\d+)\]|<spk:(?P<spk>\d+)>|(?:^|\s)speaker[_\s-]*(?P<speaker_line>\d+)\s*[:\-]",
     re.IGNORECASE,
 )
 PUNCT_TRANSLATION = str.maketrans({char: " " for char in string.punctuation})
@@ -70,10 +74,33 @@ def _append_sot_segment(segments: list[dict[str, str]], speaker: str, text: str)
         segments.append({"speaker": speaker, "text": text})
 
 
-def parse_sot_canonical(text: str, *, mode: str = "canonical", default_speaker: str = "s0") -> dict[str, Any]:
+def _speaker_from_match(match: re.Match) -> tuple[str, str]:
+    groups = match.groupdict()
+    if groups.get("bracket") is not None:
+        speaker = groups["bracket"].lower()
+        return speaker, f"[{speaker}]"
+    if groups.get("spk") is not None:
+        speaker_index = int(groups["spk"])
+        return f"s{speaker_index}", f"<spk:{speaker_index}>"
+    speaker_index = int(groups["speaker_line"])
+    return f"s{speaker_index}", f"speaker_{speaker_index}"
+
+
+def parse_sot_canonical(
+    text: str,
+    *,
+    mode: str = "canonical",
+    default_speaker: str = "s0",
+    strict_tag_style: str = "spk",
+) -> dict[str, Any]:
     """Parse a SOT transcript into canonical ordered speaker segments."""
     if mode not in {"strict", "canonical"}:
         raise ValueError(f"Unsupported SOT parse mode: {mode}")
+    if strict_tag_style not in SOT_STRICT_TAG_RES:
+        raise ValueError(
+            f"Unsupported SOT strict tag style: {strict_tag_style}. "
+            f"Expected one of {sorted(SOT_STRICT_TAG_RES)}"
+        )
 
     cleaned, warnings = _strip_prompt_artifacts(text or "")
     recovered = bool(warnings)
@@ -81,7 +108,7 @@ def parse_sot_canonical(text: str, *, mode: str = "canonical", default_speaker: 
     speaker_mapping: dict[str, str] = {}
     current_speaker: str | None = None
     cursor = 0
-    tag_re = SOT_STRICT_TAG_RE if mode == "strict" else SOT_CANONICAL_TAG_RE
+    tag_re = SOT_STRICT_TAG_RES[strict_tag_style] if mode == "strict" else SOT_CANONICAL_TAG_RE
     matches = list(tag_re.finditer(cleaned))
 
     if not matches and cleaned.strip():
@@ -115,22 +142,10 @@ def parse_sot_canonical(text: str, *, mode: str = "canonical", default_speaker: 
             else:
                 _append_sot_segment(segments, current_speaker, chunk)
 
-        if mode == "strict":
-            speaker = match.group(1).lower()
-        else:
-            bracket_tag, spk_tag, speaker_line_tag = match.groups()
-            if bracket_tag is not None:
-                speaker = bracket_tag.lower()
-            elif spk_tag is not None:
-                speaker = f"s{int(spk_tag)}"
-                raw_label = f"<spk:{int(spk_tag)}>"
-                speaker_mapping[raw_label] = speaker
-                recovered = True
-            else:
-                speaker = f"s{int(speaker_line_tag)}"
-                raw_label = f"speaker_{int(speaker_line_tag)}"
-                speaker_mapping[raw_label] = speaker
-                recovered = True
+        speaker, raw_label = _speaker_from_match(match)
+        if mode == "canonical" and not raw_label.startswith("<spk:"):
+            speaker_mapping[raw_label] = speaker
+            recovered = True
         current_speaker = speaker
         cursor = match.end()
 
@@ -170,10 +185,14 @@ def _streams_from_sot_segments(segments: list[dict[str, str]]) -> OrderedDict[st
 
 
 def parse_sot_speaker_streams(
-    text: str, *, default_speaker: str = "s0", mode: str = "canonical"
+    text: str,
+    *,
+    default_speaker: str = "s0",
+    mode: str = "canonical",
+    strict_tag_style: str = "spk",
 ) -> OrderedDict[str, str]:
     """Parse SOT text into speaker streams keyed by speaker token without brackets."""
-    parsed = parse_sot_canonical(text, mode=mode, default_speaker=default_speaker)
+    parsed = parse_sot_canonical(text, mode=mode, default_speaker=default_speaker, strict_tag_style=strict_tag_style)
     return _streams_from_sot_segments(parsed["segments"])
 
 
@@ -316,11 +335,22 @@ def _cpwer_from_streams(ref_streams: OrderedDict[str, str], hyp_streams: Ordered
     return best
 
 
-def cpwer(reference_text: str, hypothesis_text: str, *, hypothesis_mode: str = "canonical") -> dict[str, Any]:
+def cpwer(
+    reference_text: str,
+    hypothesis_text: str,
+    *,
+    hypothesis_mode: str = "canonical",
+    reference_tag_style: str = "spk",
+    hypothesis_strict_tag_style: str | None = None,
+) -> dict[str, Any]:
     """Compute cpWER using minimum speaker permutation matching."""
-    ref_parse = parse_sot_canonical(reference_text, mode="strict")
+    ref_parse = parse_sot_canonical(reference_text, mode="strict", strict_tag_style=reference_tag_style)
     ref_streams = _streams_from_sot_segments(ref_parse["segments"])
-    hyp_parse = parse_sot_canonical(hypothesis_text, mode=hypothesis_mode)
+    hyp_parse = parse_sot_canonical(
+        hypothesis_text,
+        mode=hypothesis_mode,
+        strict_tag_style=hypothesis_strict_tag_style or reference_tag_style,
+    )
     if (
         hypothesis_mode == "canonical"
         and not hyp_parse["segments"]
@@ -417,7 +447,20 @@ def write_meeteval_artifacts(records: list[dict[str, Any]], output_file: str | P
     ref_entries: list[dict[str, Any]] = []
     hyp_entries: list[dict[str, Any]] = []
     for record in records:
-        ref_entries.extend(sot_to_seglst(record, "text"))
+        reference_seglst = record.get("reference_seglst_filepath") or record.get("seglst_filepath")
+        if reference_seglst and Path(reference_seglst).exists():
+            loaded_ref = json.loads(Path(reference_seglst).read_text(encoding="utf-8"))
+            if isinstance(loaded_ref, dict):
+                for key in ("segments", "annotations", "entries"):
+                    if isinstance(loaded_ref.get(key), list):
+                        loaded_ref = loaded_ref[key]
+                        break
+            if isinstance(loaded_ref, list):
+                ref_entries.extend(loaded_ref)
+            else:
+                ref_entries.extend(sot_to_seglst(record, "text"))
+        else:
+            ref_entries.extend(sot_to_seglst(record, "text"))
         hyp_record = dict(record)
         hyp_record["pred_text"] = record.get("pred_text") or record.get("generation", "")
         hyp_entries.extend(sot_to_seglst(hyp_record, "pred_text"))

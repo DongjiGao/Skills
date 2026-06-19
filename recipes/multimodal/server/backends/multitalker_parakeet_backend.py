@@ -150,7 +150,8 @@ def _seglst_to_sot(entries: list[dict]) -> str:
         speaker = str(entry.get("speaker") or "speaker")
         if speaker not in tag_by_speaker:
             tag_by_speaker[speaker] = f"s{len(tag_by_speaker)}"
-        chunks.append(f"[{tag_by_speaker[speaker]}] {words}")
+        tag_index = int(tag_by_speaker[speaker][1:])
+        chunks.append(f"<spk:{tag_index}> {words}")
     return " ".join(chunks)
 
 

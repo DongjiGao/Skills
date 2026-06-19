@@ -18,7 +18,8 @@ import numpy as np
 
 BENCHMARK_NAME = "librispeechmix-sot"
 DURATION_THRESHOLD_SECONDS = 20.0
-DEFAULT_PROMPT = "Transcribe the mixed audio with speaker tags like [s0] hello [s1] yes."
+DEFAULT_PROMPT = "Transcribe the mixed audio with speaker tags like <spk:0> hello <spk:1> yes."
+SPEAKER_TAG_STYLES = ("spk", "s_bracket")
 SPLITS = ("test-clean", "dev-clean")
 MIXES = ("1mix", "2mix", "3mix")
 
@@ -131,7 +132,7 @@ def duration_bucket(duration: float) -> str:
 
 
 def speaker_tag_map(row: dict) -> dict[str, str]:
-    """Assign stable [sN] tags in first-start order."""
+    """Assign stable internal sN tags in first-start order."""
     ordered = sorted(enumerate(row["speakers"]), key=lambda item: (row["delays"][item[0]], item[1], item[0]))
     mapping = {}
     for _orig_idx, speaker in ordered:
@@ -140,14 +141,23 @@ def speaker_tag_map(row: dict) -> dict[str, str]:
     return mapping
 
 
-def sot_text(row: dict) -> str:
-    """Create SOT reference text with bracket speaker tags."""
+def format_speaker_tag(tag: str, speaker_tag_style: str = "spk") -> str:
+    """Render canonical internal sN speaker labels in the requested output style."""
+    if speaker_tag_style == "s_bracket":
+        return f"[{tag}]"
+    if speaker_tag_style == "spk":
+        return f"<spk:{int(tag[1:])}>"
+    raise ValueError(f"Unsupported speaker tag style: {speaker_tag_style}")
+
+
+def sot_text(row: dict, speaker_tag_style: str = "spk") -> str:
+    """Create SOT reference text with configured speaker tags."""
     tag_by_speaker = speaker_tag_map(row)
     ordered = sorted(range(len(row["speakers"])), key=lambda idx: (row["delays"][idx], row["speakers"][idx], idx))
     chunks = []
     for idx in ordered:
-        tag = tag_by_speaker[row["speakers"][idx]]
-        chunks.append(f"[{tag}] {row['texts'][idx].lower()}")
+        tag = format_speaker_tag(tag_by_speaker[row["speakers"][idx]], speaker_tag_style)
+        chunks.append(f"{tag} {row['texts'][idx].lower()}")
     return " ".join(chunks)
 
 
@@ -251,6 +261,7 @@ def build_record(
     audio_prefix: Path,
     no_audio: bool,
     librispeech_root: Path,
+    speaker_tag_style: str = "spk",
 ) -> dict:
     """Build one NeMo SOT manifest record and write its RTTM/SegLST sidecars."""
     duration = mixed_duration(row)
@@ -271,7 +282,7 @@ def build_record(
     tag_by_speaker = speaker_tag_map(row)
     ordered_global_speakers = [speaker for speaker, _tag in sorted(tag_by_speaker.items(), key=lambda item: item[1])]
     audio_filepath = _public_audio_path(local_audio_path, local_audio_root, audio_prefix)
-    text = sot_text(row)
+    text = sot_text(row, speaker_tag_style=speaker_tag_style)
 
     return {
         "audio_filepath": audio_filepath,
@@ -290,6 +301,7 @@ def build_record(
         "dataset_id": f"{BENCHMARK_NAME}:{split}-{mix}",
         "global_speaker_ids": ordered_global_speakers,
         "speaker_tag_map": tag_by_speaker,
+        "speaker_tag_style": speaker_tag_style,
         "librispeechmix_id": row["id"],
         "sample_id": session_id,
         "delays": row["delays"],
@@ -327,6 +339,7 @@ def prepare_split_mix(
     no_audio: bool,
     max_samples: int | None,
     librispeech_root: Path,
+    speaker_tag_style: str = "spk",
 ) -> dict[str, int]:
     """Prepare under/over-20s variants for one LibriSpeechMix list."""
     buckets = {"under20s": [], "over20s": []}
@@ -343,6 +356,7 @@ def prepare_split_mix(
                 audio_prefix=audio_prefix,
                 no_audio=no_audio,
                 librispeech_root=librispeech_root,
+                speaker_tag_style=speaker_tag_style,
             )
         )
         if max_samples is not None and all(len(items) >= max_samples for items in buckets.values()):
@@ -372,6 +386,12 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None, help="Maximum records per under/over bucket.")
     parser.add_argument("--librispeechmix-dir", type=str, default=None, help="Local LibriSpeechMix checkout/list dir.")
     parser.add_argument("--librispeech-root", type=str, default=None, help="Existing LibriSpeech root override.")
+    parser.add_argument(
+        "--speaker-tag-style",
+        choices=SPEAKER_TAG_STYLES,
+        default="spk",
+        help="Speaker tag style to emit in SOT references and prompts.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser().resolve() if args.data_dir else _default_data_dir()
@@ -403,6 +423,7 @@ def main() -> None:
                 no_audio=args.no_audio,
                 max_samples=args.max_samples,
                 librispeech_root=librispeech_root,
+                speaker_tag_style=args.speaker_tag_style,
             )
             all_counts.update(counts)
 

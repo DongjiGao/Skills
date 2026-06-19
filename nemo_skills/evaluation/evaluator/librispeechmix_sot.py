@@ -23,6 +23,8 @@ class LibriSpeechMixSOTEvaluatorConfig(BaseEvaluatorConfig):
 
     prediction_keys: list[str] | None = None
     write_meeteval: bool = True
+    reference_tag_style: str = "spk"
+    hypothesis_strict_tag_style: str | None = None
 
 
 class LibriSpeechMixSOTEvaluator(BaseEvaluator):
@@ -41,17 +43,29 @@ class LibriSpeechMixSOTEvaluator(BaseEvaluator):
 
     async def eval_single(self, data_point: dict[str, Any]) -> dict[str, Any]:
         hypothesis = self._get_hypothesis(data_point)
-        strict_result = cpwer(data_point["text"], hypothesis, hypothesis_mode="strict")
-        canonical_result = cpwer(data_point["text"], hypothesis, hypothesis_mode="canonical")
+        strict_result = cpwer(
+            data_point["text"],
+            hypothesis,
+            hypothesis_mode="strict",
+            reference_tag_style=self.config.reference_tag_style,
+            hypothesis_strict_tag_style=self.config.hypothesis_strict_tag_style,
+        )
+        canonical_result = cpwer(
+            data_point["text"],
+            hypothesis,
+            hypothesis_mode="canonical",
+            reference_tag_style=self.config.reference_tag_style,
+            hypothesis_strict_tag_style=self.config.hypothesis_strict_tag_style,
+        )
         content_result = content_wer(data_point["text"], hypothesis)
         return {
             "pred_text": hypothesis,
-            "cpwer": canonical_result["cpwer"],
-            "cpwer_errors": canonical_result["errors"],
-            "cpwer_substitutions": canonical_result["substitutions"],
-            "cpwer_insertions": canonical_result["insertions"],
-            "cpwer_deletions": canonical_result["deletions"],
-            "cpwer_ref_words": canonical_result["ref_words"],
+            "cpwer": strict_result["cpwer"],
+            "cpwer_errors": strict_result["errors"],
+            "cpwer_substitutions": strict_result["substitutions"],
+            "cpwer_insertions": strict_result["insertions"],
+            "cpwer_deletions": strict_result["deletions"],
+            "cpwer_ref_words": strict_result["ref_words"],
             "strict_cpwer": strict_result["cpwer"],
             "strict_cpwer_errors": strict_result["errors"],
             "strict_cpwer_substitutions": strict_result["substitutions"],
@@ -77,7 +91,7 @@ class LibriSpeechMixSOTEvaluator(BaseEvaluator):
             "canonical_prediction": canonical_result["canonical_prediction"],
             "canonical_reference": canonical_result["canonical_reference"],
             "speaker_mapping": canonical_result["speaker_mapping"],
-            "is_correct": canonical_result["errors"] == 0,
+            "is_correct": strict_result["errors"] == 0,
         }
 
     async def eval_full(self) -> None:
