@@ -18,3 +18,14 @@ BENCHMARKS = {
     for lsm_split in _LSM_SPLITS
     for mix in _MIXES
 }
+
+FORMAT_EXPECTATIONS = {
+    "librispeechmix-sot": {
+        "task_type": "sot",
+        "speaker_label_namespace": "ordinal_speakers",
+        "allowed_output_dialects": ["s_bracket", "spk_tag", "speaker_N_colon", "speaker_N_dash"],
+        "repeated_speaker_turns_legal": True,
+        "flattened_diagnostic_allowed": True,
+    },
+}
+

@@ -594,6 +594,36 @@ def _split_librispeechmix_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _extend_unique(items: list[str], new_items: list[str]) -> None:
+    for item in new_items:
+        if item not in items:
+            items.append(item)
+
+
+def _join_transcript_parts(parts: list[str]) -> str:
+    return " ".join(part.strip() for part in parts if part and part.strip()).strip()
+
+
+_PROMPT_ARTIFACT_PATTERNS = [
+    re.compile(r"these\s+audio\s+clips\s+are\s+enrollment\s+samples[^.?!]*(?:[.?!]|$)", re.IGNORECASE),
+    re.compile(r"the\s+following\s+audio\s+clip\s+contains\s+the\s+speech\s+to\s+transcribe[^.?!]*(?:[.?!]|$)", re.IGNORECASE),
+    re.compile(r"transcribe\s+this\s+audio\s+with\s+punctuation\s+and\s+capitalization[^.?!]*(?:[.?!]|$)", re.IGNORECASE),
+]
+
+
+def _strip_prompt_artifacts(text: str) -> tuple[str, list[str]]:
+    """Remove known prompt echoes only as an explicit recovery path."""
+    warnings: list[str] = []
+    cleaned = text
+    for pattern in _PROMPT_ARTIFACT_PATTERNS:
+        cleaned, replacements = pattern.subn(" ", cleaned)
+        if replacements:
+            warnings.append("stripped_prompt_artifact")
+    if warnings:
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned, warnings
+
+
 def _counts_for_normalized_pair(reference: str, hypothesis: str) -> dict[str, int]:
     """Compute WER counts for a normalized reference/hypothesis pair, handling empty refs safely."""
     ref = reference.strip()
@@ -623,43 +653,100 @@ def _counts_for_normalized_pair(reference: str, hypothesis: str) -> dict[str, in
 
 
 def _pick_best_librispeechmix_alignment(references: list[str], hypotheses: list[str]) -> dict[str, Any]:
-    """Choose the permutation with the fewest total ASR errors."""
-    padded_size = max(len(references), len(hypotheses), 1)
-    padded_refs = list(references) + [""] * (padded_size - len(references))
-    padded_hyps = list(hypotheses) + [""] * (padded_size - len(hypotheses))
+    """Choose the assignment with the fewest ASR errors.
 
-    best_result = None
-    best_key = None
+    The number of references is tiny for LibriSpeechMix, but recovered model
+    outputs can contain many speaker-tag fragments. This dynamic program is
+    linear in the number of hypothesis fragments and exponential only in the
+    number of reference streams.
+    """
+    references = list(references)
+    hypotheses = list(hypotheses)
+    ref_count = len(references)
 
-    for permutation in itertools.permutations(range(padded_size)):
-        aligned_hypotheses = [padded_hyps[index] for index in permutation]
-        current = {
+    def empty_totals() -> dict[str, Any]:
+        return {
             "wer_errors": 0,
             "wer_ref_words": 0,
             "wer_substitutions": 0,
             "wer_insertions": 0,
             "wer_deletions": 0,
-            "aligned_references": list(padded_refs),
-            "aligned_hypotheses": aligned_hypotheses,
         }
 
-        for reference, hypothesis in zip(padded_refs, aligned_hypotheses):
-            counts = _counts_for_normalized_pair(reference, hypothesis)
-            current["wer_errors"] += counts["wer_errors"]
-            current["wer_ref_words"] += counts["wer_ref_words"]
-            current["wer_substitutions"] += counts["wer_substitutions"]
-            current["wer_insertions"] += counts["wer_insertions"]
-            current["wer_deletions"] += counts["wer_deletions"]
+    def add_counts(total: dict[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+        out = dict(total)
+        out["wer_errors"] += counts["wer_errors"]
+        out["wer_ref_words"] += counts["wer_ref_words"]
+        out["wer_substitutions"] += counts["wer_substitutions"]
+        out["wer_insertions"] += counts["wer_insertions"]
+        out["wer_deletions"] += counts["wer_deletions"]
+        return out
 
-        key = (
-            current["wer_errors"],
-            current["wer_insertions"],
-            current["wer_deletions"],
-            current["wer_substitutions"],
+    def score_key(state: dict[str, Any]) -> tuple[int, int, int, int]:
+        return (
+            state["wer_errors"],
+            state["wer_insertions"],
+            state["wer_deletions"],
+            state["wer_substitutions"],
         )
+
+    def maybe_keep(states: dict[int, dict[str, Any]], mask: int, candidate: dict[str, Any]) -> None:
+        current = states.get(mask)
+        if current is None or score_key(candidate) < score_key(current):
+            states[mask] = candidate
+
+    if ref_count == 0:
+        state = empty_totals()
+        for hypothesis in hypotheses:
+            state = add_counts(state, _counts_for_normalized_pair("", hypothesis))
+        state["aligned_references"] = [""] * len(hypotheses)
+        state["aligned_hypotheses"] = list(hypotheses)
+        state["wer"] = 0.0 if state["wer_errors"] == 0 else float("inf")
+        state["is_correct"] = state["wer_errors"] == 0
+        return state
+
+    dp: dict[int, dict[str, Any]] = {0: {**empty_totals(), "assignments": [None] * ref_count, "extras": []}}
+    for hyp_index, hypothesis in enumerate(hypotheses):
+        next_dp: dict[int, dict[str, Any]] = {}
+        extra_counts = _counts_for_normalized_pair("", hypothesis)
+        for mask, state in dp.items():
+            extra_state = add_counts(state, extra_counts)
+            extra_state["assignments"] = list(state["assignments"])
+            extra_state["extras"] = [*state["extras"], hyp_index]
+            maybe_keep(next_dp, mask, extra_state)
+
+            for ref_index, reference in enumerate(references):
+                bit = 1 << ref_index
+                if mask & bit:
+                    continue
+                pair_state = add_counts(state, _counts_for_normalized_pair(reference, hypothesis))
+                assignments = list(state["assignments"])
+                assignments[ref_index] = hyp_index
+                pair_state["assignments"] = assignments
+                pair_state["extras"] = list(state["extras"])
+                maybe_keep(next_dp, mask | bit, pair_state)
+        dp = next_dp
+
+    best_result = None
+    best_key = None
+    for mask, state in dp.items():
+        candidate = dict(state)
+        assignments = list(candidate.pop("assignments"))
+        extras = list(candidate.pop("extras"))
+        for ref_index, reference in enumerate(references):
+            if assignments[ref_index] is None:
+                candidate = add_counts(candidate, _counts_for_normalized_pair(reference, ""))
+        key = score_key(candidate)
         if best_key is None or key < best_key:
             best_key = key
-            best_result = current
+            aligned_references = list(references)
+            aligned_hypotheses = [hypotheses[index] if index is not None else "" for index in assignments]
+            for hyp_index in extras:
+                aligned_references.append("")
+                aligned_hypotheses.append(hypotheses[hyp_index])
+            candidate["aligned_references"] = aligned_references
+            candidate["aligned_hypotheses"] = aligned_hypotheses
+            best_result = candidate
 
     total_ref_words = best_result["wer_ref_words"]
     best_result["wer"] = best_result["wer_errors"] / total_ref_words if total_ref_words > 0 else 0.0
@@ -667,63 +754,240 @@ def _pick_best_librispeechmix_alignment(references: list[str], hypotheses: list[
     return best_result
 
 
+def _prefix_librispeechmix_wer_metrics(metrics: dict[str, Any], prefix: str) -> dict[str, Any]:
+    fields = ["wer", "wer_errors", "wer_ref_words", "wer_substitutions", "wer_insertions", "wer_deletions"]
+    return {f"{prefix}_{field}": metrics[field] for field in fields if field in metrics}
+
+
+_ASR_RECOVERY_TAG_PATTERN = re.compile(
+    r"(?:^|\s)(?:speaker[_\s-]*(\d+)\s*[:\-]|<spk:(\d+)>|\[(s\d+)\])",
+    re.IGNORECASE,
+)
+
+
+def _parse_librispeechmix_asr_canonical(hypothesis: str) -> dict[str, Any]:
+    """Parse base LibriSpeechMix ASR into canonical unlabeled streams."""
+    raw_lines = _split_librispeechmix_lines(hypothesis)
+    warnings: list[str] = []
+    streams: list[str] = []
+    recovered = False
+
+    for line in raw_lines:
+        cleaned_line, artifact_warnings = _strip_prompt_artifacts(line)
+        if artifact_warnings:
+            recovered = True
+            _extend_unique(warnings, artifact_warnings)
+        if not cleaned_line:
+            continue
+
+        matches = list(_ASR_RECOVERY_TAG_PATTERN.finditer(cleaned_line))
+        if not matches:
+            streams.append(cleaned_line)
+            continue
+
+        recovered = True
+        prefix = cleaned_line[: matches[0].start()].strip()
+        if prefix:
+            streams.append(prefix)
+            warnings.append("untagged_prefix_preserved")
+        for idx, match in enumerate(matches):
+            next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(cleaned_line)
+            transcript = cleaned_line[match.end() : next_start].strip()
+            if transcript:
+                streams.append(transcript)
+
+    if not streams and hypothesis.strip():
+        warnings.append("empty_after_format_parse")
+        status = "failed"
+    elif not streams:
+        status = "failed"
+    else:
+        status = "recovered" if recovered else "exact"
+
+    return {
+        "streams": streams,
+        "format_parse_status": status,
+        "format_warnings": warnings,
+        "canonical_prediction": {"streams": streams},
+        "speaker_mapping": {},
+    }
+
+
 def evaluate_librispeechmix_asr(
     references: list[str], hypothesis: str, normalization_mode: str = "standard"
 ) -> dict[str, Any]:
     """Evaluate LibriSpeechMix overlapped ASR with permutation-invariant WER."""
     normalized_refs = [preprocess_asr_text(reference, mode=normalization_mode) for reference in references]
-    normalized_hyps = [preprocess_asr_text(line, mode=normalization_mode) for line in _split_librispeechmix_lines(hypothesis)]
 
-    if not normalized_hyps and hypothesis.strip():
-        normalized_hyps = [preprocess_asr_text(hypothesis, mode=normalization_mode)]
+    strict_hyp_streams = _split_librispeechmix_lines(hypothesis)
+    if not strict_hyp_streams and hypothesis.strip():
+        strict_hyp_streams = [hypothesis.strip()]
+    normalized_strict_hyps = [preprocess_asr_text(line, mode=normalization_mode) for line in strict_hyp_streams]
+    strict_result = _pick_best_librispeechmix_alignment(normalized_refs, normalized_strict_hyps)
 
-    result = _pick_best_librispeechmix_alignment(normalized_refs, normalized_hyps)
+    parsed = _parse_librispeechmix_asr_canonical(hypothesis)
+    normalized_hyps = [preprocess_asr_text(line, mode=normalization_mode) for line in parsed["streams"]]
+    canonical_result = _pick_best_librispeechmix_alignment(normalized_refs, normalized_hyps)
+
+    result = dict(canonical_result)
+    result.update(_prefix_librispeechmix_wer_metrics(strict_result, "strict"))
+    result.update(_prefix_librispeechmix_wer_metrics(canonical_result, "canonical"))
+    result.update(_prefix_librispeechmix_wer_metrics(canonical_result, "content"))
     result["reference_streams"] = normalized_refs
     result["predicted_streams"] = result.pop("aligned_hypotheses")
     result["aligned_reference_streams"] = result.pop("aligned_references")
+    result["strict_predicted_streams"] = strict_result.get("aligned_hypotheses", [])
+    result["strict_aligned_reference_streams"] = strict_result.get("aligned_references", [])
+    result["format_parse_status"] = parsed["format_parse_status"]
+    result["format_warnings"] = parsed["format_warnings"]
+    result["canonical_prediction"] = parsed["canonical_prediction"]
+    result["speaker_mapping"] = parsed["speaker_mapping"]
     return result
 
 
-_SA_ASR_LINE_PATTERN = re.compile(r"^\s*speaker_(\d+)\s*:\s*(.*)$", re.IGNORECASE)
+_SA_ASR_EXACT_LINE_PATTERN = re.compile(r"^\s*speaker_(\d+)\s*:\s*(.*)$", re.IGNORECASE)
+_SA_ASR_SPEAKER_LINE_PATTERN = re.compile(r"^\s*speaker\s+(\d+)\s*[-:]\s*(.*)$", re.IGNORECASE)
+_SA_ASR_TAG_PATTERN = re.compile(r"<spk:(\d+)>|\[(s\d+)\]", re.IGNORECASE)
 
 
-def _parse_sa_asr_hypothesis(hypothesis: str) -> tuple[dict[str, str], list[str]]:
-    """Parse SA-ASR output lines into speaker-labeled predictions and unlabeled extras."""
+def _sa_asr_speaker_label(tag_index: int, speaker_profile_index: list[int] | None) -> str:
+    if speaker_profile_index is not None and 0 <= tag_index < len(speaker_profile_index):
+        return f"speaker_{int(speaker_profile_index[tag_index])}"
+    return f"speaker_{tag_index}"
+
+
+def _append_sa_asr_prediction(parsed_predictions: dict[str, str], speaker_label: str, transcript: str) -> None:
+    transcript = transcript.strip()
+    if not transcript:
+        return
+    if speaker_label in parsed_predictions and parsed_predictions[speaker_label]:
+        parsed_predictions[speaker_label] = f"{parsed_predictions[speaker_label]} {transcript}"
+    else:
+        parsed_predictions[speaker_label] = transcript
+
+
+def _parse_sa_asr_strict_hypothesis(hypothesis: str) -> tuple[dict[str, str], list[str]]:
+    """Parse only the original ``speaker_N: text`` contract, preserving duplicate penalties."""
     parsed_predictions: dict[str, str] = {}
     extras: list[str] = []
 
     for line in _split_librispeechmix_lines(hypothesis):
-        match = _SA_ASR_LINE_PATTERN.match(line)
-        if match is None:
-            extras.append(line)
-            continue
-
-        speaker_label = f"speaker_{int(match.group(1))}"
-        transcript = match.group(2).strip()
-        if speaker_label in parsed_predictions:
-            extras.append(transcript)
+        match = _SA_ASR_EXACT_LINE_PATTERN.match(line)
+        if match is not None:
+            speaker_label = f"speaker_{int(match.group(1))}"
+            transcript = match.group(2).strip()
+            if speaker_label in parsed_predictions:
+                extras.append(transcript)
+            else:
+                parsed_predictions[speaker_label] = transcript
         else:
-            parsed_predictions[speaker_label] = transcript
+            extras.append(line)
 
     return parsed_predictions, extras
 
 
-def evaluate_librispeechmix_sa_asr(
-    references: list[str], speaker_profile_index: list[int], hypothesis: str, normalization_mode: str = "standard"
+def _parse_sa_asr_tagged_line(
+    line: str, speaker_profile_index: list[int] | None
+) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    parsed_predictions: dict[str, str] = {}
+    extras: list[str] = []
+    speaker_mapping: dict[str, str] = {}
+    matches = list(_SA_ASR_TAG_PATTERN.finditer(line))
+    if not matches:
+        return parsed_predictions, [line], speaker_mapping
+
+    prefix = line[: matches[0].start()].strip()
+    if prefix:
+        extras.append(prefix)
+
+    for idx, match in enumerate(matches):
+        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(line)
+        transcript = line[match.end() : next_start].strip()
+        spk_tag, bracket_tag = match.groups()
+        if spk_tag is not None:
+            tag_index = int(spk_tag)
+            raw_label = f"<spk:{tag_index}>"
+        else:
+            tag_index = int(bracket_tag[1:])
+            raw_label = f"[{bracket_tag.lower()}]"
+        speaker_label = _sa_asr_speaker_label(tag_index, speaker_profile_index)
+        speaker_mapping[raw_label] = speaker_label
+        _append_sa_asr_prediction(parsed_predictions, speaker_label, transcript)
+
+    return parsed_predictions, extras, speaker_mapping
+
+
+def _parse_sa_asr_canonical_hypothesis(
+    hypothesis: str, speaker_profile_index: list[int] | None = None
 ) -> dict[str, Any]:
-    """Evaluate LibriSpeechMix speaker-attributed ASR using speaker-profile indices."""
-    reference_map = {
-        f"speaker_{speaker_idx}": preprocess_asr_text(reference, mode=normalization_mode)
-        for speaker_idx, reference in zip(speaker_profile_index, references)
-    }
-    parsed_predictions, extras = _parse_sa_asr_hypothesis(hypothesis)
+    """Parse SA-ASR output into canonical speaker-profile keyed streams."""
+    parsed_predictions: dict[str, str] = {}
+    extras: list[str] = []
+    warnings: list[str] = []
+    speaker_mapping: dict[str, str] = {}
+    recovered = False
+    saw_exact = False
 
-    normalized_predictions = {
-        speaker_label: preprocess_asr_text(text, mode=normalization_mode)
-        for speaker_label, text in parsed_predictions.items()
-    }
-    normalized_extras = [preprocess_asr_text(text, mode=normalization_mode) for text in extras]
+    for line in _split_librispeechmix_lines(hypothesis):
+        cleaned_line, artifact_warnings = _strip_prompt_artifacts(line)
+        if artifact_warnings:
+            recovered = True
+            _extend_unique(warnings, artifact_warnings)
+        if not cleaned_line:
+            continue
 
+        exact_match = _SA_ASR_EXACT_LINE_PATTERN.match(cleaned_line)
+        if exact_match is not None:
+            saw_exact = True
+            speaker_label = f"speaker_{int(exact_match.group(1))}"
+            _append_sa_asr_prediction(parsed_predictions, speaker_label, exact_match.group(2).strip())
+            continue
+
+        speaker_line_match = _SA_ASR_SPEAKER_LINE_PATTERN.match(cleaned_line)
+        if speaker_line_match is not None:
+            recovered = True
+            speaker_label = f"speaker_{int(speaker_line_match.group(1))}"
+            _append_sa_asr_prediction(parsed_predictions, speaker_label, speaker_line_match.group(2).strip())
+            continue
+
+        if _SA_ASR_TAG_PATTERN.search(cleaned_line):
+            recovered = True
+            tagged_predictions, tagged_extras, tagged_mapping = _parse_sa_asr_tagged_line(
+                cleaned_line, speaker_profile_index
+            )
+            for speaker_label, transcript in tagged_predictions.items():
+                _append_sa_asr_prediction(parsed_predictions, speaker_label, transcript)
+            extras.extend(tagged_extras)
+            speaker_mapping.update(tagged_mapping)
+        else:
+            extras.append(cleaned_line)
+
+    if extras:
+        recovered = True
+        warnings.append("unlabeled_text_scored_as_insertion")
+
+    if not parsed_predictions and hypothesis.strip():
+        status = "failed"
+    elif not parsed_predictions:
+        status = "failed"
+    elif recovered:
+        status = "recovered"
+    else:
+        status = "exact" if saw_exact else "recovered"
+
+    return {
+        "streams": parsed_predictions,
+        "extras": extras,
+        "format_parse_status": status,
+        "format_warnings": warnings,
+        "canonical_prediction": {"streams": dict(sorted(parsed_predictions.items()))},
+        "speaker_mapping": speaker_mapping,
+    }
+
+
+def _score_librispeechmix_sa_asr_map(
+    reference_map: dict[str, str], normalized_predictions: dict[str, str], normalized_extras: list[str]
+) -> dict[str, Any]:
     counts = {
         "wer_errors": 0,
         "wer_ref_words": 0,
@@ -732,9 +996,10 @@ def evaluate_librispeechmix_sa_asr(
         "wer_deletions": 0,
     }
     aligned_predictions = {}
+    remaining_predictions = dict(normalized_predictions)
 
     for speaker_label, reference in reference_map.items():
-        hypothesis_text = normalized_predictions.pop(speaker_label, "")
+        hypothesis_text = remaining_predictions.pop(speaker_label, "")
         aligned_predictions[speaker_label] = hypothesis_text
         pair_counts = _counts_for_normalized_pair(reference, hypothesis_text)
         counts["wer_errors"] += pair_counts["wer_errors"]
@@ -743,7 +1008,7 @@ def evaluate_librispeechmix_sa_asr(
         counts["wer_insertions"] += pair_counts["wer_insertions"]
         counts["wer_deletions"] += pair_counts["wer_deletions"]
 
-    for hypothesis_text in list(normalized_predictions.values()) + normalized_extras:
+    for hypothesis_text in list(remaining_predictions.values()) + normalized_extras:
         pair_counts = _counts_for_normalized_pair("", hypothesis_text)
         counts["wer_errors"] += pair_counts["wer_errors"]
         counts["wer_ref_words"] += pair_counts["wer_ref_words"]
@@ -754,9 +1019,59 @@ def evaluate_librispeechmix_sa_asr(
     total_ref_words = counts["wer_ref_words"]
     counts["wer"] = counts["wer_errors"] / total_ref_words if total_ref_words > 0 else 0.0
     counts["is_correct"] = counts["wer"] < 0.5 if total_ref_words > 0 else counts["wer_errors"] == 0
-    counts["reference_streams"] = [reference_map[key] for key in sorted(reference_map)]
-    counts["predicted_streams"] = [aligned_predictions.get(key, "") for key in sorted(reference_map)]
+    counts["aligned_predictions"] = aligned_predictions
+    counts["remaining_predictions"] = remaining_predictions
+    counts["extra_predictions"] = normalized_extras
     return counts
+
+
+def evaluate_librispeechmix_sa_asr(
+    references: list[str], speaker_profile_index: list[int], hypothesis: str, normalization_mode: str = "standard"
+) -> dict[str, Any]:
+    """Evaluate LibriSpeechMix speaker-attributed ASR using speaker-profile indices."""
+    reference_map = {
+        f"speaker_{speaker_idx}": preprocess_asr_text(reference, mode=normalization_mode)
+        for speaker_idx, reference in zip(speaker_profile_index, references)
+    }
+
+    strict_predictions, strict_extras = _parse_sa_asr_strict_hypothesis(hypothesis)
+    normalized_strict_predictions = {
+        speaker_label: preprocess_asr_text(text, mode=normalization_mode)
+        for speaker_label, text in strict_predictions.items()
+    }
+    normalized_strict_extras = [preprocess_asr_text(text, mode=normalization_mode) for text in strict_extras]
+    strict_result = _score_librispeechmix_sa_asr_map(
+        reference_map, normalized_strict_predictions, normalized_strict_extras
+    )
+
+    parsed = _parse_sa_asr_canonical_hypothesis(hypothesis, speaker_profile_index)
+    normalized_predictions = {
+        speaker_label: preprocess_asr_text(text, mode=normalization_mode)
+        for speaker_label, text in parsed["streams"].items()
+    }
+    normalized_extras = [preprocess_asr_text(text, mode=normalization_mode) for text in parsed["extras"]]
+    canonical_result = _score_librispeechmix_sa_asr_map(reference_map, normalized_predictions, normalized_extras)
+
+    content_prediction_streams = list(normalized_predictions.values()) + normalized_extras
+    content_result = _pick_best_librispeechmix_alignment(list(reference_map.values()), content_prediction_streams)
+
+    result = dict(canonical_result)
+    result.pop("remaining_predictions", None)
+    result.pop("extra_predictions", None)
+    result.update(_prefix_librispeechmix_wer_metrics(strict_result, "strict"))
+    result.update(_prefix_librispeechmix_wer_metrics(canonical_result, "canonical"))
+    result.update(_prefix_librispeechmix_wer_metrics(content_result, "content"))
+    result["reference_streams"] = [reference_map[key] for key in sorted(reference_map)]
+    result["predicted_streams"] = [canonical_result["aligned_predictions"].get(key, "") for key in sorted(reference_map)]
+    result["strict_predicted_streams"] = [strict_result["aligned_predictions"].get(key, "") for key in sorted(reference_map)]
+    result["content_predicted_streams"] = content_result.get("aligned_hypotheses", [])
+    result["content_aligned_reference_streams"] = content_result.get("aligned_references", [])
+    result["format_parse_status"] = parsed["format_parse_status"]
+    result["format_warnings"] = parsed["format_warnings"]
+    result["canonical_prediction"] = parsed["canonical_prediction"]
+    result["speaker_mapping"] = parsed["speaker_mapping"]
+    result["is_correct"] = canonical_result["is_correct"]
+    return result
 
 
 _BLEU_TOKENIZE_BY_LANG = {

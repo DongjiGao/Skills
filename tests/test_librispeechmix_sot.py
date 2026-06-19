@@ -16,7 +16,7 @@ import pytest
 from nemo_skills.dataset.utils import get_dataset_module
 from nemo_skills.evaluation.evaluator.librispeechmix_sot import LibriSpeechMixSOTEvaluator
 from nemo_skills.evaluation.metrics.librispeechmix_sot_metrics import LibriSpeechMixSOTMetrics
-from nemo_skills.evaluation.metrics.librispeechmix_sot_utils import cpwer, parse_sot_speaker_streams
+from nemo_skills.evaluation.metrics.librispeechmix_sot_utils import content_wer, cpwer, parse_sot_canonical, parse_sot_speaker_streams
 
 
 prepare = importlib.import_module("nemo_skills.dataset.librispeechmix-sot.prepare")
@@ -140,6 +140,75 @@ def test_sot_parser_and_cpwer_permutation_invariance():
     assert result["cpwer"] == 0.0
 
 
+
+def test_sot_canonical_parser_accepts_exact_bracket_tags():
+    parsed = parse_sot_canonical("[s0] hello")
+    assert parsed["format_parse_status"] == "exact"
+    assert parsed["canonical_prediction"] == {"segments": [{"speaker": "s0", "text": "hello"}]}
+
+    result = cpwer("[s0] hello", "[s0] hello")
+    assert result["errors"] == 0
+    assert result["format_parse_status"] == "exact"
+
+
+def test_sot_canonical_parser_accepts_spk_tags_but_strict_keeps_contract():
+    parsed = parse_sot_canonical("<spk:0> hello")
+    assert parsed["format_parse_status"] == "recovered"
+    assert parsed["speaker_mapping"] == {"<spk:0>": "s0"}
+
+    canonical_result = cpwer("[s0] hello", "<spk:0> hello")
+    strict_result = cpwer("[s0] hello", "<spk:0> hello", hypothesis_mode="strict")
+    assert canonical_result["errors"] == 0
+    assert strict_result["errors"] > 0
+
+
+def test_sot_canonical_parser_accepts_speaker_dash_dialect():
+    result = cpwer("[s0] hello", "Speaker 0 - hello")
+    assert result["errors"] == 0
+    assert result["format_parse_status"] == "recovered"
+    assert result["speaker_mapping"] == {"speaker_0": "s0"}
+
+
+def test_sot_canonical_parser_concatenates_repeated_speaker_segments():
+    result = cpwer("[s0] hello world", "<spk:0> hello <spk:0> world")
+    assert result["errors"] == 0
+    assert result["hypothesis_streams"] == {"s0": "hello world"}
+
+
+def test_sot_untagged_single_speaker_is_canonical_recovered_but_not_strict():
+    canonical = cpwer("[s0] hello", "hello")
+    strict = cpwer("[s0] hello", "hello", hypothesis_mode="strict")
+    flat = content_wer("[s0] hello", "hello")
+
+    assert canonical["format_parse_status"] == "recovered"
+    assert "untagged_text_assigned_single_reference_speaker" in canonical["format_warnings"]
+    assert canonical["errors"] == 0
+    assert strict["format_parse_status"] == "failed"
+    assert strict["errors"] > 0
+    assert flat["wer"] == pytest.approx(0.0)
+
+
+def test_sot_untagged_multi_speaker_keeps_flattened_content_diagnostic_separate():
+    result = cpwer("[s0] hello [s1] world", "hello world")
+    flat = content_wer("[s0] hello [s1] world", "hello world")
+
+    assert result["format_parse_status"] == "failed"
+    assert result["errors"] > 0
+    assert flat["wer"] == pytest.approx(0.0)
+
+
+def test_sot_canonical_collapses_extra_predicted_speakers_for_single_reference_speaker():
+    canonical = cpwer("[s0] a b c", "[s0] a [s1] b c")
+    strict = cpwer("[s0] a b c", "[s0] a [s1] b c", hypothesis_mode="strict")
+    flat = content_wer("[s0] a b c", "[s0] a [s1] b c")
+
+    assert canonical["format_parse_status"] == "recovered"
+    assert "collapsed_predicted_speakers_single_reference" in canonical["format_warnings"]
+    assert canonical["errors"] == 0
+    assert canonical["hypothesis_streams"] == {"s0": "a b c"}
+    assert strict["errors"] > 0
+    assert flat["wer"] == pytest.approx(0.0)
+
 @pytest.mark.parametrize(
     ("hypothesis", "errors", "ref_words"),
     [
@@ -157,6 +226,34 @@ def test_cpwer_missing_extra_empty_hypothesis(hypothesis, errors, ref_words):
 def test_cpwer_punctuation_case_normalization():
     result = cpwer("[s0] Hello, WORLD!", "[s0] hello world")
     assert result["errors"] == 0
+    assert result["canonical_reference"] == {"segments": [{"speaker": "s0", "text": "Hello, WORLD!"}]}
+
+
+def test_cpwer_uses_asr_standard_number_normalization():
+    result = cpwer("[s0] ten seconds", "[s0] 10 seconds")
+    assert result["errors"] == 0
+
+
+def test_group_score_reports_mix_count_breakdowns():
+    group_module = importlib.import_module("nemo_skills.dataset.librispeechmix-sot.librispeechmix_sot_score")
+    combined = {
+        "librispeechmix-sot.under20s-dev-clean-1mix": {
+            "pass@1": {"cpwer_errors": 1, "cpwer_ref_words": 10, "num_entries": 1}
+        },
+        "librispeechmix-sot.under20s-dev-clean-2mix": {
+            "pass@1": {"cpwer_errors": 2, "cpwer_ref_words": 10, "num_entries": 1}
+        },
+        "librispeechmix-sot.over20s-test-clean-3mix": {
+            "pass@1": {"cpwer_errors": 3, "cpwer_ref_words": 10, "num_entries": 1}
+        },
+    }
+
+    output = group_module.compute_score(combined)["pass@1"]
+
+    assert output["1mix"]["cpwer"] == 10.0
+    assert output["2mix"]["cpwer"] == 20.0
+    assert output["3mix"]["cpwer"] == 30.0
+    assert output["all"]["cpwer"] == 20.0
 
 
 def test_metrics_use_corpus_level_raw_counts():

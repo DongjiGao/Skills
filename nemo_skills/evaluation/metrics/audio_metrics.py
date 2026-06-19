@@ -132,6 +132,10 @@ class AudioMetrics(BaseMetrics):
         # Dataset-specific WER variants from additional reference fields (e.g., wer_tn, wer_itn).
         self.reference_wer_scores: dict[str, list[float]] = {}
 
+        # Structured LibriSpeechMix scoring exposes strict/canonical/content WERs as separate streams.
+        self.structured_wer_scores: dict[str, list[float]] = {}
+        self.structured_wer_totals: dict[str, dict[str, int]] = {}
+
     def _extract_judge_result(self, judgement_text: str) -> tuple[bool, float]:
         """Extract judge result from judgement text.
 
@@ -251,6 +255,29 @@ class AudioMetrics(BaseMetrics):
                 self.wer_total_deletions += pred["wer_deletions"]
             if "wer" in pred and pred["wer"] is not None:
                 self.wer_scores.append(pred["wer"])
+
+            for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+                if wer_name in pred and pred[wer_name] is not None:
+                    self.structured_wer_scores.setdefault(wer_name, []).append(pred[wer_name])
+
+                errors_key = f"{wer_name}_errors"
+                ref_words_key = f"{wer_name}_ref_words"
+                if errors_key in pred and ref_words_key in pred:
+                    totals = self.structured_wer_totals.setdefault(
+                        wer_name,
+                        {
+                            "errors": 0,
+                            "ref_words": 0,
+                            "substitutions": 0,
+                            "insertions": 0,
+                            "deletions": 0,
+                        },
+                    )
+                    totals["errors"] += pred.get(errors_key, 0)
+                    totals["ref_words"] += pred.get(ref_words_key, 0)
+                    totals["substitutions"] += pred.get(f"{wer_name}_substitutions", 0)
+                    totals["insertions"] += pred.get(f"{wer_name}_insertions", 0)
+                    totals["deletions"] += pred.get(f"{wer_name}_deletions", 0)
             if "wer_c" in pred and pred["wer_c"] is not None:
                 self.wer_c_scores.append(pred["wer_c"])
             if "wer_pc" in pred and pred["wer_pc"] is not None:
@@ -352,6 +379,18 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["wer"] = round(100.0 * self.wer_total_errors / self.wer_total_ref_words, 2)
             if self.wer_scores:
                 agg_metrics["wer_macro"] = round(100.0 * sum(self.wer_scores) / len(self.wer_scores), 2)
+            for wer_name, totals in self.structured_wer_totals.items():
+                ref_words = totals.get("ref_words", 0)
+                if ref_words > 0:
+                    agg_metrics[wer_name] = round(100.0 * totals.get("errors", 0) / ref_words, 2)
+                    agg_metrics[f"{wer_name}_errors"] = totals.get("errors", 0)
+                    agg_metrics[f"{wer_name}_substitutions"] = totals.get("substitutions", 0)
+                    agg_metrics[f"{wer_name}_insertions"] = totals.get("insertions", 0)
+                    agg_metrics[f"{wer_name}_deletions"] = totals.get("deletions", 0)
+                    agg_metrics[f"{wer_name}_ref_words"] = ref_words
+            for wer_name, values in self.structured_wer_scores.items():
+                if values:
+                    agg_metrics[f"{wer_name}_macro"] = round(100.0 * sum(values) / len(values), 2)
             if self.wer_c_scores:
                 agg_metrics["wer_c"] = round(100.0 * sum(self.wer_c_scores) / len(self.wer_c_scores), 2)
             if self.wer_pc_scores:
@@ -435,6 +474,11 @@ class AudioMetrics(BaseMetrics):
             base_metrics["wer_macro"] = as_percentage
         if self.wer_total_ref_words > 0:
             base_metrics["wer"] = as_percentage
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+            if wer_name in self.structured_wer_scores:
+                base_metrics[f"{wer_name}_macro"] = as_percentage
+            if wer_name in self.structured_wer_totals and self.structured_wer_totals[wer_name].get("ref_words", 0) > 0:
+                base_metrics[wer_name] = as_percentage
         if self.cer_scores:
             base_metrics["cer_macro"] = as_percentage
         if self.cer_total_ref_chars > 0:
@@ -445,6 +489,14 @@ class AudioMetrics(BaseMetrics):
             base_metrics["insertions"] = as_int
             base_metrics["deletions"] = as_int
             base_metrics["ref_words"] = as_int
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+            totals = self.structured_wer_totals.get(wer_name)
+            if totals and totals.get("ref_words", 0) > 0:
+                base_metrics[f"{wer_name}_errors"] = as_int
+                base_metrics[f"{wer_name}_substitutions"] = as_int
+                base_metrics[f"{wer_name}_insertions"] = as_int
+                base_metrics[f"{wer_name}_deletions"] = as_int
+                base_metrics[f"{wer_name}_ref_words"] = as_int
         if self.wer_c_scores:
             base_metrics["wer_c"] = as_percentage
         if self.wer_pc_scores:

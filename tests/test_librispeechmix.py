@@ -72,6 +72,118 @@ def test_librispeechmix_sa_asr_uses_speaker_indices_not_order():
     assert metrics["is_correct"] is True
 
 
+
+def test_librispeechmix_sa_asr_canonical_exact_speaker_label():
+    metrics = evaluate_librispeechmix_sa_asr(
+        references=["hello"],
+        speaker_profile_index=[5],
+        hypothesis="speaker_5: hello",
+        normalization_mode="none",
+    )
+
+    assert metrics["format_parse_status"] == "exact"
+    assert metrics["wer"] == pytest.approx(0.0)
+    assert metrics["strict_wer"] == pytest.approx(0.0)
+    assert metrics["canonical_wer"] == pytest.approx(0.0)
+    assert metrics["canonical_prediction"] == {"streams": {"speaker_5": "hello"}}
+
+
+def test_librispeechmix_sa_asr_maps_spk_tag_to_profile_index():
+    metrics = evaluate_librispeechmix_sa_asr(
+        references=["hello"],
+        speaker_profile_index=[5],
+        hypothesis="<spk:0> hello",
+        normalization_mode="none",
+    )
+
+    assert metrics["format_parse_status"] == "recovered"
+    assert metrics["speaker_mapping"] == {"<spk:0>": "speaker_5"}
+    assert metrics["canonical_prediction"] == {"streams": {"speaker_5": "hello"}}
+    assert metrics["canonical_wer"] == pytest.approx(0.0)
+    assert metrics["strict_wer"] > 0.0
+
+
+def test_librispeechmix_sa_asr_maps_s_bracket_tag_to_profile_index():
+    metrics = evaluate_librispeechmix_sa_asr(
+        references=["hello"],
+        speaker_profile_index=[5],
+        hypothesis="[s0] hello",
+        normalization_mode="none",
+    )
+
+    assert metrics["format_parse_status"] == "recovered"
+    assert metrics["speaker_mapping"] == {"[s0]": "speaker_5"}
+    assert metrics["canonical_wer"] == pytest.approx(0.0)
+
+
+def test_librispeechmix_sa_asr_concatenates_repeated_speaker_tags():
+    metrics = evaluate_librispeechmix_sa_asr(
+        references=["hello world"],
+        speaker_profile_index=[5],
+        hypothesis="<spk:0> hello <spk:0> world",
+        normalization_mode="none",
+    )
+
+    assert metrics["format_parse_status"] == "recovered"
+    assert metrics["canonical_prediction"] == {"streams": {"speaker_5": "hello world"}}
+    assert metrics["canonical_wer"] == pytest.approx(0.0)
+
+
+def test_librispeechmix_sa_asr_failed_parse_keeps_content_diagnostic_separate():
+    metrics = evaluate_librispeechmix_sa_asr(
+        references=["hello"],
+        speaker_profile_index=[5],
+        hypothesis="hello",
+        normalization_mode="none",
+    )
+
+    assert metrics["format_parse_status"] == "failed"
+    assert "unlabeled_text_scored_as_insertion" in metrics["format_warnings"]
+    assert metrics["canonical_wer"] > 0.0
+    assert metrics["content_wer"] == pytest.approx(0.0)
+
+
+def test_audio_metrics_aggregates_structured_wer_variants():
+    metrics = AudioMetrics(compute_no_answer=False, max_k=1)
+    metrics.update(
+        [
+            {
+                "generation": "<spk:0> hello",
+                "is_correct": True,
+                "wer": 0.0,
+                "wer_errors": 0,
+                "wer_ref_words": 1,
+                "wer_substitutions": 0,
+                "wer_insertions": 0,
+                "wer_deletions": 0,
+                "strict_wer": 1.0,
+                "strict_wer_errors": 1,
+                "strict_wer_ref_words": 1,
+                "strict_wer_substitutions": 1,
+                "strict_wer_insertions": 0,
+                "strict_wer_deletions": 0,
+                "canonical_wer": 0.0,
+                "canonical_wer_errors": 0,
+                "canonical_wer_ref_words": 1,
+                "canonical_wer_substitutions": 0,
+                "canonical_wer_insertions": 0,
+                "canonical_wer_deletions": 0,
+                "content_wer": 0.0,
+                "content_wer_errors": 0,
+                "content_wer_ref_words": 1,
+                "content_wer_substitutions": 0,
+                "content_wer_insertions": 0,
+                "content_wer_deletions": 0,
+            }
+        ]
+    )
+
+    aggregated = metrics.get_metrics()["pass@1"]
+    assert aggregated["wer"] == 0.0
+    assert aggregated["strict_wer"] == 100.0
+    assert aggregated["canonical_wer"] == 0.0
+    assert aggregated["content_wer"] == 0.0
+
 def test_librispeechmix_prepare_records_writes_absolute_paths(tmp_path):
     from nemo_skills.dataset.librispeechmix.prepare import (
         build_output_record,

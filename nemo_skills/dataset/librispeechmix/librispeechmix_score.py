@@ -13,6 +13,19 @@
 # limitations under the License.
 
 
+def _aggregate_wer_counts(aggregated: dict, metrics_name: str, totals: dict) -> None:
+    ref_words = totals.get("ref_words", 0)
+    if ref_words <= 0:
+        return
+    errors = totals.get("errors", 0)
+    aggregated[metrics_name] = round(100.0 * errors / ref_words, 2)
+    aggregated[f"{metrics_name}_errors"] = errors
+    aggregated[f"{metrics_name}_substitutions"] = totals.get("substitutions", 0)
+    aggregated[f"{metrics_name}_insertions"] = totals.get("insertions", 0)
+    aggregated[f"{metrics_name}_deletions"] = totals.get("deletions", 0)
+    aggregated[f"{metrics_name}_ref_words"] = ref_words
+
+
 def _aggregate_bucket(benchmarks: dict, eval_mode: str) -> dict:
     total_entries = 0
     total_ref_words = 0
@@ -23,6 +36,10 @@ def _aggregate_bucket(benchmarks: dict, eval_mode: str) -> dict:
     weighted_no_answer = 0.0
     weighted_tokens = 0.0
     total_gen_seconds = 0
+    structured_totals = {
+        name: {"errors": 0, "ref_words": 0, "substitutions": 0, "insertions": 0, "deletions": 0}
+        for name in ("strict_wer", "canonical_wer", "content_wer")
+    }
 
     for benchmark_data in benchmarks.values():
         metrics = benchmark_data.get(eval_mode)
@@ -44,6 +61,13 @@ def _aggregate_bucket(benchmarks: dict, eval_mode: str) -> dict:
         total_insertions += metrics.get("insertions", 0)
         total_deletions += metrics.get("deletions", 0)
 
+        for metric_name, totals in structured_totals.items():
+            totals["errors"] += metrics.get(f"{metric_name}_errors", 0)
+            totals["ref_words"] += metrics.get(f"{metric_name}_ref_words", 0)
+            totals["substitutions"] += metrics.get(f"{metric_name}_substitutions", 0)
+            totals["insertions"] += metrics.get(f"{metric_name}_insertions", 0)
+            totals["deletions"] += metrics.get(f"{metric_name}_deletions", 0)
+
     if total_entries == 0:
         return {}
 
@@ -62,6 +86,9 @@ def _aggregate_bucket(benchmarks: dict, eval_mode: str) -> dict:
         aggregated["deletions"] = total_deletions
         aggregated["ref_words"] = total_ref_words
         aggregated["wer"] = round(100.0 * total_errors / total_ref_words, 2)
+
+    for metric_name, totals in structured_totals.items():
+        _aggregate_wer_counts(aggregated, metric_name, totals)
 
     return aggregated
 
@@ -92,6 +119,11 @@ def compute_score(combined_metrics: dict) -> dict:
             overall["asr_wer"] = asr_bucket["wer"]
         if sa_asr_bucket.get("wer") is not None:
             overall["sa_asr_wer"] = sa_asr_bucket["wer"]
+        for metric_name in ("strict_wer", "canonical_wer", "content_wer"):
+            if asr_bucket.get(metric_name) is not None:
+                overall[f"asr_{metric_name}"] = asr_bucket[metric_name]
+            if sa_asr_bucket.get(metric_name) is not None:
+                overall[f"sa_asr_{metric_name}"] = sa_asr_bucket[metric_name]
         if asr_bucket.get("num_entries") is not None:
             overall["asr_num_entries"] = asr_bucket["num_entries"]
         if sa_asr_bucket.get("num_entries") is not None:

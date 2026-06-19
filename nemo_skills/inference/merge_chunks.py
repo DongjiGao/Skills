@@ -18,6 +18,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 
 def unescape_shell_command(command: str) -> str:
@@ -43,6 +44,11 @@ else:
     input_files = sys.argv[2:]
     post_merge_command = None
 
+output_done_file = f"{output_file}.done"
+if os.path.isfile(output_done_file) and os.path.isfile(output_file):
+    print(f"Info: {output_file} is already merged. Exiting.")
+    sys.exit(0)
+
 # Check for .done files and actual input files
 for file_ in input_files:
     done_file = f"{file_}.done"
@@ -53,16 +59,19 @@ for file_ in input_files:
         print(f"Info: {file_} not found. Exiting.")
         sys.exit(0)
 
+output_dir = os.path.dirname(output_file) or "."
+
 # Concatenate the files using subprocess
 try:
-    with open(output_file, "w") as out_f:
+    with tempfile.NamedTemporaryFile("w", dir=output_dir, prefix=f".{os.path.basename(output_file)}.", delete=False) as out_f:
+        tmp_output_file = out_f.name
         subprocess.run(["cat"] + input_files, stdout=out_f, check=True)
+    os.replace(tmp_output_file, output_file)
     print(f"Successfully concatenated {len(input_files)} files to {output_file}")
 
-    # Create .done file and delete input files
-    open(f"{output_file}.done", "w").close()
-    for file_ in input_files:
-        os.remove(file_)
+    # Create .done file. Keep chunk files because sibling workers may still be
+    # attempting the same idempotent merge.
+    open(output_done_file, "w").close()
 
     # Execute the post-merge command, if provided
     if post_merge_command:
@@ -71,4 +80,9 @@ try:
 
 except subprocess.CalledProcessError as e:
     print(f"An error occurred: {e}")
+    if "tmp_output_file" in locals():
+        try:
+            os.remove(tmp_output_file)
+        except OSError:
+            pass
     sys.exit(1)

@@ -358,6 +358,13 @@ def prepare_split_mix(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare LibriSpeechMix SOT benchmark manifests.")
     parser.add_argument("--data_dir", type=str, default=None, help="External data/artifact root.")
+    parser.add_argument(
+        "--dataset-root",
+        dest="data_dir",
+        type=str,
+        default=None,
+        help="Alias for --data_dir that does not conflict with ns prepare_data's top-level --data_dir.",
+    )
     parser.add_argument("--audio-prefix", type=str, default=None, help="Audio path prefix embedded in manifests.")
     parser.add_argument("--no-audio", action="store_true", help="Do not download or materialize audio.")
     parser.add_argument("--splits", nargs="+", default=["test-clean"], help="LibriSpeechMix splits or 'all'.")

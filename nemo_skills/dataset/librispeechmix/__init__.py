@@ -28,3 +28,21 @@ BENCHMARKS = {
     for split_name in _SPLITS
     for mix_name in _MIXES
 }
+
+FORMAT_EXPECTATIONS = {
+    "librispeechmix.asr": {
+        "task_type": "asr",
+        "speaker_label_namespace": None,
+        "allowed_output_dialects": ["plain_lines", "speaker_N_colon", "speaker_N_dash", "spk_tag", "s_bracket"],
+        "repeated_speaker_turns_legal": True,
+        "flattened_diagnostic_allowed": True,
+    },
+    "librispeechmix.sa-asr": {
+        "task_type": "sa_asr",
+        "speaker_label_namespace": "profile_ids",
+        "allowed_output_dialects": ["speaker_N_colon", "speaker_N_dash", "spk_tag", "s_bracket"],
+        "repeated_speaker_turns_legal": True,
+        "flattened_diagnostic_allowed": True,
+    },
+}
+

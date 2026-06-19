@@ -22,10 +22,17 @@ class LibriSpeechMixSOTMetrics(BaseMetrics):
     def get_incorrect_sample(self, prediction: dict) -> dict:
         prediction = prediction.copy()
         prediction["is_correct"] = False
-        prediction["cpwer_errors"] = prediction.get("cpwer_ref_words", 0)
-        prediction["cpwer_deletions"] = prediction.get("cpwer_ref_words", 0)
-        prediction["cpwer_insertions"] = 0
-        prediction["cpwer_substitutions"] = 0
+        ref_words = prediction.get("cpwer_ref_words", 0)
+        for metric_name in ("cpwer", "strict_cpwer", "canonical_cpwer"):
+            prediction[f"{metric_name}_errors"] = prediction.get(f"{metric_name}_ref_words", ref_words)
+            prediction[f"{metric_name}_deletions"] = prediction.get(f"{metric_name}_ref_words", ref_words)
+            prediction[f"{metric_name}_insertions"] = 0
+            prediction[f"{metric_name}_substitutions"] = 0
+        if "content_wer_ref_words" in prediction:
+            prediction["content_wer_errors"] = prediction.get("content_wer_ref_words", 0)
+            prediction["content_wer_deletions"] = prediction.get("content_wer_ref_words", 0)
+            prediction["content_wer_insertions"] = 0
+            prediction["content_wer_substitutions"] = 0
         return prediction
 
     def update(self, predictions: list[dict]) -> None:
@@ -36,30 +43,28 @@ class LibriSpeechMixSOTMetrics(BaseMetrics):
             self._compute_majority_at_k(predictions=predictions, predicted_answers=predicted_answers)
 
         first = predictions[0]
+        raw_metric_names = ["cpwer", "strict_cpwer", "canonical_cpwer", "content_wer"]
+        raw_suffixes = ["errors", "substitutions", "insertions", "deletions", "ref_words"]
         for mode in ["pass@1", "pass@1[avg-of-1]"]:
-            self.eval_dict[mode]["cpwer_errors"] += first.get("cpwer_errors", 0)
-            self.eval_dict[mode]["cpwer_substitutions"] += first.get("cpwer_substitutions", 0)
-            self.eval_dict[mode]["cpwer_insertions"] += first.get("cpwer_insertions", 0)
-            self.eval_dict[mode]["cpwer_deletions"] += first.get("cpwer_deletions", 0)
-            self.eval_dict[mode]["cpwer_ref_words"] += first.get("cpwer_ref_words", 0)
+            for metric_name in raw_metric_names:
+                for suffix in raw_suffixes:
+                    key = f"{metric_name}_{suffix}"
+                    self.eval_dict[mode][key] += first.get(key, 0)
 
     def get_metrics(self) -> dict:
         metrics_dict = super().get_metrics()
-        raw_count_keys = [
-            "cpwer_errors",
-            "cpwer_substitutions",
-            "cpwer_insertions",
-            "cpwer_deletions",
-            "cpwer_ref_words",
-        ]
+        raw_metric_names = ["cpwer", "strict_cpwer", "canonical_cpwer", "content_wer"]
+        raw_suffixes = ["errors", "substitutions", "insertions", "deletions", "ref_words"]
         for mode, metrics in metrics_dict.items():
             raw_metrics = self.eval_dict.get(mode, {})
-            for key in raw_count_keys:
-                metrics[key] = int(raw_metrics.get(key, 0))
-            ref_words = metrics.get("cpwer_ref_words", 0)
-            errors = metrics.get("cpwer_errors", 0)
-            if ref_words > 0:
-                metrics["cpwer"] = round(100.0 * errors / ref_words, 2)
+            for metric_name in raw_metric_names:
+                for suffix in raw_suffixes:
+                    key = f"{metric_name}_{suffix}"
+                    metrics[key] = int(raw_metrics.get(key, 0))
+                ref_words = metrics.get(f"{metric_name}_ref_words", 0)
+                errors = metrics.get(f"{metric_name}_errors", 0)
+                if ref_words > 0:
+                    metrics[metric_name] = round(100.0 * errors / ref_words, 2)
         return metrics_dict
 
     def evaluations_to_print(self) -> list[str]:
@@ -74,6 +79,24 @@ class LibriSpeechMixSOTMetrics(BaseMetrics):
             "cpwer_insertions": as_int,
             "cpwer_deletions": as_int,
             "cpwer_ref_words": as_int,
+            "strict_cpwer": as_float,
+            "strict_cpwer_errors": as_int,
+            "strict_cpwer_substitutions": as_int,
+            "strict_cpwer_insertions": as_int,
+            "strict_cpwer_deletions": as_int,
+            "strict_cpwer_ref_words": as_int,
+            "canonical_cpwer": as_float,
+            "canonical_cpwer_errors": as_int,
+            "canonical_cpwer_substitutions": as_int,
+            "canonical_cpwer_insertions": as_int,
+            "canonical_cpwer_deletions": as_int,
+            "canonical_cpwer_ref_words": as_int,
+            "content_wer": as_float,
+            "content_wer_errors": as_int,
+            "content_wer_substitutions": as_int,
+            "content_wer_insertions": as_int,
+            "content_wer_deletions": as_int,
+            "content_wer_ref_words": as_int,
             "num_entries": as_int,
         }
         if self.compute_no_answer:
