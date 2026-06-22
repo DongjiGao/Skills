@@ -58,6 +58,7 @@ DATASETS = [
     ("contextasr-bench", ["test"]),
     ("contextual-earnings22", ["test"]),
     ("apptek-callcenter-dialogues", ["test"]),
+    ("cs-fleurs", ["test"]),
     ("audiobench", ["test"]),
     ("librispeech-pc", ["test"]),
     ("librispeechmix-sot", ["test"]),
