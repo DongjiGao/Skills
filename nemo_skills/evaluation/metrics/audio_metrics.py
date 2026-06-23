@@ -101,6 +101,14 @@ class AudioMetrics(BaseMetrics):
         self.wer_total_insertions = 0
         self.wer_total_deletions = 0
 
+        # Corpus-level cpWER accumulators (multispeaker ASR)
+        self.cpwer_total_errors = 0
+        self.cpwer_total_ref_words = 0
+        self.cpwer_total_substitutions = 0
+        self.cpwer_total_insertions = 0
+        self.cpwer_total_deletions = 0
+        self.cpwer_scores = []
+
         self.wer_c_scores = []
         self.wer_pc_scores = []
         self.per_scores = []
@@ -256,6 +264,15 @@ class AudioMetrics(BaseMetrics):
             if "wer" in pred and pred["wer"] is not None:
                 self.wer_scores.append(pred["wer"])
 
+            if "cpwer_errors" in pred and "cpwer_ref_words" in pred:
+                self.cpwer_total_errors += pred["cpwer_errors"]
+                self.cpwer_total_ref_words += pred["cpwer_ref_words"]
+                self.cpwer_total_substitutions += pred["cpwer_substitutions"]
+                self.cpwer_total_insertions += pred["cpwer_insertions"]
+                self.cpwer_total_deletions += pred["cpwer_deletions"]
+            if "cpwer" in pred and pred["cpwer"] is not None:
+                self.cpwer_scores.append(pred["cpwer"])
+
             for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
                 if wer_name in pred and pred[wer_name] is not None:
                     self.structured_wer_scores.setdefault(wer_name, []).append(pred[wer_name])
@@ -379,6 +396,15 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["wer"] = round(100.0 * self.wer_total_errors / self.wer_total_ref_words, 2)
             if self.wer_scores:
                 agg_metrics["wer_macro"] = round(100.0 * sum(self.wer_scores) / len(self.wer_scores), 2)
+            if self.cpwer_total_ref_words > 0:
+                agg_metrics["cpwer_substitutions"] = self.cpwer_total_substitutions
+                agg_metrics["cpwer_insertions"] = self.cpwer_total_insertions
+                agg_metrics["cpwer_deletions"] = self.cpwer_total_deletions
+                agg_metrics["cpwer_ref_words"] = self.cpwer_total_ref_words
+                agg_metrics["cpwer_errors"] = self.cpwer_total_errors
+                agg_metrics["cpwer"] = round(100.0 * self.cpwer_total_errors / self.cpwer_total_ref_words, 2)
+            if self.cpwer_scores:
+                agg_metrics["cpwer_macro"] = round(100.0 * sum(self.cpwer_scores) / len(self.cpwer_scores), 2)
             for wer_name, totals in self.structured_wer_totals.items():
                 ref_words = totals.get("ref_words", 0)
                 if ref_words > 0:
@@ -474,6 +500,14 @@ class AudioMetrics(BaseMetrics):
             base_metrics["wer_macro"] = as_percentage
         if self.wer_total_ref_words > 0:
             base_metrics["wer"] = as_percentage
+        if self.cpwer_scores:
+            base_metrics["cpwer_macro"] = as_percentage
+        if self.cpwer_total_ref_words > 0:
+            base_metrics["cpwer"] = as_percentage
+            base_metrics["cpwer_substitutions"] = as_int
+            base_metrics["cpwer_insertions"] = as_int
+            base_metrics["cpwer_deletions"] = as_int
+            base_metrics["cpwer_ref_words"] = as_int
         for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
             if wer_name in self.structured_wer_scores:
                 base_metrics[f"{wer_name}_macro"] = as_percentage

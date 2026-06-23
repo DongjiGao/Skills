@@ -23,8 +23,9 @@ def test_group_registration():
     assert "multispeaker-sot.over20s-mixer6-ch04-test" in group_module.BENCHMARKS
 
     sub_module, _ = get_dataset_module("multispeaker-sot.under20s-ami-ihm-dev")
-    assert sub_module.METRICS_TYPE == "librispeechmix_sot"
-    assert "++eval_config.reference_tag_style=spk" in sub_module.EVAL_ARGS
+    assert sub_module.METRICS_TYPE == "audio"
+    assert "++eval_config.speaker_token='<spk:*>'" in sub_module.EVAL_ARGS
+    assert "++eval_config.cpwer_normalization=chime8" in sub_module.EVAL_ARGS
 
 
 def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
@@ -177,32 +178,32 @@ def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
     assert {entry["session_id"] for entry in ref_entries} == {"EN2002a"}
 
 
-def test_group_score_reports_duration_collapsed_dataset_and_mix_canonical_cpwer():
+def test_group_score_reports_duration_collapsed_dataset_and_mix_cpwer():
     group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
     combined = {
         "multispeaker-sot.under20s-ami-ihm-test": {
-            "pass@1": {"canonical_cpwer_errors": 3, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 3, "cpwer_ref_words": 10, "num_entries": 1}
         },
         "multispeaker-sot.over20s-ami-ihm-test": {
-            "pass@1": {"canonical_cpwer_errors": 7, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 7, "cpwer_ref_words": 10, "num_entries": 1}
         },
         "multispeaker-sot.under20s-lsm-test-clean-1mix": {
-            "pass@1": {"canonical_cpwer_errors": 1, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 1, "cpwer_ref_words": 10, "num_entries": 1}
         },
         "multispeaker-sot.under20s-lsm-test-clean-2mix": {
-            "pass@1": {"canonical_cpwer_errors": 2, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 2, "cpwer_ref_words": 10, "num_entries": 1}
         },
         "multispeaker-sot.under20s-lsm-test-clean-3mix": {
-            "pass@1": {"canonical_cpwer_errors": 3, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 3, "cpwer_ref_words": 10, "num_entries": 1}
         },
     }
 
     output = group_module.compute_score(combined)["pass@1"]
 
-    assert output["ami-ihm-test"]["canonical_cpwer"] == 50.0
-    assert output["lsm-test-clean"]["canonical_cpwer"] == 20.0
-    assert output["1mix"]["canonical_cpwer"] == 10.0
-    assert output["2mix"]["canonical_cpwer"] == 20.0
-    assert output["3mix"]["canonical_cpwer"] == 30.0
-    assert output["all"]["canonical_cpwer"] == 32.0
+    assert output["ami-ihm-test"]["cpwer"] == 50.0
+    assert output["lsm-test-clean"]["cpwer"] == 20.0
+    assert output["1mix"]["cpwer"] == 10.0
+    assert output["2mix"]["cpwer"] == 20.0
+    assert output["3mix"]["cpwer"] == 30.0
+    assert output["all"]["cpwer"] == 32.0
     assert "4mix" not in output

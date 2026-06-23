@@ -20,3 +20,6 @@ torchcodec
 
 # Lightweight text normalization (EnglishTextNormalizer)
 whisper-normalizer
+
+# NeMo-compatible cpWER edit distance (Hungarian assignment)
+kaldialign

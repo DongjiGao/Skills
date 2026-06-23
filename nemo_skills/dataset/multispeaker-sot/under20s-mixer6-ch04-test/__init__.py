@@ -1,3 +1,5 @@
-METRICS_TYPE = "librispeechmix_sot"
-EVAL_ARGS = "++eval_type=librispeechmix_sot ++eval_config.reference_tag_style=spk ++eval_config.hypothesis_strict_tag_style=spk"
+METRICS_TYPE = "audio"
+EVAL_ARGS = "++eval_type=audio ++eval_config.speaker_token='<spk:*>' ++eval_config.cpwer_normalization=chime8"
 GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
+GENERATION_MODULE = "nemo_skills.inference.generate"
+EVAL_SPLIT = "test"

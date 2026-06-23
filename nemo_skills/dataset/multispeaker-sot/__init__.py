@@ -28,7 +28,7 @@ BENCHMARKS = {f"multispeaker-sot.{name}": {} for name in BENCHMARK_MANIFESTS}
 
 FORMAT_EXPECTATIONS = {
     "multispeaker-sot": {
-        "task_type": "sot",
+        "task_type": "MS-ASR",
         "speaker_label_namespace": "ordinal_speakers",
         "allowed_output_dialects": ["spk_tag", "s_bracket", "speaker_N_colon", "speaker_N_dash"],
         "preferred_output_dialect": "spk_tag",

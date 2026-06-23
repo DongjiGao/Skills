@@ -458,6 +458,8 @@ def build_record(
         "speaker_tag_map": speaker_tag_map,
         "speaker_tag_style": speaker_tag_style,
         "subset_for_metrics": benchmark,
+        "task_type": "MS-ASR",
+        "category": "nonjudge",
         "messages": [
             {
                 "role": "user",

@@ -44,6 +44,10 @@ class AudioEvaluatorConfig(BaseEvaluatorConfig):
     # For each field, WER will be computed and stored with corresponding metric name
     reference_fields: list[str] | None = None
 
+    # Multispeaker ASR (cpWER) settings
+    speaker_token: str = "<spk:*>"
+    cpwer_normalization: str = "chime8"
+
 
 # non-ASCII letters that are not separated by "NFKD" normalization
 ADDITIONAL_DIACRITICS = {
@@ -408,7 +412,100 @@ VALID_NORMALIZATION_MODES = (
     "multilingual",
     "apptek_callcenter",
 )
-TASKS_NEED_PARSING = {"ASR", "ASR-PC", "ASR_LEADERBOARD", "Multilingual-ASR", "CER", "Hallucination", "PC-Rate"}
+VALID_CPWER_NORMALIZATION_MODES = ("chime8", "none")
+TASKS_NEED_PARSING = {
+    "ASR",
+    "ASR-PC",
+    "ASR_LEADERBOARD",
+    "Multilingual-ASR",
+    "MS-ASR",
+    "CER",
+    "Hallucination",
+    "PC-Rate",
+}
+
+
+def resolve_speaker_tag_style(speaker_token: str) -> str:
+    """Map configured speaker token pattern to SOT strict tag style."""
+    token = (speaker_token or "<spk:*>").strip().lower()
+    if token in {"<spk:*>", "<spk:n>", "spk", "spk_tag"}:
+        return "spk"
+    if token in {"[s*]", "[sn]", "s_bracket", "[s0]"}:
+        return "s_bracket"
+    if token in {"both", "all"}:
+        return "both"
+    raise ValueError(
+        f"Unsupported speaker_token '{speaker_token}'. "
+        "Expected '<spk:*>' (default), '[s*]', or 'both'."
+    )
+
+
+def normalize_cpwer_stream(text: str, mode: str = "chime8") -> str:
+    """Normalize one speaker stream for cpWER scoring."""
+    if mode not in VALID_CPWER_NORMALIZATION_MODES:
+        raise ValueError(
+            f"Invalid cpwer_normalization '{mode}'. "
+            f"Available options: {', '.join(VALID_CPWER_NORMALIZATION_MODES)}"
+        )
+    if mode == "none":
+        return normalize_whitespace(text or "")
+    from nemo_skills.evaluation.metrics.chime8_normalizer import normalize as normalize_chime8
+
+    return normalize_chime8(text or "")
+
+
+def evaluate_msasr(
+    reference: str,
+    hypothesis: str,
+    *,
+    speaker_token: str = "<spk:*>",
+    cpwer_normalization: str = "chime8",
+    hypothesis_mode: str = "canonical",
+) -> dict[str, Any]:
+    """Evaluate multispeaker ASR with corpus-level cpWER building blocks."""
+    from nemo_skills.evaluation.metrics.cpwer_utils import session_cpwer_counts
+    from nemo_skills.evaluation.metrics.librispeechmix_sot_utils import parse_sot_speaker_streams
+
+    tag_style = resolve_speaker_tag_style(speaker_token)
+    ref_streams = parse_sot_speaker_streams(reference, mode="strict", strict_tag_style=tag_style)
+    hyp_streams = parse_sot_speaker_streams(
+        hypothesis,
+        mode=hypothesis_mode,
+        strict_tag_style=tag_style,
+    )
+
+    normalized_ref = {
+        speaker: normalize_cpwer_stream(text, mode=cpwer_normalization) for speaker, text in ref_streams.items()
+    }
+    normalized_hyp = {
+        speaker: normalize_cpwer_stream(text, mode=cpwer_normalization) for speaker, text in hyp_streams.items()
+    }
+
+    if not normalized_ref:
+        return {
+            "cpwer": None,
+            "is_correct": None,
+            "text": "",
+            "pred_text": " ".join(normalized_hyp.values()).strip(),
+        }
+
+    counts = session_cpwer_counts(normalized_ref, normalized_hyp)
+    ref_text = " ".join(normalized_ref.values()).strip()
+    hyp_text = " ".join(normalized_hyp.values()).strip()
+    return {
+        "cpwer": counts["cpwer"],
+        "cpwer_errors": counts["errors"],
+        "cpwer_substitutions": counts["substitutions"],
+        "cpwer_insertions": counts["insertions"],
+        "cpwer_deletions": counts["deletions"],
+        "cpwer_ref_words": counts["ref_words"],
+        "speaker_assignment": counts["assignment"],
+        "reference_streams": dict(normalized_ref),
+        "hypothesis_streams": dict(normalized_hyp),
+        "is_correct": counts["errors"] == 0,
+        "text": ref_text,
+        "pred_text": hyp_text,
+    }
 
 
 def resolve_asr_normalization_mode(config: AudioEvaluatorConfig) -> str:
@@ -1301,6 +1398,16 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
     elif task_type == "ASR":
         mode = resolve_asr_normalization_mode(config)
         metrics = evaluate_asr(expected_answer, generation, normalization_mode=mode)
+        updates.update(metrics)
+        updates["predicted_answer"] = generation
+
+    elif task_type == "MS-ASR":
+        metrics = evaluate_msasr(
+            expected_answer,
+            generation,
+            speaker_token=config.speaker_token,
+            cpwer_normalization=config.cpwer_normalization,
+        )
         updates.update(metrics)
         updates["predicted_answer"] = generation
 

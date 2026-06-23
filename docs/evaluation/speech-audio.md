@@ -968,6 +968,129 @@ ns eval \
 
 `nemo_skills.inference.librispeechmix_multitalker_parakeet` wraps the streaming Multitalker Parakeet path. The generic SALM backend can run `nvidia/canary-qwen-2.5b`, but the public model card documents generic ASR output, not SOT speaker-tagged output, so treat it as a generic ASR baseline unless a run proves it emits `[sN]` speaker-attributed text.
 
+## Multispeaker ASR (cpWER)
+
+Multispeaker ASR evaluates SALM-style serialized-overlap transcription (SOT) with speaker tags like `<spk:0>` and `<spk:1>`. The primary metric is **cpWER** (concatenated minimum-permutation WER), computed in the shared audio evaluator (`task_type=MS-ASR`) using:
+
+- NeMo's Hungarian-assignment cpWER (`kaldialign` edit distance)
+- CHIME-8 text normalization (vendored standalone normalizer matching `meeteval-wer --normalizer chime8`)
+
+Scoring flow:
+
+```
+SALM output with <spk:N> tags
+  -> speaker-wise streams
+  -> CHIME-8 normalization
+  -> session cpWER (Hungarian assignment)
+  -> corpus-level cpWER in AudioMetrics
+```
+
+### Dataset Location
+
+- Benchmark group: [`nemo_skills/dataset/multispeaker-sot/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/multispeaker-sot/__init__.py)
+- Evaluator: [`nemo_skills/evaluation/evaluator/audio.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/evaluator/audio.py) (`evaluate_msasr`)
+- cpWER engine: [`nemo_skills/evaluation/metrics/cpwer_utils.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/metrics/cpwer_utils.py)
+- Source manifests: cluster `eval_manifests/{under20s_eval_set,over20s_eval_set}`
+
+### Supported Benchmarks
+
+Under-20s (`under20s_eval_set`):
+
+- `multispeaker-sot.under20s-ami-ihm-dev`
+- `multispeaker-sot.under20s-ami-sdm-test`
+- `multispeaker-sot.under20s-ami-ihm-test`
+- `multispeaker-sot.under20s-chaes-ch109-test`
+- `multispeaker-sot.under20s-libri-am-dev`
+- `multispeaker-sot.under20s-lsm-test-clean-1mix`
+- `multispeaker-sot.under20s-lsm-test-clean-2mix`
+- `multispeaker-sot.under20s-lsm-test-clean-3mix`
+- `multispeaker-sot.under20s-mixer6-ch04-test`
+
+Over-20s (`over20s_eval_set`, references built from companion `ref_*.seglst.json` files):
+
+- `multispeaker-sot.over20s-ami-ihm-test`
+- `multispeaker-sot.over20s-ami-sdm-test`
+- `multispeaker-sot.over20s-chaes-ch109-test`
+- `multispeaker-sot.over20s-mixer6-ch04-test`
+
+### Preparing Data
+
+Manifests are converted from the shared multispeaker eval manifest root. Audio segments are materialized into your external `--data_dir` by default.
+
+```bash
+ns prepare_data multispeaker-sot --cluster=iad --data_dir=/path/to/data
+```
+
+Prepare a subset only:
+
+```bash
+python -m nemo_skills.dataset.prepare multispeaker-sot \
+    --data_dir=/path/to/data \
+    --sets under20s-lsm-test-clean-2mix \
+    --no-audio
+```
+
+Override the audio path prefix embedded in JSONL files:
+
+```bash
+python -m nemo_skills.dataset.prepare multispeaker-sot \
+    --data_dir=/path/to/data \
+    --audio-prefix=/data/multispeaker-sot/audio
+```
+
+Each prepared record sets `task_type=MS-ASR`, stores `<spk:N>` reference text in `text` / `expected_answer`, and uses the default prompt:
+
+`Transcribe the mixed audio with speaker tags like <spk:0> hello <spk:1> yes.`
+
+### Running Evaluation
+
+```bash
+ns eval \
+    --cluster=iad \
+    --benchmarks=multispeaker-sot.under20s-lsm-test-clean-2mix \
+    --output_dir=/workspace/msasr-eval \
+    --server_type=megatron \
+    --model=/workspace/checkpoint \
+    --data_dir=/data \
+    --installation_command="pip install -r requirements/audio.txt"
+```
+
+Evaluate the full benchmark group:
+
+```bash
+ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...
+```
+
+Default evaluator settings:
+
+- `++eval_type=audio`
+- `++eval_config.speaker_token='<spk:*>'`
+- `++eval_config.cpwer_normalization=chime8`
+
+### Understanding Results
+
+```
+<output_dir>/
+└── eval-results/
+    └── multispeaker-sot/
+        ├── metrics.json
+        ├── multispeaker-sot.under20s-lsm-test-clean-1mix/
+        │   └── metrics.json
+        └── multispeaker-sot.over20s-ami-ihm-test/
+            └── metrics.json
+```
+
+Example per-dataset table:
+
+```
+evaluation_mode | cpwer | cpwer_errors | cpwer_ref_words | num_entries
+pass@1          | 12.34 | 123          | 997             | 2620
+```
+
+Group `metrics.json` also reports duration-collapsed aggregates (`all`, `under20s`, `over20s`) and dataset/mix rollups (`ami-ihm-test`, `lsm-test-clean`, `1mix`, `2mix`, `3mix`).
+
+The vendored NeMo cpWER + CHIME-8 normalizer path is parity-checked against `meeteval` + `chime_utils` in `tests/test_audio_msasr.py`.
+
 ## Numb3rs
 
 Numb3rs is a speech benchmark for evaluating text normalization (TN) and inverse text normalization (ITN) capabilities of audio-language models. It contains paired written/spoken forms with corresponding synthetic audio, allowing evaluation of whether a model transcribes numbers in written form (e.g., `$100`, `3.14`) or spoken form (e.g., `one hundred dollars`, `three point one four`).
