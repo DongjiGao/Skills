@@ -485,6 +485,7 @@ VALID_NORMALIZATION_MODES = (
     "no_tn_itn",
     "multilingual",
     "apptek_callcenter",
+    "lower_nopunct",
 )
 TASKS_NEED_PARSING = {"ASR", "ASR-PC", "ASR_LEADERBOARD", "Multilingual-ASR", "CER", "Hallucination", "PC-Rate"}
 
@@ -513,6 +514,7 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
             - "no_tn_itn": Lowercase + remove punctuation, no number word conversion (for TN/ITN eval)
             - "multilingual": Multilingual normalization
             - "apptek_callcenter": AppTek Call-Center Dialogues official normalization
+            - "lower_nopunct": Lowercase + remove punctuation while preserving combining marks
         **kwargs: Additional keyword arguments.
     """
     if mode not in VALID_NORMALIZATION_MODES:
@@ -533,6 +535,16 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         from nemo_skills.evaluation.evaluator.apptek_callcenter import normalize_apptek_callcenter_text
 
         return normalize_apptek_callcenter_text(text, is_prediction=kwargs.get("is_prediction", False))
+
+    if mode == "lower_nopunct":
+        # Lowercase + drop punctuation only, PRESERVING combining marks (Mn/Mc).
+        # Unlike no_tn_itn (whose [^\w\s] also strips abugida vowel/tone marks,
+        # since \w does not match them), this keeps Thai/Myanmar/Indic vowels and
+        # tones. Matches the CS-FLEURS paper's "case insensitive and unpunctuated"
+        # character error rate, so per-language CER is comparable to the paper.
+        text = text.lower()
+        text = "".join("" if unicodedata.category(ch).startswith("P") else ch for ch in text)
+        return normalize_whitespace(text)
 
     from whisper_normalizer.english import EnglishTextNormalizer
 
@@ -1512,10 +1524,15 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
 
         # Parallel only-CER column: character error rate computed for every sample,
         # reported separately (cer* keys) alongside the mixed WER column.
+        # Code-switched benchmarks (use_mer, i.e. cs-fleurs) score this CER with
+        # mark-preserving normalization (lowercase + unpunctuated, combining marks
+        # kept) so it matches the CS-FLEURS paper's CER; monolingual benchmarks keep
+        # the standard multilingual normalization unchanged.
+        cer_mode = "lower_nopunct" if extra_fields.get("use_mer", False) else mode
         cer_metrics = evaluate_cer(
             expected_answer,
             generation,
-            normalization_mode=mode,
+            normalization_mode=cer_mode,
             key_prefix="cer",
             normalize_compound=normalize_compound,
             **preprocess_kwargs,
