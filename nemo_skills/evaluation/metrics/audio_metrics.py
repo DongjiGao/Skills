@@ -140,7 +140,7 @@ class AudioMetrics(BaseMetrics):
         # Dataset-specific WER variants from additional reference fields (e.g., wer_tn, wer_itn).
         self.reference_wer_scores: dict[str, list[float]] = {}
 
-        # Structured LibriSpeechMix scoring exposes strict/canonical/content WERs as separate streams.
+        # Structured ASR scoring exposes strict/canonical/content WERs as separate streams.
         self.structured_wer_scores: dict[str, list[float]] = {}
         self.structured_wer_totals: dict[str, dict[str, int]] = {}
 

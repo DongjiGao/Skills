@@ -476,15 +476,6 @@ or
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
 
-## LibriSpeechMix
-
-LibriSpeechMix is a multi-talker LibriSpeech benchmark for overlapped ASR and speaker-attributed ASR (SA-ASR). The NeMo Skills integration supports:
-
-- `dev-clean` and `test-clean`
-- `1mix`, `2mix`, and `3mix`
-- standard overlapped ASR scoring
-- SA-ASR scoring with the upstream default `8prof-2utt` speaker-profile setting
-
 ## Preparing Data
 
 These benchmarks require audio files for meaningful evaluation. **Audio files are downloaded by default** to ensure proper evaluation.
@@ -859,114 +850,6 @@ or
 ```bash
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
-
-## LibriSpeechMix
-
-LibriSpeechMix evaluates overlapped transcription and speaker-attributed transcription on mixtures derived from LibriSpeech `dev-clean` and `test-clean`.
-
-### Dataset Location
-
-- Benchmark group is defined in [`nemo_skills/dataset/librispeechmix/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/librispeechmix/__init__.py)
-- Official manifests come from [NaoyukiKanda/LibriSpeechMix](https://github.com/NaoyukiKanda/LibriSpeechMix)
-- Source speech audio comes from [LibriSpeech OpenSLR-12](https://www.openslr.org/12/)
-
-### Supported Benchmarks
-
-- Overlapped ASR:
-  `librispeechmix.asr-dev-clean-1mix`,
-  `librispeechmix.asr-dev-clean-2mix`,
-  `librispeechmix.asr-dev-clean-3mix`,
-  `librispeechmix.asr-test-clean-1mix`,
-  `librispeechmix.asr-test-clean-2mix`,
-  `librispeechmix.asr-test-clean-3mix`
-- Speaker-attributed ASR:
-  `librispeechmix.sa-asr-dev-clean-1mix`,
-  `librispeechmix.sa-asr-dev-clean-2mix`,
-  `librispeechmix.sa-asr-dev-clean-3mix`,
-  `librispeechmix.sa-asr-test-clean-1mix`,
-  `librispeechmix.sa-asr-test-clean-2mix`,
-  `librispeechmix.sa-asr-test-clean-3mix`
-
-### Preparing LibriSpeechMix Data
-
-LibriSpeechMix downloads LibriSpeech `dev-clean` and `test-clean` from OpenSLR, caches source WAV files for speaker profiles, synthesizes mixed WAVs, and writes benchmark JSONL files under your external `--data_dir`.
-
-```bash
-ns prepare_data librispeechmix --data_dir=/path/to/data --cluster=<cluster_name>
-```
-
-Prepare only specific splits, mixtures, or modes:
-
-```bash
-ns prepare_data librispeechmix \
-    --data_dir=/path/to/data \
-    --splits dev-clean \
-    --mixes 2mix 3mix \
-    --modes asr sa-asr
-```
-
-Override the absolute audio-path prefix embedded in JSONL files:
-
-```bash
-ns prepare_data librispeechmix \
-    --data_dir=/path/to/data \
-    --audio-prefix /dataset/librispeechmix/audio
-```
-
-### Evaluation Assumptions
-
-- `1mix` uses standard WER against the single reference transcript.
-- `2mix` and `3mix` use permutation-invariant WER over newline-separated hypothesized utterances.
-- SA-ASR expects speaker-labeled lines in the format `speaker_<profile_index>: <transcript>`.
-- SA-ASR scoring matches hypotheses to the reference `speaker_profile_index` values instead of transcript order.
-
-## LibriSpeechMix SOT
-
-LibriSpeechMix SOT evaluates multispeaker ASR with serialized speaker tags. It uses the official [LibriSpeechMix](https://github.com/NaoyukiKanda/LibriSpeechMix) JSONL lists and LibriSpeech/OpenSLR audio, then writes NeMo SOT manifests with `[s0]`, `[s1]`, etc. reference text, RTTM supervision, and reference SegLST files.
-
-Supported benchmark variants:
-
-- `librispeechmix-sot.under20s-test-clean-1mix`
-- `librispeechmix-sot.under20s-test-clean-2mix`
-- `librispeechmix-sot.under20s-test-clean-3mix`
-- `librispeechmix-sot.over20s-test-clean-1mix`
-- `librispeechmix-sot.over20s-test-clean-2mix`
-- `librispeechmix-sot.over20s-test-clean-3mix`
-
-Dev smoke variants are also available with `dev-clean` in place of `test-clean`. The duration split is explicit: `under20s` contains records with mixed duration `<= 20.0` seconds, and `over20s` contains records with duration `> 20.0` seconds.
-
-Prepare the required test-clean variants:
-
-```bash
-ns prepare_data librispeechmix-sot --cluster=local --data_dir=/path/to/ns-data --splits test-clean --mixes 1mix 2mix 3mix
-```
-
-For a tiny local smoke using a pre-cloned LibriSpeechMix checkout:
-
-```bash
-python -m nemo_skills.dataset.prepare librispeechmix-sot \
-    --data_dir=/path/to/lsm-sot-data \
-    --librispeechmix-dir=/path/to/LibriSpeechMix \
-    --splits test-clean \
-    --mixes 1mix \
-    --max-samples 2 \
-    --no-audio
-```
-
-The primary metric is corpus-level no-PnC cpWER. The scorer reads reference SOT text from `text`, reads hypotheses from `pred_text` when available and otherwise `generation`, splits both by `[sN]` tags, removes punctuation/case, and applies minimum speaker permutation matching. It also writes `*_ref.seglst.json` and `*_hyp.seglst.json`; when `meeteval-wer` is installed it additionally runs MeetEval cpWER with `--normalizer chime8 --partial`.
-
-True speaker-attributed baselines should use a SOT-capable generation module, for example:
-
-```bash
-ns eval \
-    --benchmarks=librispeechmix-sot.under20s-test-clean-1mix \
-    --generation_module=nemo_skills.inference.librispeechmix_rtmtasr \
-    --server_type=none \
-    --server_gpus=0 \
-    --extra_arguments="++model_path=/path/to/MSCanary-v2.nemo ++spk_supervision=rttm ++nemo_root=/path/to/NeMo"
-```
-
-`nemo_skills.inference.librispeechmix_multitalker_parakeet` wraps the streaming Multitalker Parakeet path. The generic SALM backend can run `nvidia/canary-qwen-2.5b`, but the public model card documents generic ASR output, not SOT speaker-tagged output, so treat it as a generic ASR baseline unless a run proves it emits `[sN]` speaker-attributed text.
 
 ## Multispeaker ASR (cpWER)
 

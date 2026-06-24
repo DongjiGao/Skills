@@ -16,15 +16,19 @@ import pytest
 
 pytest.importorskip("kaldialign")
 
-from nemo_skills.evaluation.evaluator.audio import evaluate_msasr, normalize_cpwer_stream, resolve_speaker_tag_style
+from nemo_skills.evaluation.evaluator.audio import (
+    evaluate_msasr,
+    normalize_cpwer_stream,
+    parse_sot_speaker_streams,
+    resolve_speaker_tag_style,
+)
 from nemo_skills.evaluation.metrics.audio_metrics import AudioMetrics
-from nemo_skills.evaluation.metrics.chime8_normalizer import normalize as normalize_chime8
 from nemo_skills.evaluation.metrics.cpwer_utils import (
     calculate_session_cpWER,
     calculate_session_cpWER_bruteforce,
     session_cpwer_counts,
 )
-from nemo_skills.evaluation.metrics.librispeechmix_sot_utils import parse_sot_speaker_streams
+from nemo_skills.evaluation.metrics.utils.chime8_normalizer import normalize as normalize_chime8
 
 
 PLAN_EXAMPLE_REF = (
