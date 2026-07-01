@@ -41,6 +41,7 @@ BENCHMARK_MANIFESTS = {
     "under20s-ami-sdm-test": "under20s_eval_set/ami_sdm_test_10-20s.json",
     "under20s-ami-ihm-test": "under20s_eval_set/ami_test_10-20s.json",
     "under20s-chaes-ch109-test": "under20s_eval_set/ch109_test_10-20s.json",
+    "under20s-chaes-ch109-shuf10-test": "under20s_eval_set/ch109_10-20s_shuf10.json",
     "under20s-libri-am-dev": "under20s_eval_set/libri-am_dev_10-20s.json",
     "under20s-lsm-test-clean-1mix": "under20s_eval_set/lsm-test-clean-1mix_nemo_sot.json",
     "under20s-lsm-test-clean-2mix": "under20s_eval_set/lsm-test-clean-2mix_nemo_sot.json",

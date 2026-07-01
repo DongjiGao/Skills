@@ -15,8 +15,8 @@
 from collections import defaultdict
 from functools import partial
 
+from nemo_skills.evaluation.evaluator.metrics_utils import is_correct_judgement
 from nemo_skills.evaluation.metrics.base import BaseMetrics
-from nemo_skills.evaluation.metrics.utils import is_correct_judgement
 
 is_correct_judgement_or_none = partial(is_correct_judgement, return_none=True)
 
