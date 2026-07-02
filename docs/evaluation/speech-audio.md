@@ -873,28 +873,45 @@ SALM output with <spk:N> tags
 - Benchmark group: [`nemo_skills/dataset/multispeaker-sot/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/multispeaker-sot/__init__.py)
 - Evaluator: [`nemo_skills/evaluation/evaluator/audio.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/evaluator/audio.py) (`evaluate_msasr`)
 - cpWER engine: [`nemo_skills/evaluation/metrics/cpwer_utils.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/metrics/cpwer_utils.py)
-- Source manifests: cluster `eval_manifests/{under20s_eval_set,over20s_eval_set}`
+- Source manifests: cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
 
 ### Supported Benchmarks
 
-Under-20s (`under20s_eval_set`):
+Under-20s (`under20s_eval_set`, 10-20s segments):
 
 - `multispeaker-sot.under20s-ami-ihm-dev`
-- `multispeaker-sot.under20s-ami-sdm-test`
 - `multispeaker-sot.under20s-ami-ihm-test`
+- `multispeaker-sot.under20s-ami-sdm-test`
 - `multispeaker-sot.under20s-chaes-ch109-test`
 - `multispeaker-sot.under20s-libri-am-dev`
-- `multispeaker-sot.under20s-lsm-test-clean-1mix`
-- `multispeaker-sot.under20s-lsm-test-clean-2mix`
-- `multispeaker-sot.under20s-lsm-test-clean-3mix`
 - `multispeaker-sot.under20s-mixer6-ch04-test`
 
-Over-20s (`over20s_eval_set`, references built from companion `ref_*.seglst.json` files):
+60-90s (`60s_90s_eval_set`):
 
-- `multispeaker-sot.over20s-ami-ihm-test`
-- `multispeaker-sot.over20s-ami-sdm-test`
-- `multispeaker-sot.over20s-chaes-ch109-test`
-- `multispeaker-sot.over20s-mixer6-ch04-test`
+- `multispeaker-sot.60-90s-ami-ihm-test`
+- `multispeaker-sot.60-90s-ami-sdm-test`
+- `multispeaker-sot.60-90s-chaes-ch109-test`
+- `multispeaker-sot.60-90s-mixer6-ch04-test`
+
+120-180s (`120s_180s_eval_set`):
+
+- `multispeaker-sot.120-180s-ami-ihm-test`
+- `multispeaker-sot.120-180s-ami-sdm-test`
+- `multispeaker-sot.120-180s-chaes-ch109-test`
+- `multispeaker-sot.120-180s-mixer6-ch04-test`
+
+Full-length (`full_length_eval_set`):
+
+- `multispeaker-sot.full-ami-ihm-test`
+- `multispeaker-sot.full-ami-sdm-test`
+- `multispeaker-sot.full-chaes-ch109-test`
+- `multispeaker-sot.full-mixer6-ch04-test`
+
+LibriSpeechMix (`libri_speech_mix`, clean test, 1/2/3 speakers):
+
+- `multispeaker-sot.lsm-test-clean-1mix`
+- `multispeaker-sot.lsm-test-clean-2mix`
+- `multispeaker-sot.lsm-test-clean-3mix`
 
 ### Preparing Data
 
@@ -909,7 +926,7 @@ Prepare a subset only:
 ```bash
 python -m nemo_skills.dataset.prepare multispeaker-sot \
     --data_dir=/path/to/data \
-    --sets under20s-lsm-test-clean-2mix \
+    --sets lsm-test-clean-2mix \
     --no-audio
 ```
 
@@ -930,7 +947,7 @@ Each prepared record sets `task_type=MS-ASR`, stores `<spk:N>` reference text in
 ```bash
 ns eval \
     --cluster=iad \
-    --benchmarks=multispeaker-sot.under20s-lsm-test-clean-2mix \
+    --benchmarks=multispeaker-sot.lsm-test-clean-2mix \
     --output_dir=/workspace/msasr-eval \
     --server_type=megatron \
     --model=/workspace/checkpoint \
@@ -957,9 +974,9 @@ Default evaluator settings:
 └── eval-results/
     └── multispeaker-sot/
         ├── metrics.json
-        ├── multispeaker-sot.under20s-lsm-test-clean-1mix/
+        ├── multispeaker-sot.lsm-test-clean-1mix/
         │   └── metrics.json
-        └── multispeaker-sot.over20s-ami-ihm-test/
+        └── multispeaker-sot.full-ami-ihm-test/
             └── metrics.json
 ```
 
@@ -970,7 +987,7 @@ evaluation_mode | cpwer | cpwer_errors | cpwer_ref_words | num_entries
 pass@1          | 12.34 | 123          | 997             | 2620
 ```
 
-Group `metrics.json` also reports duration-collapsed aggregates (`all`, `under20s`, `over20s`) and dataset/mix rollups (`ami-ihm-test`, `lsm-test-clean`, `1mix`, `2mix`, `3mix`).
+Group `metrics.json` also reports duration-collapsed aggregates (`all`, `under20s`, `60-90s`, `120-180s`, `full`) and dataset/mix rollups (`ami-ihm-test`, `lsm-test-clean`, `1mix`, `2mix`, `3mix`).
 
 The vendored NeMo cpWER + CHIME-8 normalizer path is parity-checked against `meeteval` + `chime_utils` in `tests/test_audio_msasr.py`.
 

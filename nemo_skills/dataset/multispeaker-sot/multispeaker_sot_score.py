@@ -54,19 +54,23 @@ def compute_score(combined_metrics: dict) -> dict:
     eval_modes = list(first_benchmark.keys())
     groups = {
         "all": combined_metrics,
+        # Duration buckets
         "under20s": {k: v for k, v in combined_metrics.items() if ".under20s-" in k},
-        "over20s": {k: v for k, v in combined_metrics.items() if ".over20s-" in k},
+        "60-90s": {k: v for k, v in combined_metrics.items() if ".60-90s-" in k},
+        "120-180s": {k: v for k, v in combined_metrics.items() if ".120-180s-" in k},
+        "full": {k: v for k, v in combined_metrics.items() if ".full-" in k},
+        # Per-corpus buckets (collapsed across duration splits)
         "ami-ihm-dev": {k: v for k, v in combined_metrics.items() if "-ami-ihm-dev" in k},
         "ami-ihm-test": {k: v for k, v in combined_metrics.items() if "-ami-ihm-test" in k},
         "ami-sdm-test": {k: v for k, v in combined_metrics.items() if "-ami-sdm-test" in k},
         "chaes-ch109-test": {k: v for k, v in combined_metrics.items() if "-chaes-ch109-test" in k},
         "libri-am-dev": {k: v for k, v in combined_metrics.items() if "-libri-am-dev" in k},
-        "lsm-test-clean": {k: v for k, v in combined_metrics.items() if "-lsm-test-clean-" in k},
+        "lsm-test-clean": {k: v for k, v in combined_metrics.items() if "lsm-test-clean-" in k},
         "mixer6-ch04-test": {k: v for k, v in combined_metrics.items() if "-mixer6-ch04-test" in k},
+        # LibriSpeechMix speaker-count buckets
         "1mix": {k: v for k, v in combined_metrics.items() if "-1mix" in k},
         "2mix": {k: v for k, v in combined_metrics.items() if "-2mix" in k},
         "3mix": {k: v for k, v in combined_metrics.items() if "-3mix" in k},
-        "4mix": {k: v for k, v in combined_metrics.items() if "-4mix" in k},
     }
 
     output = {}

@@ -37,28 +37,38 @@ class InvalidAudioSegmentError(ValueError):
     """Raised when a manifest row cannot produce a non-empty audio segment."""
 
 BENCHMARK_MANIFESTS = {
+    # under20s (10-20s segments)
     "under20s-ami-ihm-dev": "under20s_eval_set/ami_ihm_dev_10-20s.json",
-    "under20s-ami-sdm-test": "under20s_eval_set/ami_sdm_test_10-20s.json",
     "under20s-ami-ihm-test": "under20s_eval_set/ami_test_10-20s.json",
+    "under20s-ami-sdm-test": "under20s_eval_set/ami_sdm_test_10-20s.json",
     "under20s-chaes-ch109-test": "under20s_eval_set/ch109_test_10-20s.json",
-    "under20s-chaes-ch109-shuf10-test": "under20s_eval_set/ch109_10-20s_shuf10.json",
     "under20s-libri-am-dev": "under20s_eval_set/libri-am_dev_10-20s.json",
-    "under20s-lsm-test-clean-1mix": "under20s_eval_set/lsm-test-clean-1mix_nemo_sot.json",
-    "under20s-lsm-test-clean-2mix": "under20s_eval_set/lsm-test-clean-2mix_nemo_sot.json",
-    "under20s-lsm-test-clean-3mix": "under20s_eval_set/lsm-test-clean-3mix_nemo_sot.json",
     "under20s-mixer6-ch04-test": "under20s_eval_set/mixer6_test_CH04mic_10-20s.json",
-    "over20s-ami-ihm-test": "over20s_eval_set/ami_ihm_test.json",
-    "over20s-ami-sdm-test": "over20s_eval_set/ami_sdm_test.json",
-    "over20s-chaes-ch109-test": "over20s_eval_set/ch109_test.json",
-    "over20s-mixer6-ch04-test": "over20s_eval_set/mixer6_ch4_eval.json",
+    # 60-90s segments
+    "60-90s-ami-ihm-test": "60s_90s_eval_set/ami_ihm_test_60-90s.json",
+    "60-90s-ami-sdm-test": "60s_90s_eval_set/ami_sdm_test_60-90s.json",
+    "60-90s-chaes-ch109-test": "60s_90s_eval_set/ch109_test_60-90s.json",
+    "60-90s-mixer6-ch04-test": "60s_90s_eval_set/mixer6_ch4_test_60-90s.json",
+    # 120-180s segments
+    "120-180s-ami-ihm-test": "120s_180s_eval_set/ami_ihm_test_120-180s.json",
+    "120-180s-ami-sdm-test": "120s_180s_eval_set/ami_sdm_test_120-180s.json",
+    "120-180s-chaes-ch109-test": "120s_180s_eval_set/ch109_test_120-180s.json",
+    "120-180s-mixer6-ch04-test": "120s_180s_eval_set/mixer6_ch4_test_120-180s.json",
+    # full-length sessions
+    "full-ami-ihm-test": "full_length_eval_set/ami_ihm_test_full.json",
+    "full-ami-sdm-test": "full_length_eval_set/ami_sdm_test_full.json",
+    "full-chaes-ch109-test": "full_length_eval_set/ch109_test_full.json",
+    "full-mixer6-ch04-test": "full_length_eval_set/mixer6_ch4_test_full.json",
+    # LibriSpeechMix (clean test, 1/2/3 speakers)
+    "lsm-test-clean-1mix": "libri_speech_mix/lsm-test-clean-1mix_nemo_sot.json",
+    "lsm-test-clean-2mix": "libri_speech_mix/lsm-test-clean-2mix_nemo_sot.json",
+    "lsm-test-clean-3mix": "libri_speech_mix/lsm-test-clean-3mix_nemo_sot.json",
 }
 
-REFERENCE_SEGLST_FILENAMES = {
-    "over20s-ami-ihm-test": "ref_ami_ihm_test.seglst.json",
-    "over20s-ami-sdm-test": "ref_ami_sdm_test.seglst.json",
-    "over20s-chaes-ch109-test": "ref_ch109_test.seglst.json",
-    "over20s-mixer6-ch04-test": "ref_mixer6_ch4_test.seglst.json",
-}
+# All current eval sets embed the SOT reference directly in each manifest's "text"
+# field, so no external SegLST companion files are needed. Benchmarks may still opt
+# in per-row via "seglst_filepath"/"reference_seglst_filepath".
+REFERENCE_SEGLST_FILENAMES: dict[str, str] = {}
 
 
 def _default_data_dir() -> Path:
@@ -541,7 +551,12 @@ def main() -> None:
         default=None,
         help="Alias for --data_dir that does not conflict with ns prepare_data's top-level --data_dir.",
     )
-    parser.add_argument("--manifest-root", type=str, default=None, help="Root containing under20s/over20s eval sets.")
+    parser.add_argument(
+        "--manifest-root",
+        type=str,
+        default=None,
+        help="Root containing the eval sets (under20s/60s_90s/120s_180s/full_length/libri_speech_mix).",
+    )
     parser.add_argument("--cluster", choices=("iad", "ord"), default="iad", help="Default manifest-root selector.")
     parser.add_argument("--audio-prefix", type=str, default=None, help="Audio path prefix embedded in manifests.")
     parser.add_argument("--no-audio", action="store_true", help="Do not materialize clipped audio.")
