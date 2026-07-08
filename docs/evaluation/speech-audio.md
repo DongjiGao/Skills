@@ -13,7 +13,7 @@ This section details how to evaluate speech and audio benchmarks, including unde
 
 ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard). Evaluates transcription quality using Word Error Rate (WER).
 
-**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `tedlium`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
+**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
 
 This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the official [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) dataset using its own config names, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
 

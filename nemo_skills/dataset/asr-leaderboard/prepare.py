@@ -36,6 +36,7 @@ Usage:
 """
 
 import argparse
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,7 +68,6 @@ DATASET_CONFIGS = {
     "librispeech_clean": DatasetSpec("librispeech", "test.clean"),
     "librispeech_other": DatasetSpec("librispeech", "test.other"),
     "voxpopuli_aa": DatasetSpec("voxpopuli_cleaned_aa", "test"),
-    "tedlium": DatasetSpec("tedlium", "test"),
     "gigaspeech": DatasetSpec("gigaspeech_cleaned", "test"),
     "spgispeech": DatasetSpec("spgispeech", "test"),
     "earnings22": DatasetSpec("earnings22", "test"),
@@ -76,17 +76,22 @@ DATASET_CONFIGS = {
 
 
 def extract_audio(audio_info):
-    """Extract audio array and sampling rate from a HF dataset audio entry.
+    """Extract (audio_array, sampling_rate) from a HF audio value.
 
-    Handles both the legacy dict format ({"array": ..., "sampling_rate": ...})
-    and the newer AudioDecoder object from torchcodec-based datasets library.
+    Prefers the undecoded ``{"bytes", "path"}`` form (from ``Audio(decode=False)``)
+    read with soundfile, so no torchcodec/ffmpeg dependency is required. Also
+    accepts the already-decoded ``{"array", "sampling_rate"}`` form. Leaderboard
+    configs are 16 kHz, so the stored bytes need no resampling.
     """
     if audio_info is None:
         return None, None
+    if isinstance(audio_info, dict) and audio_info.get("bytes") is not None:
+        audio_array, sampling_rate = sf.read(io.BytesIO(audio_info["bytes"]), dtype="float32")
+        if getattr(audio_array, "ndim", 1) > 1:
+            audio_array = audio_array.mean(axis=1)
+        return np.asarray(audio_array), int(sampling_rate)
     try:
-        audio_array = np.array(audio_info["array"])
-        sampling_rate = int(audio_info["sampling_rate"])
-        return audio_array, sampling_rate
+        return np.array(audio_info["array"]), int(audio_info["sampling_rate"])
     except (KeyError, TypeError, IndexError):
         return None, None
 
@@ -138,7 +143,8 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     print(f"Loading {dataset_name} from {spec.repo} (config={spec.config}, split={spec.split})...")
     dataset = load_dataset(spec.repo, spec.config, split=spec.split)
     if with_audio and "audio" in dataset.column_names:
-        dataset = dataset.cast_column("audio", Audio(sampling_rate=AUDIO_SAMPLE_RATE))
+        # decode=False -> raw encoded bytes, read with soundfile (no torchcodec).
+        dataset = dataset.cast_column("audio", Audio(decode=False))
 
     output_file = output_dir / f"{dataset_name}.jsonl"
     audio_dir = output_dir / "data" / dataset_name

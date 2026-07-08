@@ -695,9 +695,7 @@ def _english_rows(
     n = args.audio_samples
     clean_read = _load_source(source_root, "asr-leaderboard", "librispeech_clean.jsonl")
     clean_conv = _load_source(source_root, "asr-leaderboard", "ami.jsonl")
-    clean_media = _load_source(source_root, "asr-leaderboard", "tedlium.jsonl") + _load_source(
-        source_root, "asr-leaderboard", "gigaspeech.jsonl"
-    )
+    clean_media = _load_source(source_root, "asr-leaderboard", "gigaspeech.jsonl")
     media_for_noise = clean_media + _load_source(source_root, "asr-leaderboard", "voxpopuli_aa.jsonl")
     short_pool = [
         row
@@ -710,7 +708,7 @@ def _english_rows(
     for subtask, source_rows, manifest, count in [
         ("asr.clean_read", clean_read, "asr-leaderboard/librispeech_clean.jsonl", n),
         ("asr.clean_conversational", clean_conv, "asr-leaderboard/ami.jsonl", n),
-        ("asr.clean_media", clean_media, "asr-leaderboard/tedlium.jsonl+gigaspeech.jsonl", n),
+        ("asr.clean_media", clean_media, "asr-leaderboard/gigaspeech.jsonl", n),
         ("asr.short", short_pool, "asr-leaderboard/*", n),
     ]:
         for row in _sample(source_rows, count, f"{variant}:{subtask}"):
@@ -751,7 +749,7 @@ def _english_rows(
             subtask="asr.noisy_media",
             origin_dataset="asr-leaderboard",
             origin_split="media",
-            origin_manifest="asr-leaderboard/tedlium.jsonl+gigaspeech.jsonl+voxpopuli_aa.jsonl",
+            origin_manifest="asr-leaderboard/gigaspeech.jsonl+voxpopuli_aa.jsonl",
             count=n,
             salt=f"{variant}:noisy_media",
         )
