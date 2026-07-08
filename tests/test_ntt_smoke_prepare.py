@@ -108,7 +108,7 @@ def _make_source_root(root: Path):
         "ami",
         "tedlium",
         "gigaspeech",
-        "voxpopuli",
+        "voxpopuli_aa",
         "librispeech_other",
         "earnings22",
     ]:

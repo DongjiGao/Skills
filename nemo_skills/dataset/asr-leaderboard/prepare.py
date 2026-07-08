@@ -14,26 +14,23 @@
 
 """Prepare ASR Leaderboard datasets for evaluation.
 
-Most datasets come from the official HF Open ASR Leaderboard ESB test-only
-sorted dataset (hf-audio/esb-datasets-test-only-sorted), the same source used
-by the official leaderboard. VoxPopuli is additionally available in the
-Artificial Analysis cleaned version (ArtificialAnalysis/VoxPopuli-Cleaned-AA),
-which ships audio as separate wav files rather than a decoded audio column.
+Datasets are sourced from the official HuggingFace Open ASR Leaderboard dataset
+(hf-audio/open-asr-leaderboard), using the leaderboard's own config names so the
+prepared data matches the leaderboard exactly. In particular the 2026 protocol
+update is reflected by consuming the pre-cleaned configs directly:
 
-Leaderboard protocol (the default set prepared with no --datasets):
-    librispeech_clean, librispeech_other, voxpopuli_aa, tedlium,
-    gigaspeech, spgispeech, earnings22, ami
-    (AMI and GigaSpeech drop samples shorter than 1s.)
+    - ami          -> config "ami_cleaned"          (sub-1s clips removed upstream)
+    - gigaspeech   -> config "gigaspeech_cleaned"   (sub-1s clips removed upstream)
+    - voxpopuli_aa -> config "voxpopuli_cleaned_aa" (Artificial Analysis cleaned refs)
 
-The original (uncleaned) VoxPopuli is excluded from the default set (replaced by
-voxpopuli_aa) but remains available via --datasets for other consumers (e.g. the
-ntt-smoke composite eval, which mixes AMI/VoxPopuli audio with noise).
+The friendly subset key (used for per-dataset metrics and the JSONL filename) is
+kept stable (ami, gigaspeech, voxpopuli_aa) even though it maps to a cleaned
+config, so the reported leaderboard breakdown reads naturally.
 
 Audio paths in JSONL: /dataset/asr-leaderboard/data/{dataset}/{sample_id}.flac
 
 Usage:
-    ns prepare_data asr-leaderboard                          # leaderboard default set
-    ns prepare_data asr-leaderboard --datasets all           # every dataset incl. original voxpopuli
+    ns prepare_data asr-leaderboard                          # full leaderboard set
     ns prepare_data asr-leaderboard --datasets librispeech_clean ami
     ns prepare_data asr-leaderboard --no-audio
 """
@@ -42,65 +39,40 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import soundfile as sf
 from datasets import Audio, load_dataset
 from tqdm import tqdm
 
-ESB_REPO = "hf-audio/esb-datasets-test-only-sorted"
-AA_VOXPOPULI_REPO = "ArtificialAnalysis/VoxPopuli-Cleaned-AA"
+LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard"
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 AUDIO_SAMPLE_RATE = 16000
 
 
 @dataclass
 class DatasetSpec:
-    """How to load and format one ASR dataset.
+    """A leaderboard dataset: which HF config/split to read and its fields."""
 
-    loader:
-        "esb"    -> HF config inside ``repo`` with a decoded ``audio`` column.
-        "aa_url" -> Artificial Analysis layout: metadata rows carry a ``url``
-                    pointing to a separate wav file inside the dataset repo.
-    min_duration:
-        If set, drop samples shorter than this many seconds.
-    """
-
-    repo: str
-    config: Optional[str]
+    config: str
     split: str
-    text_field: str
-    id_field: str
-    loader: str = "esb"
-    min_duration: Optional[float] = None
+    text_field: str = "text"
+    id_field: str = "id"
+    repo: str = LEADERBOARD_REPO
 
 
+# key = subset_for_metrics (friendly leaderboard name); config = official config.
+# ami/gigaspeech/voxpopuli_aa map to the pre-cleaned configs (2026 protocol).
 DATASET_CONFIGS = {
-    "librispeech_clean": DatasetSpec(ESB_REPO, "librispeech", "test.clean", "text", "id"),
-    "librispeech_other": DatasetSpec(ESB_REPO, "librispeech", "test.other", "text", "id"),
-    "voxpopuli": DatasetSpec(ESB_REPO, "voxpopuli", "test", "text", "id"),
-    "voxpopuli_aa": DatasetSpec(AA_VOXPOPULI_REPO, None, "test", "transcript", "id", loader="aa_url"),
-    "tedlium": DatasetSpec(ESB_REPO, "tedlium", "test", "text", "id"),
-    "gigaspeech": DatasetSpec(ESB_REPO, "gigaspeech", "test", "text", "id", min_duration=1.0),
-    "spgispeech": DatasetSpec(ESB_REPO, "spgispeech", "test", "text", "id"),
-    "earnings22": DatasetSpec(ESB_REPO, "earnings22", "test", "text", "id"),
-    "ami": DatasetSpec(ESB_REPO, "ami", "test", "text", "id", min_duration=1.0),
+    "librispeech_clean": DatasetSpec("librispeech", "test.clean"),
+    "librispeech_other": DatasetSpec("librispeech", "test.other"),
+    "voxpopuli_aa": DatasetSpec("voxpopuli_cleaned_aa", "test"),
+    "tedlium": DatasetSpec("tedlium", "test"),
+    "gigaspeech": DatasetSpec("gigaspeech_cleaned", "test"),
+    "spgispeech": DatasetSpec("spgispeech", "test"),
+    "earnings22": DatasetSpec("earnings22", "test"),
+    "ami": DatasetSpec("ami_cleaned", "test"),
 }
-
-# Datasets that make up the Open ASR Leaderboard average by default.
-# Per the 2026 protocol update: AMI and GigaSpeech drop sub-1s clips, and
-# VoxPopuli is replaced by the Artificial Analysis cleaned set.
-DEFAULT_DATASETS = [
-    "librispeech_clean",
-    "librispeech_other",
-    "voxpopuli_aa",
-    "tedlium",
-    "gigaspeech",
-    "spgispeech",
-    "earnings22",
-    "ami",
-]
 
 
 def extract_audio(audio_info):
@@ -120,10 +92,7 @@ def extract_audio(audio_info):
 
 
 def format_entry(entry, dataset_name, audio_dir, spec, with_audio):
-    """Format a dataset entry into JSONL and optionally save the audio file.
-
-    Returns None to skip the sample (empty text, or shorter than min_duration).
-    """
+    """Format a dataset entry into JSONL and optionally save the audio file."""
     text = entry[spec.text_field].strip()
     if not text:
         return None
@@ -135,19 +104,10 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio):
     duration = None
     if audio_array is not None and sampling_rate is not None:
         duration = len(audio_array) / sampling_rate
-    else:
-        # Fall back to a duration field when audio is not decoded (e.g. --no-audio).
-        for key in ("duration", "audio_length_s"):
-            if entry.get(key) is not None:
-                duration = float(entry[key])
-                break
-
-    # Drop clips shorter than the dataset's minimum (e.g. GigaSpeech < 1s).
-    if spec.min_duration is not None and duration is not None and duration < spec.min_duration:
-        return None
-
-    if with_audio and audio_array is not None and sampling_rate is not None:
-        sf.write(str(audio_dir / audio_filename), audio_array, sampling_rate)
+        if with_audio:
+            sf.write(str(audio_dir / audio_filename), audio_array, sampling_rate)
+    elif entry.get("audio_length_s") is not None:
+        duration = float(entry["audio_length_s"])
 
     user_message = {"role": "user", "content": "Transcribe the following audio."}
     audio_meta = {"path": f"/dataset/asr-leaderboard/data/{dataset_name}/{audio_filename}"}
@@ -168,29 +128,6 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio):
     return formatted
 
 
-def load_hf_dataset(spec, with_audio):
-    """Load a dataset and normalize it to expose a decoded ``audio`` column.
-
-    For the ESB configs the audio column already exists. For the Artificial
-    Analysis layout the wav files live in the dataset repo, so we download them
-    and attach a decoded ``audio`` column pointing at the local paths.
-    """
-    if spec.loader == "aa_url":
-        dataset = load_dataset(spec.repo, split=spec.split)
-        if with_audio:
-            from huggingface_hub import snapshot_download
-
-            audio_root = snapshot_download(spec.repo, repo_type="dataset", allow_patterns=["audio/*"])
-            dataset = dataset.map(lambda ex: {"audio": str(Path(audio_root) / ex["url"])})
-            dataset = dataset.cast_column("audio", Audio(sampling_rate=AUDIO_SAMPLE_RATE))
-        return dataset
-
-    dataset = load_dataset(spec.repo, spec.config, split=spec.split)
-    if with_audio and "audio" in dataset.column_names:
-        dataset = dataset.cast_column("audio", Audio(sampling_rate=AUDIO_SAMPLE_RATE))
-    return dataset
-
-
 def prepare_dataset(dataset_name, output_dir, with_audio=True):
     """Download, decode, and write a single ASR dataset to JSONL + audio files."""
     if dataset_name not in DATASET_CONFIGS:
@@ -199,7 +136,9 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     spec = DATASET_CONFIGS[dataset_name]
 
     print(f"Loading {dataset_name} from {spec.repo} (config={spec.config}, split={spec.split})...")
-    dataset = load_hf_dataset(spec, with_audio)
+    dataset = load_dataset(spec.repo, spec.config, split=spec.split)
+    if with_audio and "audio" in dataset.column_names:
+        dataset = dataset.cast_column("audio", Audio(sampling_rate=AUDIO_SAMPLE_RATE))
 
     output_file = output_dir / f"{dataset_name}.jsonl"
     audio_dir = output_dir / "data" / dataset_name
@@ -208,18 +147,14 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
 
     print(f"Processing {len(dataset)} samples from {dataset_name}...")
     count = 0
-    skipped = 0
     with open(output_file, "w", encoding="utf-8") as fout:
         for entry in tqdm(dataset, desc=dataset_name):
             formatted = format_entry(entry, dataset_name, audio_dir, spec, with_audio)
             if formatted is None:
-                skipped += 1
                 continue
             fout.write(json.dumps(formatted) + "\n")
             count += 1
 
-    if skipped:
-        print(f"Skipped {skipped} samples (empty text or shorter than {spec.min_duration}s)")
     print(f"Saved {count} samples to {output_file}")
     return count
 
@@ -229,12 +164,9 @@ def main():
     parser.add_argument(
         "--datasets",
         nargs="+",
-        default=["default"],
-        choices=list(DATASET_CONFIGS.keys()) + ["all", "default"],
-        help=(
-            "Datasets to prepare. 'default' = Open ASR Leaderboard set "
-            "(no AMI, cleaned VoxPopuli, GigaSpeech >=1s). 'all' = every dataset."
-        ),
+        default=["all"],
+        choices=list(DATASET_CONFIGS.keys()) + ["all"],
+        help="Datasets to prepare. 'all' (default) = the full Open ASR Leaderboard set.",
     )
     parser.add_argument(
         "--no-audio",
@@ -253,8 +185,6 @@ def main():
 
     if "all" in args.datasets:
         datasets_to_prepare = list(DATASET_CONFIGS.keys())
-    elif "default" in args.datasets:
-        datasets_to_prepare = list(DEFAULT_DATASETS)
     else:
         datasets_to_prepare = args.datasets
 
@@ -263,7 +193,7 @@ def main():
         total_samples += prepare_dataset(dataset_name, output_dir, with_audio=with_audio)
 
     # Combine only the datasets prepared in this run so stale JSONLs from earlier
-    # runs (e.g. a previously prepared ami.jsonl) cannot leak into the average.
+    # runs cannot leak into the average.
     combined_file = output_dir / "test.jsonl"
     print(f"\nCreating combined file: {combined_file}")
 

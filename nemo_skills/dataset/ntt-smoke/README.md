@@ -13,12 +13,7 @@ data root. For the full reproducible suite, provide Preference-ASR directly
 rather than the broader ASR parent directory:
 
 ```bash
-# asr-leaderboard must be prepared with --datasets all: ntt-smoke uses the
-# original (uncleaned) VoxPopuli as a noise source, which is not in the
-# leaderboard default set (replaced by voxpopuli_aa; see
-# docs/evaluation/speech-audio.md).
-ns prepare_data asr-leaderboard --datasets all --data_dir <skills_data>
-ns prepare_data apptek-callcenter-dialogues fleurs covost2 contextasr-bench librispeech-pc musan gpqa --data_dir <skills_data>
+ns prepare_data asr-leaderboard apptek-callcenter-dialogues fleurs covost2 contextasr-bench librispeech-pc musan gpqa --data_dir <skills_data>
 
 export NTT_SMOKE_SOURCE_DATA_DIR=<skills_data>
 export NTT_SMOKE_PREFERENCE_ASR_DIR=/path/to/preference-asr-bench

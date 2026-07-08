@@ -15,11 +15,10 @@ ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingfac
 
 **Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `tedlium`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
 
-This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Protocol notes:
+This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the official [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) dataset using its own config names, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
 
-- **AMI and GigaSpeech drop clips shorter than 1 second** (sub-1s samples removed; both datasets otherwise stay in the average).
-- **VoxPopuli uses the Artificial Analysis cleaned set** (`voxpopuli_aa`, from [`ArtificialAnalysis/VoxPopuli-Cleaned-AA`](https://huggingface.co/datasets/ArtificialAnalysis/VoxPopuli-Cleaned-AA)) instead of the original references. The original ESB VoxPopuli is still available via `--datasets voxpopuli`.
-- Use `--datasets all` to prepare every dataset (including the original `voxpopuli`).
+- **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Both stay in the average.
+- **VoxPopuli uses the Artificial Analysis cleaned config** (`voxpopuli_cleaned_aa` = 628), reported under the `voxpopuli_aa` subset.
 
 #### Dataset Location
 
