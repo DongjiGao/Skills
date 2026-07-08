@@ -13,14 +13,13 @@ This section details how to evaluate speech and audio benchmarks, including unde
 
 ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard). Evaluates transcription quality using Word Error Rate (WER).
 
-**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `tedlium`, `gigaspeech`, `spgispeech`, `earnings22`
+**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `tedlium`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
 
 This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Protocol notes:
 
-- **AMI is excluded** from the default leaderboard average. It is still available on demand via `--datasets ami`.
+- **AMI and GigaSpeech drop clips shorter than 1 second** (sub-1s samples removed; both datasets otherwise stay in the average).
 - **VoxPopuli uses the Artificial Analysis cleaned set** (`voxpopuli_aa`, from [`ArtificialAnalysis/VoxPopuli-Cleaned-AA`](https://huggingface.co/datasets/ArtificialAnalysis/VoxPopuli-Cleaned-AA)) instead of the original references. The original ESB VoxPopuli is still available via `--datasets voxpopuli`.
-- **GigaSpeech drops clips shorter than 1 second.**
-- Use `--datasets all` to prepare every dataset (including `ami` and the original `voxpopuli`).
+- Use `--datasets all` to prepare every dataset (including the original `voxpopuli`).
 
 #### Dataset Location
 

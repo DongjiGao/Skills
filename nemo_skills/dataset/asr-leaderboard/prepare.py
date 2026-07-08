@@ -22,18 +22,18 @@ which ships audio as separate wav files rather than a decoded audio column.
 
 Leaderboard protocol (the default set prepared with no --datasets):
     librispeech_clean, librispeech_other, voxpopuli_aa, tedlium,
-    gigaspeech (samples < 1s dropped), spgispeech, earnings22
+    gigaspeech, spgispeech, earnings22, ami
+    (AMI and GigaSpeech drop samples shorter than 1s.)
 
-AMI and the original (uncleaned) VoxPopuli are intentionally excluded from the
-default leaderboard set. They remain available on demand via --datasets for
-other consumers (e.g. the ntt-smoke composite eval, which mixes AMI/VoxPopuli
-audio with noise).
+The original (uncleaned) VoxPopuli is excluded from the default set (replaced by
+voxpopuli_aa) but remains available via --datasets for other consumers (e.g. the
+ntt-smoke composite eval, which mixes AMI/VoxPopuli audio with noise).
 
 Audio paths in JSONL: /dataset/asr-leaderboard/data/{dataset}/{sample_id}.flac
 
 Usage:
     ns prepare_data asr-leaderboard                          # leaderboard default set
-    ns prepare_data asr-leaderboard --datasets all           # every dataset incl. ami + voxpopuli
+    ns prepare_data asr-leaderboard --datasets all           # every dataset incl. original voxpopuli
     ns prepare_data asr-leaderboard --datasets librispeech_clean ami
     ns prepare_data asr-leaderboard --no-audio
 """
@@ -85,12 +85,12 @@ DATASET_CONFIGS = {
     "gigaspeech": DatasetSpec(ESB_REPO, "gigaspeech", "test", "text", "id", min_duration=1.0),
     "spgispeech": DatasetSpec(ESB_REPO, "spgispeech", "test", "text", "id"),
     "earnings22": DatasetSpec(ESB_REPO, "earnings22", "test", "text", "id"),
-    "ami": DatasetSpec(ESB_REPO, "ami", "test", "text", "id"),
+    "ami": DatasetSpec(ESB_REPO, "ami", "test", "text", "id", min_duration=1.0),
 }
 
 # Datasets that make up the Open ASR Leaderboard average by default.
-# Per the 2026 protocol update: AMI is dropped, GigaSpeech drops sub-1s clips,
-# and VoxPopuli is replaced by the Artificial Analysis cleaned set.
+# Per the 2026 protocol update: AMI and GigaSpeech drop sub-1s clips, and
+# VoxPopuli is replaced by the Artificial Analysis cleaned set.
 DEFAULT_DATASETS = [
     "librispeech_clean",
     "librispeech_other",
@@ -99,6 +99,7 @@ DEFAULT_DATASETS = [
     "gigaspeech",
     "spgispeech",
     "earnings22",
+    "ami",
 ]
 
 
