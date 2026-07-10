@@ -109,6 +109,14 @@ class AudioMetrics(BaseMetrics):
         self.cpwer_total_deletions = 0
         self.cpwer_scores = []
 
+        # Per-subset cpWER accumulators, keyed by each record's
+        # ``subset_for_metrics`` tag. This lets a *merged* benchmark (e.g.
+        # ``multispeaker-sot.under20s``, whose test.jsonl concatenates several
+        # eval sets) still report a cpWER breakdown per member set in the single
+        # metrics.json, so one summarize job yields both the overall number and
+        # ``cpwer::<set>`` for each set.
+        self.cpwer_subset_totals: dict[str, dict[str, int]] = {}
+
         self.wer_c_scores = []
         self.wer_pc_scores = []
         self.per_scores = []
@@ -270,6 +278,28 @@ class AudioMetrics(BaseMetrics):
                 self.cpwer_total_substitutions += pred["cpwer_substitutions"]
                 self.cpwer_total_insertions += pred["cpwer_insertions"]
                 self.cpwer_total_deletions += pred["cpwer_deletions"]
+
+                # Bucket the same counts by the record's subset so a merged
+                # benchmark keeps a per-set cpWER breakdown.
+                subset = pred.get("subset_for_metrics")
+                if subset:
+                    totals = self.cpwer_subset_totals.setdefault(
+                        str(subset),
+                        {
+                            "errors": 0,
+                            "ref_words": 0,
+                            "substitutions": 0,
+                            "insertions": 0,
+                            "deletions": 0,
+                            "num_entries": 0,
+                        },
+                    )
+                    totals["errors"] += pred["cpwer_errors"]
+                    totals["ref_words"] += pred["cpwer_ref_words"]
+                    totals["substitutions"] += pred["cpwer_substitutions"]
+                    totals["insertions"] += pred["cpwer_insertions"]
+                    totals["deletions"] += pred["cpwer_deletions"]
+                    totals["num_entries"] += 1
             if "cpwer" in pred and pred["cpwer"] is not None:
                 self.cpwer_scores.append(pred["cpwer"])
 
@@ -405,6 +435,12 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["cpwer"] = round(100.0 * self.cpwer_total_errors / self.cpwer_total_ref_words, 2)
             if self.cpwer_scores:
                 agg_metrics["cpwer_macro"] = round(100.0 * sum(self.cpwer_scores) / len(self.cpwer_scores), 2)
+            # Per-subset cpWER breakdown (micro cpWER within each subset_for_metrics).
+            for subset, totals in sorted(self.cpwer_subset_totals.items()):
+                if totals["ref_words"] > 0:
+                    agg_metrics[f"cpwer::{subset}"] = round(100.0 * totals["errors"] / totals["ref_words"], 2)
+                    agg_metrics[f"cpwer::{subset}_ref_words"] = totals["ref_words"]
+                    agg_metrics[f"cpwer::{subset}_num_entries"] = totals["num_entries"]
             for wer_name, totals in self.structured_wer_totals.items():
                 ref_words = totals.get("ref_words", 0)
                 if ref_words > 0:
@@ -508,6 +544,10 @@ class AudioMetrics(BaseMetrics):
             base_metrics["cpwer_insertions"] = as_int
             base_metrics["cpwer_deletions"] = as_int
             base_metrics["cpwer_ref_words"] = as_int
+            # Print one line per subset when a merged benchmark was scored.
+            for subset, totals in sorted(self.cpwer_subset_totals.items()):
+                if totals["ref_words"] > 0:
+                    base_metrics[f"cpwer::{subset}"] = as_percentage
         for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
             if wer_name in self.structured_wer_scores:
                 base_metrics[f"{wer_name}_macro"] = as_percentage

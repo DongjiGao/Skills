@@ -24,7 +24,7 @@ import numpy as np
 import typer
 
 from nemo_skills.evaluation.metrics import ComputeMetrics
-from nemo_skills.evaluation.metrics.utils import read_predictions
+from nemo_skills.evaluation.evaluator.metrics_utils import read_predictions
 from nemo_skills.pipeline.app import app, typer_unpacker
 from nemo_skills.pipeline.utils import (
     check_if_mounted,

@@ -310,7 +310,7 @@ def _try_materialize_pcm_wav_segment(
                 else max(1, int(round(duration * sample_rate)))
             )
             if duration is not None and duration > 0 and start_frame + frame_count > total_frames:
-                return False
+                frame_count = total_frames - start_frame
             fin.setpos(start_frame)
             raw = fin.readframes(frame_count)
 
@@ -380,7 +380,9 @@ def materialize_audio_segment(source_path: Path, output_path: Path, offset: floa
     start = max(0, int(round(offset * info.samplerate)))
     frames = -1 if duration is None or duration <= 0 else max(1, int(round(duration * info.samplerate)))
     if frames > 0 and start + frames > info.frames:
-        return False
+        frames = info.frames - start
+        if frames <= 0:
+            return False
     audio, sample_rate = sf.read(str(source_path), start=start, frames=frames, dtype="float32")
     if getattr(audio, "size", len(audio)) == 0:
         return False
@@ -559,6 +561,13 @@ def main() -> None:
     )
     parser.add_argument("--cluster", choices=("iad", "ord"), default="iad", help="Default manifest-root selector.")
     parser.add_argument("--audio-prefix", type=str, default=None, help="Audio path prefix embedded in manifests.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory where prepared <set>/test.jsonl manifests are written. "
+        "Defaults to this dataset package directory to preserve ns prepare_data behavior.",
+    )
     parser.add_argument("--no-audio", action="store_true", help="Do not materialize clipped audio.")
     parser.add_argument("--sets", nargs="+", default=["all"], help="Benchmark sets to prepare or 'all'.")
     parser.add_argument("--max-samples", type=int, default=None, help="Maximum records per benchmark set.")
@@ -579,7 +588,7 @@ def main() -> None:
     manifest_root = _resolve_manifest_root(args.cluster, args.manifest_root)
     data_dir = Path(args.data_dir).expanduser().resolve() if args.data_dir else _default_data_dir()
     audio_prefix = Path(args.audio_prefix).expanduser() if args.audio_prefix else Path(f"/data/{BENCHMARK_NAME}/audio")
-    output_dir = Path(__file__).parent
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path(__file__).parent
     selected_sets = _resolve_values(args.sets, BENCHMARK_MANIFESTS.keys())
     data_dir.mkdir(parents=True, exist_ok=True)
 
