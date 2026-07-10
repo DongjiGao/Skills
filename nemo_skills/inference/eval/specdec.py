@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import hydra
@@ -388,7 +389,107 @@ def compute_vllm_spec_decode_delta(
 
 
 # ---------------------------------------------------------------------------
-# Generation config & task
+# MTP generation config & task (standard eval + acceptance-length metrics)
+# ---------------------------------------------------------------------------
+
+
+@nested_dataclass(kw_only=True)
+class MTPGenerationConfig(GenerationTaskConfig):
+    """Standard generation config restricted to vLLM servers.
+
+    Generation is byte-for-byte identical to the standard pipeline — no prompt
+    or output schema changes — so evaluation results (WER, BLEU, etc.) are
+    directly comparable with a non-speculative baseline.  The only addition is
+    that vLLM's cumulative ``vllm:spec_decode_*`` Prometheus counters are
+    snapshotted before and after generation, and the delta is saved to
+    ``specdec_metrics.json`` next to the output file.
+
+    Works for any task (ASR, ST, text, etc.) as long as the vLLM server has
+    speculative decoding enabled.
+    """
+
+    def _post_init_validate_server(self):
+        super()._post_init_validate_server()
+        assert self.server["server_type"] in (
+            "vllm",
+            "vllm_multimodal",
+        ), (
+            f"server_type must be 'vllm' or 'vllm_multimodal' for MTP "
+            f"generation, got '{self.server['server_type']}'"
+        )
+
+
+cs = hydra.core.config_store.ConfigStore.instance()
+cs.store(name="base_mtp_generation_config", node=MTPGenerationConfig)
+
+
+class MTPGenerationTask(GenerationTask):
+    """Standard generation task that additionally reports MTP acceptance stats.
+
+    Since Prometheus counters are cumulative, a before/after snapshot pair
+    isolates the delta to this generation run.  ``average acceptance length``
+    is ``1 + accepted_tokens / num_drafts`` (the "+1" is the target model's
+    verified token, emitted even on a full rejection).
+    """
+
+    def __init__(self, cfg: MTPGenerationConfig):
+        super().__init__(cfg)
+        self._before_metrics: SpecDecodeMetrics | None = None
+
+    def _server_base_address(self) -> str:
+        return self.cfg.server.get("base_url") or f"http://{self.cfg.server['host']}:{self.cfg.server['port']}"
+
+    def wait_for_server(self):
+        super().wait_for_server()
+        base_url = self._server_base_address()
+        LOG.info("Fetching BEFORE vLLM spec-decode metrics from %s/metrics", base_url)
+        try:
+            self._before_metrics = fetch_vllm_spec_decode_metrics(base_url)
+            LOG.info(
+                "Before snapshot: drafts=%d, draft_tokens=%d, accepted=%d",
+                self._before_metrics.num_drafts,
+                self._before_metrics.num_draft_tokens,
+                self._before_metrics.num_accepted_tokens,
+            )
+        except SpecDecodeMetricsError:
+            LOG.warning("Spec-decode metrics unavailable (speculative decoding not enabled); skipping.")
+            self._before_metrics = None
+
+    def postprocess(self):
+        super().postprocess()
+        if self._before_metrics is None:
+            return
+        base_url = self._server_base_address()
+        LOG.info("Fetching AFTER vLLM spec-decode metrics from %s/metrics", base_url)
+        try:
+            after_metrics = fetch_vllm_spec_decode_metrics(base_url)
+        except SpecDecodeMetricsError:
+            LOG.warning("Spec-decode metrics unavailable after generation; skipping.")
+            return
+        stats = compute_vllm_spec_decode_delta(self._before_metrics, after_metrics)
+        if stats is None:
+            return
+        LOG.info(
+            "Speculative decoding stats for this run: average acceptance_length=%.4f, "
+            "acceptance_rate=%.2f%%, drafts=%d, draft_tokens=%d, accepted_tokens=%d",
+            stats["acceptance_length"],
+            stats["acceptance_rate"],
+            stats["num_drafts"],
+            stats["draft_tokens"],
+            stats["accepted_tokens"],
+        )
+        if stats["per_position_acceptance_rates"]:
+            LOG.info(
+                "Per-position acceptance rates: %s",
+                [f"{r:.4f}" for r in stats["per_position_acceptance_rates"]],
+            )
+        metrics_path = Path(self.cfg.output_file).parent / "specdec_metrics.json"
+        metrics_path.write_text(json.dumps(stats, indent=2))
+        LOG.info("Saved spec-decode metrics to %s", metrics_path)
+
+
+# ---------------------------------------------------------------------------
+# SPEED-Bench generation config & task
 # ---------------------------------------------------------------------------
 
 
@@ -418,7 +519,6 @@ class SpecdecGenerationConfig(GenerationTaskConfig):
         )
 
 
-cs = hydra.core.config_store.ConfigStore.instance()
 cs.store(name="base_specdec_generation_config", node=SpecdecGenerationConfig)
 
 
