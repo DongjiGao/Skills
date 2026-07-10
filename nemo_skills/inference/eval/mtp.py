@@ -12,20 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Regular ASR evaluation plus vLLM speculative-decoding metrics.
+"""Generation module with vLLM MTP speculative-decoding metrics.
 
 Generation, prompting, and evaluation are byte-for-byte identical to the
 standard pipeline (``nemo_skills.inference.generate``): the prompt is the
 ``messages`` field of each data point, one request per data point, and the
-audio evaluator runs interleaved per sample.  The single addition is that
-vLLM's cumulative ``vllm:spec_decode_*`` Prometheus counters are snapshotted
-before and after generation, and the delta is reported as acceptance rate and
-average acceptance length, saved next to the output file as
-``specdec_metrics.json``.
+evaluator runs interleaved per sample.  The single addition is that vLLM's
+cumulative ``vllm:spec_decode_*`` Prometheus counters are snapshotted before
+and after generation, and the delta is reported as acceptance rate and average
+acceptance length, saved next to the output file as ``specdec_metrics.json``.
 
 Unlike ``specdec.py`` (SPEED-Bench), this module never alters prompts,
-responses, or the output schema, so WER results are directly comparable with
-a non-speculative baseline run.
+responses, or the output schema, so evaluation results are directly comparable
+with a non-speculative baseline run.  Works for any task (ASR, ST, text, etc.)
+as long as the vLLM server has speculative decoding enabled.
 """
 
 import json
@@ -48,7 +48,7 @@ LOG = logging.getLogger(get_logger_name(__file__))
 
 
 @nested_dataclass(kw_only=True)
-class ASRMTPGenerationConfig(GenerationTaskConfig):
+class MTPGenerationConfig(GenerationTaskConfig):
     """Standard generation config restricted to vLLM servers.
 
     The acceptance metrics come from the server's global Prometheus
@@ -61,16 +61,16 @@ class ASRMTPGenerationConfig(GenerationTaskConfig):
             "vllm",
             "vllm_multimodal",
         ), (
-            f"server_type must be 'vllm' or 'vllm_multimodal' for ASR MTP "
+            f"server_type must be 'vllm' or 'vllm_multimodal' for MTP "
             f"generation, got '{self.server['server_type']}'"
         )
 
 
 cs = hydra.core.config_store.ConfigStore.instance()
-cs.store(name="base_asr_mtp_generation_config", node=ASRMTPGenerationConfig)
+cs.store(name="base_mtp_generation_config", node=MTPGenerationConfig)
 
 
-class ASRMTPGenerationTask(GenerationTask):
+class MTPGenerationTask(GenerationTask):
     """Standard generation task that additionally reports MTP acceptance stats.
 
     Since Prometheus counters are cumulative, a before/after snapshot pair
@@ -79,7 +79,7 @@ class ASRMTPGenerationTask(GenerationTask):
     verified token, emitted even on a full rejection).
     """
 
-    def __init__(self, cfg: ASRMTPGenerationConfig):
+    def __init__(self, cfg: MTPGenerationConfig):
         super().__init__(cfg)
         self._before_metrics = None
 
@@ -135,20 +135,20 @@ class ASRMTPGenerationTask(GenerationTask):
         LOG.info("Saved spec-decode metrics to %s", metrics_path)
 
 
-GENERATION_TASK_CLASS = ASRMTPGenerationTask
+GENERATION_TASK_CLASS = MTPGenerationTask
 
 
-@hydra.main(version_base=None, config_name="base_asr_mtp_generation_config")
-def asr_mtp_generation(cfg: ASRMTPGenerationConfig):
-    cfg = ASRMTPGenerationConfig(_init_nested=True, **cfg)
+@hydra.main(version_base=None, config_name="base_mtp_generation_config")
+def mtp_generation(cfg: MTPGenerationConfig):
+    cfg = MTPGenerationConfig(_init_nested=True, **cfg)
     LOG.info("Config used: %s", cfg)
 
-    task = ASRMTPGenerationTask(cfg)
+    task = MTPGenerationTask(cfg)
     task.generate()
 
 
 HELP_MESSAGE = get_help_message(
-    ASRMTPGenerationConfig,
+    MTPGenerationConfig,
     server_params=server_params(),
 )
 
@@ -157,4 +157,4 @@ if __name__ == "__main__":
         print(HELP_MESSAGE)
     else:
         setup_logging()
-        asr_mtp_generation()
+        mtp_generation()
