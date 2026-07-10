@@ -15,8 +15,8 @@
 import logging
 from collections import defaultdict
 
+from nemo_skills.evaluation.evaluator.metrics_utils import is_correct_judgement
 from nemo_skills.evaluation.metrics.base import BaseMetrics, as_int, as_percentage
-from nemo_skills.evaluation.metrics.utils import is_correct_judgement
 from nemo_skills.utils import get_logger_name
 
 LOG = logging.getLogger(get_logger_name(__file__))

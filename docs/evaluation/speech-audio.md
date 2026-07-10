@@ -481,15 +481,6 @@ or
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
 
-## LibriSpeechMix
-
-LibriSpeechMix is a multi-talker LibriSpeech benchmark for overlapped ASR and speaker-attributed ASR (SA-ASR). The NeMo Skills integration supports:
-
-- `dev-clean` and `test-clean`
-- `1mix`, `2mix`, and `3mix`
-- standard overlapped ASR scoring
-- SA-ASR scoring with the upstream default `8prof-2utt` speaker-profile setting
-
 ## Preparing Data
 
 These benchmarks require audio files for meaningful evaluation. **Audio files are downloaded by default** to ensure proper evaluation.
@@ -865,113 +856,145 @@ or
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
 
-## LibriSpeechMix
+## Multispeaker ASR (cpWER)
 
-LibriSpeechMix evaluates overlapped transcription and speaker-attributed transcription on mixtures derived from LibriSpeech `dev-clean` and `test-clean`.
+Multispeaker ASR evaluates SALM-style serialized-overlap transcription (SOT) with speaker tags like `<spk:0>` and `<spk:1>`. The primary metric is **cpWER** (concatenated minimum-permutation WER), computed in the shared audio evaluator (`task_type=MS-ASR`) using:
+
+- NeMo's Hungarian-assignment cpWER (`kaldialign` edit distance)
+- CHIME-8 text normalization (vendored standalone normalizer matching `meeteval-wer --normalizer chime8`)
+
+Scoring flow:
+
+```
+SALM output with <spk:N> tags
+  -> speaker-wise streams
+  -> CHIME-8 normalization
+  -> session cpWER (Hungarian assignment)
+  -> corpus-level cpWER in AudioMetrics
+```
 
 ### Dataset Location
 
-- Benchmark group is defined in [`nemo_skills/dataset/librispeechmix/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/librispeechmix/__init__.py)
-- Official manifests come from [NaoyukiKanda/LibriSpeechMix](https://github.com/NaoyukiKanda/LibriSpeechMix)
-- Source speech audio comes from [LibriSpeech OpenSLR-12](https://www.openslr.org/12/)
+- Benchmark group: [`nemo_skills/dataset/multispeaker-sot/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/multispeaker-sot/__init__.py)
+- Evaluator: [`nemo_skills/evaluation/evaluator/audio.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/evaluator/audio.py) (`evaluate_msasr`)
+- cpWER engine: [`nemo_skills/evaluation/metrics/cpwer_utils.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/metrics/cpwer_utils.py)
+- Source manifests: cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
 
 ### Supported Benchmarks
 
-- Overlapped ASR:
-  `librispeechmix.asr-dev-clean-1mix`,
-  `librispeechmix.asr-dev-clean-2mix`,
-  `librispeechmix.asr-dev-clean-3mix`,
-  `librispeechmix.asr-test-clean-1mix`,
-  `librispeechmix.asr-test-clean-2mix`,
-  `librispeechmix.asr-test-clean-3mix`
-- Speaker-attributed ASR:
-  `librispeechmix.sa-asr-dev-clean-1mix`,
-  `librispeechmix.sa-asr-dev-clean-2mix`,
-  `librispeechmix.sa-asr-dev-clean-3mix`,
-  `librispeechmix.sa-asr-test-clean-1mix`,
-  `librispeechmix.sa-asr-test-clean-2mix`,
-  `librispeechmix.sa-asr-test-clean-3mix`
+Under-20s (`under20s_eval_set`, 10-20s segments):
 
-### Preparing LibriSpeechMix Data
+- `multispeaker-sot.under20s-ami-ihm-dev`
+- `multispeaker-sot.under20s-ami-ihm-test`
+- `multispeaker-sot.under20s-ami-sdm-test`
+- `multispeaker-sot.under20s-chaes-ch109-test`
+- `multispeaker-sot.under20s-libri-am-dev`
+- `multispeaker-sot.under20s-mixer6-ch04-test`
 
-LibriSpeechMix downloads LibriSpeech `dev-clean` and `test-clean` from OpenSLR, caches source WAV files for speaker profiles, synthesizes mixed WAVs, and writes benchmark JSONL files under your external `--data_dir`.
+60-90s (`60s_90s_eval_set`):
+
+- `multispeaker-sot.60-90s-ami-ihm-test`
+- `multispeaker-sot.60-90s-ami-sdm-test`
+- `multispeaker-sot.60-90s-chaes-ch109-test`
+- `multispeaker-sot.60-90s-mixer6-ch04-test`
+
+120-180s (`120s_180s_eval_set`):
+
+- `multispeaker-sot.120-180s-ami-ihm-test`
+- `multispeaker-sot.120-180s-ami-sdm-test`
+- `multispeaker-sot.120-180s-chaes-ch109-test`
+- `multispeaker-sot.120-180s-mixer6-ch04-test`
+
+Full-length (`full_length_eval_set`):
+
+- `multispeaker-sot.full-ami-ihm-test`
+- `multispeaker-sot.full-ami-sdm-test`
+- `multispeaker-sot.full-chaes-ch109-test`
+- `multispeaker-sot.full-mixer6-ch04-test`
+
+LibriSpeechMix (`libri_speech_mix`, clean test, 1/2/3 speakers):
+
+- `multispeaker-sot.lsm-test-clean-1mix`
+- `multispeaker-sot.lsm-test-clean-2mix`
+- `multispeaker-sot.lsm-test-clean-3mix`
+
+### Preparing Data
+
+Manifests are converted from the shared multispeaker eval manifest root. Audio segments are materialized into your external `--data_dir` by default.
 
 ```bash
-ns prepare_data librispeechmix --data_dir=/path/to/data --cluster=<cluster_name>
+ns prepare_data multispeaker-sot --cluster=iad --data_dir=/path/to/data
 ```
 
-Prepare only specific splits, mixtures, or modes:
+Prepare a subset only:
 
 ```bash
-ns prepare_data librispeechmix \
+python -m nemo_skills.dataset.prepare multispeaker-sot \
     --data_dir=/path/to/data \
-    --splits dev-clean \
-    --mixes 2mix 3mix \
-    --modes asr sa-asr
-```
-
-Override the absolute audio-path prefix embedded in JSONL files:
-
-```bash
-ns prepare_data librispeechmix \
-    --data_dir=/path/to/data \
-    --audio-prefix /dataset/librispeechmix/audio
-```
-
-### Evaluation Assumptions
-
-- `1mix` uses standard WER against the single reference transcript.
-- `2mix` and `3mix` use permutation-invariant WER over newline-separated hypothesized utterances.
-- SA-ASR expects speaker-labeled lines in the format `speaker_<profile_index>: <transcript>`.
-- SA-ASR scoring matches hypotheses to the reference `speaker_profile_index` values instead of transcript order.
-
-## LibriSpeechMix SOT
-
-LibriSpeechMix SOT evaluates multispeaker ASR with serialized speaker tags. It uses the official [LibriSpeechMix](https://github.com/NaoyukiKanda/LibriSpeechMix) JSONL lists and LibriSpeech/OpenSLR audio, then writes NeMo SOT manifests with `[s0]`, `[s1]`, etc. reference text, RTTM supervision, and reference SegLST files.
-
-Supported benchmark variants:
-
-- `librispeechmix-sot.under20s-test-clean-1mix`
-- `librispeechmix-sot.under20s-test-clean-2mix`
-- `librispeechmix-sot.under20s-test-clean-3mix`
-- `librispeechmix-sot.over20s-test-clean-1mix`
-- `librispeechmix-sot.over20s-test-clean-2mix`
-- `librispeechmix-sot.over20s-test-clean-3mix`
-
-Dev smoke variants are also available with `dev-clean` in place of `test-clean`. The duration split is explicit: `under20s` contains records with mixed duration `<= 20.0` seconds, and `over20s` contains records with duration `> 20.0` seconds.
-
-Prepare the required test-clean variants:
-
-```bash
-ns prepare_data librispeechmix-sot --cluster=local --data_dir=/path/to/ns-data --splits test-clean --mixes 1mix 2mix 3mix
-```
-
-For a tiny local smoke using a pre-cloned LibriSpeechMix checkout:
-
-```bash
-python -m nemo_skills.dataset.prepare librispeechmix-sot \
-    --data_dir=/path/to/lsm-sot-data \
-    --librispeechmix-dir=/path/to/LibriSpeechMix \
-    --splits test-clean \
-    --mixes 1mix \
-    --max-samples 2 \
+    --sets lsm-test-clean-2mix \
     --no-audio
 ```
 
-The primary metric is corpus-level no-PnC cpWER. The scorer reads reference SOT text from `text`, reads hypotheses from `pred_text` when available and otherwise `generation`, splits both by `[sN]` tags, removes punctuation/case, and applies minimum speaker permutation matching. It also writes `*_ref.seglst.json` and `*_hyp.seglst.json`; when `meeteval-wer` is installed it additionally runs MeetEval cpWER with `--normalizer chime8 --partial`.
+Override the audio path prefix embedded in JSONL files:
 
-True speaker-attributed baselines should use a SOT-capable generation module, for example:
+```bash
+python -m nemo_skills.dataset.prepare multispeaker-sot \
+    --data_dir=/path/to/data \
+    --audio-prefix=/data/multispeaker-sot/audio
+```
+
+Each prepared record sets `task_type=MS-ASR`, stores `<spk:N>` reference text in `text` / `expected_answer`, and uses the default prompt:
+
+`Transcribe the mixed audio with speaker tags like <spk:0> hello <spk:1> yes.`
+
+### Running Evaluation
 
 ```bash
 ns eval \
-    --benchmarks=librispeechmix-sot.under20s-test-clean-1mix \
-    --generation_module=nemo_skills.inference.librispeechmix_rtmtasr \
-    --server_type=none \
-    --server_gpus=0 \
-    --extra_arguments="++model_path=/path/to/MSCanary-v2.nemo ++spk_supervision=rttm ++nemo_root=/path/to/NeMo"
+    --cluster=iad \
+    --benchmarks=multispeaker-sot.lsm-test-clean-2mix \
+    --output_dir=/workspace/msasr-eval \
+    --server_type=megatron \
+    --model=/workspace/checkpoint \
+    --data_dir=/data \
+    --installation_command="pip install -r requirements/audio.txt"
 ```
 
-`nemo_skills.inference.librispeechmix_multitalker_parakeet` wraps the streaming Multitalker Parakeet path. The generic SALM backend can run `nvidia/canary-qwen-2.5b`, but the public model card documents generic ASR output, not SOT speaker-tagged output, so treat it as a generic ASR baseline unless a run proves it emits `[sN]` speaker-attributed text.
+Evaluate the full benchmark group:
+
+```bash
+ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...
+```
+
+Default evaluator settings:
+
+- `++eval_type=audio`
+- `++eval_config.speaker_token='<spk:*>'`
+- `++eval_config.cpwer_normalization=chime8`
+
+### Understanding Results
+
+```
+<output_dir>/
+└── eval-results/
+    └── multispeaker-sot/
+        ├── metrics.json
+        ├── multispeaker-sot.lsm-test-clean-1mix/
+        │   └── metrics.json
+        └── multispeaker-sot.full-ami-ihm-test/
+            └── metrics.json
+```
+
+Example per-dataset table:
+
+```
+evaluation_mode | cpwer | cpwer_errors | cpwer_ref_words | num_entries
+pass@1          | 12.34 | 123          | 997             | 2620
+```
+
+Group `metrics.json` also reports duration-collapsed aggregates (`all`, `under20s`, `60-90s`, `120-180s`, `full`) and dataset/mix rollups (`ami-ihm-test`, `lsm-test-clean`, `1mix`, `2mix`, `3mix`).
+
+The vendored NeMo cpWER + CHIME-8 normalizer path is parity-checked against `meeteval` + `chime_utils` in `tests/test_audio_msasr.py`.
 
 ## Numb3rs
 

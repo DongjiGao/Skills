@@ -33,7 +33,6 @@ class SALMConfig(BackendConfig):
     """Configuration for SALM backend."""
 
     model_name: Optional[str] = None
-    batch_size: int = 16
     warmup: bool = True
     user_prompt: str = DEFAULT_ASR_PROMPT
 
@@ -50,7 +49,6 @@ class SALMConfig(BackendConfig):
             "temperature",
             "top_p",
             "top_k",
-            "batch_size",
             "warmup",
             "user_prompt",
         }
@@ -178,7 +176,7 @@ class SALMBackend(InferenceBackend):
 
                 for out_idx, path in enumerate(temp_paths):
                     req = requests[valid_indices[out_idx]]
-                    user_prompt = req.user_prompt or req.extra_params.get("user_prompt", self.salm_config.user_prompt)
+                    user_prompt = req.user_prompt or self.salm_config.user_prompt
 
                     prompts.append(
                         [
@@ -214,7 +212,7 @@ class SALMBackend(InferenceBackend):
                         debug_info={
                             "backend": "salm",
                             "model": self._model_name,
-                            "user_prompt": req.user_prompt or req.extra_params.get("user_prompt", self.salm_config.user_prompt),
+                            "user_prompt": req.user_prompt or self.salm_config.user_prompt,
                         },
                     )
 

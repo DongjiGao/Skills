@@ -228,6 +228,57 @@ def summarize_results(
     else:
         cluster_config = None
 
+    # ── Wait for results to be written / visible before detection ──────────
+    # A summarize task is scheduled to run *after* generation, but on a shared
+    # filesystem (Lustre) the just-merged ``output.jsonl`` can still be invisible
+    # to this node for a short window (metadata-propagation lag), or the
+    # chunk-merge may finalize a hair after the generation job's exit is
+    # observed. Either way the globs below would find nothing and we'd raise
+    # "does not contain any valid ... output*jsonl files" even though the eval
+    # actually succeeded (the files appear moments later). Poll the same globs
+    # the detection uses for a bounded window before proceeding. Tunable via:
+    #   NEMO_SKILLS_SUMMARIZE_WAIT_SECS       (default 300) total wait budget
+    #   NEMO_SKILLS_SUMMARIZE_WAIT_POLL_SECS  (default 10)  sleep between polls
+    # Set the budget to 0 to restore the original fail-fast behavior.
+    import time as _time
+
+    _wait_secs = max(0, int(os.environ.get("NEMO_SKILLS_SUMMARIZE_WAIT_SECS", "300")))
+    _poll_secs = max(1, int(os.environ.get("NEMO_SKILLS_SUMMARIZE_WAIT_POLL_SECS", "10")))
+    if _wait_secs:
+        _wanted = set(benchmarks.split(",")) if benchmarks else None
+
+        def _results_visible():
+            # Option 3: results_dir itself is a benchmark dir.
+            if glob.glob(f"{results_dir}/output*jsonl"):
+                return True
+            # Option 1: descend into an eval-results subdir if present.
+            _base = results_dir
+            _cand = Path(results_dir) / "eval-results"
+            if _cand.exists() and _cand.is_dir():
+                _base = str(_cand)
+            _subdirs = [
+                p
+                for p in glob.glob(f"{_base}/*")
+                if "-logs" not in os.path.basename(p) and Path(p).is_dir()
+            ]
+            if _wanted is not None:
+                _subdirs = [p for p in _subdirs if Path(p).name in _wanted]
+            if not _subdirs:
+                return False
+            # Every (requested) benchmark dir must actually have output*jsonl.
+            return all(glob.glob(f"{p}/output*jsonl") for p in _subdirs)
+
+        _deadline = _time.time() + _wait_secs
+        while not _results_visible() and _time.time() < _deadline:
+            LOG.info(
+                "summarize_results: results not yet visible under %s; "
+                "waiting up to %ss (polling every %ss) for output*.jsonl ...",
+                results_dir,
+                _wait_secs,
+                _poll_secs,
+            )
+            _time.sleep(_poll_secs)
+
     # Check for all possible directory structures
     # 1. {results_dir}/eval-results/{benchmark}/output*jsonl
     # 2. {results_dir}/{benchmark}/output*jsonl

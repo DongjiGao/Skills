@@ -19,7 +19,6 @@ Available backends:
 - magpie_tts: MagpieTTS text-to-speech (audio output from text input)
 - nemo_asr: NeMo ASR speech-to-text (text output from audio input)
 - salm: SALM speech-to-text using chat-style generate API (e.g. canary-qwen-2.5b)
-- multitalker_parakeet: Multitalker Parakeet streaming speaker-attributed ASR
 
 Backends are lazily loaded to avoid importing heavy dependencies upfront.
 """
@@ -43,7 +42,6 @@ BACKEND_REGISTRY = {
     "magpie_tts": ("magpie_tts_backend", "MagpieTTSBackend"),
     "nemo_asr": ("nemo_asr_backend", "NeMoASRBackend"),
     "salm": ("salm_backend", "SALMBackend"),
-    "multitalker_parakeet": ("multitalker_parakeet_backend", "MultitalkerParakeetBackend"),
 }
 
 

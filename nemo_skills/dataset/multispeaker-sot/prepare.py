@@ -37,27 +37,38 @@ class InvalidAudioSegmentError(ValueError):
     """Raised when a manifest row cannot produce a non-empty audio segment."""
 
 BENCHMARK_MANIFESTS = {
+    # under20s (10-20s segments)
     "under20s-ami-ihm-dev": "under20s_eval_set/ami_ihm_dev_10-20s.json",
-    "under20s-ami-sdm-test": "under20s_eval_set/ami_sdm_test_10-20s.json",
     "under20s-ami-ihm-test": "under20s_eval_set/ami_test_10-20s.json",
+    "under20s-ami-sdm-test": "under20s_eval_set/ami_sdm_test_10-20s.json",
     "under20s-chaes-ch109-test": "under20s_eval_set/ch109_test_10-20s.json",
     "under20s-libri-am-dev": "under20s_eval_set/libri-am_dev_10-20s.json",
-    "under20s-lsm-test-clean-1mix": "under20s_eval_set/lsm-test-clean-1mix_nemo_sot.json",
-    "under20s-lsm-test-clean-2mix": "under20s_eval_set/lsm-test-clean-2mix_nemo_sot.json",
-    "under20s-lsm-test-clean-3mix": "under20s_eval_set/lsm-test-clean-3mix_nemo_sot.json",
     "under20s-mixer6-ch04-test": "under20s_eval_set/mixer6_test_CH04mic_10-20s.json",
-    "over20s-ami-ihm-test": "over20s_eval_set/ami_ihm_test.json",
-    "over20s-ami-sdm-test": "over20s_eval_set/ami_sdm_test.json",
-    "over20s-chaes-ch109-test": "over20s_eval_set/ch109_test.json",
-    "over20s-mixer6-ch04-test": "over20s_eval_set/mixer6_ch4_eval.json",
+    # 60-90s segments
+    "60-90s-ami-ihm-test": "60s_90s_eval_set/ami_ihm_test_60-90s.json",
+    "60-90s-ami-sdm-test": "60s_90s_eval_set/ami_sdm_test_60-90s.json",
+    "60-90s-chaes-ch109-test": "60s_90s_eval_set/ch109_test_60-90s.json",
+    "60-90s-mixer6-ch04-test": "60s_90s_eval_set/mixer6_ch4_test_60-90s.json",
+    # 120-180s segments
+    "120-180s-ami-ihm-test": "120s_180s_eval_set/ami_ihm_test_120-180s.json",
+    "120-180s-ami-sdm-test": "120s_180s_eval_set/ami_sdm_test_120-180s.json",
+    "120-180s-chaes-ch109-test": "120s_180s_eval_set/ch109_test_120-180s.json",
+    "120-180s-mixer6-ch04-test": "120s_180s_eval_set/mixer6_ch4_test_120-180s.json",
+    # full-length sessions
+    "full-ami-ihm-test": "full_length_eval_set/ami_ihm_test_full.json",
+    "full-ami-sdm-test": "full_length_eval_set/ami_sdm_test_full.json",
+    "full-chaes-ch109-test": "full_length_eval_set/ch109_test_full.json",
+    "full-mixer6-ch04-test": "full_length_eval_set/mixer6_ch4_test_full.json",
+    # LibriSpeechMix (clean test, 1/2/3 speakers)
+    "lsm-test-clean-1mix": "libri_speech_mix/lsm-test-clean-1mix_nemo_sot.json",
+    "lsm-test-clean-2mix": "libri_speech_mix/lsm-test-clean-2mix_nemo_sot.json",
+    "lsm-test-clean-3mix": "libri_speech_mix/lsm-test-clean-3mix_nemo_sot.json",
 }
 
-REFERENCE_SEGLST_FILENAMES = {
-    "over20s-ami-ihm-test": "ref_ami_ihm_test.seglst.json",
-    "over20s-ami-sdm-test": "ref_ami_sdm_test.seglst.json",
-    "over20s-chaes-ch109-test": "ref_ch109_test.seglst.json",
-    "over20s-mixer6-ch04-test": "ref_mixer6_ch4_test.seglst.json",
-}
+# All current eval sets embed the SOT reference directly in each manifest's "text"
+# field, so no external SegLST companion files are needed. Benchmarks may still opt
+# in per-row via "seglst_filepath"/"reference_seglst_filepath".
+REFERENCE_SEGLST_FILENAMES: dict[str, str] = {}
 
 
 def _default_data_dir() -> Path:
@@ -299,7 +310,7 @@ def _try_materialize_pcm_wav_segment(
                 else max(1, int(round(duration * sample_rate)))
             )
             if duration is not None and duration > 0 and start_frame + frame_count > total_frames:
-                return False
+                frame_count = total_frames - start_frame
             fin.setpos(start_frame)
             raw = fin.readframes(frame_count)
 
@@ -369,7 +380,9 @@ def materialize_audio_segment(source_path: Path, output_path: Path, offset: floa
     start = max(0, int(round(offset * info.samplerate)))
     frames = -1 if duration is None or duration <= 0 else max(1, int(round(duration * info.samplerate)))
     if frames > 0 and start + frames > info.frames:
-        return False
+        frames = info.frames - start
+        if frames <= 0:
+            return False
     audio, sample_rate = sf.read(str(source_path), start=start, frames=frames, dtype="float32")
     if getattr(audio, "size", len(audio)) == 0:
         return False
@@ -458,6 +471,8 @@ def build_record(
         "speaker_tag_map": speaker_tag_map,
         "speaker_tag_style": speaker_tag_style,
         "subset_for_metrics": benchmark,
+        "task_type": "MS-ASR",
+        "category": "nonjudge",
         "messages": [
             {
                 "role": "user",
@@ -538,9 +553,21 @@ def main() -> None:
         default=None,
         help="Alias for --data_dir that does not conflict with ns prepare_data's top-level --data_dir.",
     )
-    parser.add_argument("--manifest-root", type=str, default=None, help="Root containing under20s/over20s eval sets.")
+    parser.add_argument(
+        "--manifest-root",
+        type=str,
+        default=None,
+        help="Root containing the eval sets (under20s/60s_90s/120s_180s/full_length/libri_speech_mix).",
+    )
     parser.add_argument("--cluster", choices=("iad", "ord"), default="iad", help="Default manifest-root selector.")
     parser.add_argument("--audio-prefix", type=str, default=None, help="Audio path prefix embedded in manifests.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory where prepared <set>/test.jsonl manifests are written. "
+        "Defaults to this dataset package directory to preserve ns prepare_data behavior.",
+    )
     parser.add_argument("--no-audio", action="store_true", help="Do not materialize clipped audio.")
     parser.add_argument("--sets", nargs="+", default=["all"], help="Benchmark sets to prepare or 'all'.")
     parser.add_argument("--max-samples", type=int, default=None, help="Maximum records per benchmark set.")
@@ -561,7 +588,7 @@ def main() -> None:
     manifest_root = _resolve_manifest_root(args.cluster, args.manifest_root)
     data_dir = Path(args.data_dir).expanduser().resolve() if args.data_dir else _default_data_dir()
     audio_prefix = Path(args.audio_prefix).expanduser() if args.audio_prefix else Path(f"/data/{BENCHMARK_NAME}/audio")
-    output_dir = Path(__file__).parent
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path(__file__).parent
     selected_sets = _resolve_values(args.sets, BENCHMARK_MANIFESTS.keys())
     data_dir.mkdir(parents=True, exist_ok=True)
 

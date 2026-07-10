@@ -34,6 +34,8 @@ build
 *.lock
 
 __pycache__
+*.pyc
+.pycache_check/
 .ipynb_checkpoints
 
 cluster_configs/*

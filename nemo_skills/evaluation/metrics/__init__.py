@@ -15,4 +15,4 @@
 from nemo_skills.evaluation.metrics.base import default_formatting
 from nemo_skills.evaluation.metrics.compute_metrics import ComputeMetrics
 from nemo_skills.evaluation.metrics.map_metrics import get_metrics
-from nemo_skills.evaluation.metrics.utils import read_predictions
+from nemo_skills.evaluation.evaluator.metrics_utils import read_predictions

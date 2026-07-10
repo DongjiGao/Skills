@@ -19,12 +19,17 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def test_group_registration():
     group_module, _ = get_dataset_module("multispeaker-sot")
     assert group_module.IS_BENCHMARK_GROUP is True
+    # one benchmark from each of the registered eval sets
     assert "multispeaker-sot.under20s-ami-ihm-dev" in group_module.BENCHMARKS
-    assert "multispeaker-sot.over20s-mixer6-ch04-test" in group_module.BENCHMARKS
+    assert "multispeaker-sot.60-90s-ami-ihm-test" in group_module.BENCHMARKS
+    assert "multispeaker-sot.120-180s-mixer6-ch04-test" in group_module.BENCHMARKS
+    assert "multispeaker-sot.full-chaes-ch109-test" in group_module.BENCHMARKS
+    assert "multispeaker-sot.lsm-test-clean-1mix" in group_module.BENCHMARKS
 
-    sub_module, _ = get_dataset_module("multispeaker-sot.under20s-ami-ihm-dev")
-    assert sub_module.METRICS_TYPE == "librispeechmix_sot"
-    assert "++eval_config.reference_tag_style=spk" in sub_module.EVAL_ARGS
+    sub_module, _ = get_dataset_module("multispeaker-sot.60-90s-ami-ihm-test")
+    assert sub_module.METRICS_TYPE == "audio"
+    assert "++eval_config.speaker_token='<spk:*>'" in sub_module.EVAL_ARGS
+    assert "++eval_config.cpwer_normalization=chime8" in sub_module.EVAL_ARGS
 
 
 def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
@@ -66,12 +71,16 @@ def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
     assert record["messages"][0]["audio"]["path"] == record["audio_filepath"]
 
 
-def test_over20_manifest_conversion_uses_reference_seglst(tmp_path):
+def test_seglst_manifest_conversion_uses_row_reference_seglst(tmp_path, monkeypatch):
+    # Register an ad-hoc benchmark that resolves its SOT reference from a per-row
+    # seglst_filepath (the current eval sets embed text inline, but the seglst path
+    # remains supported for manifests that opt in).
+    monkeypatch.setitem(prepare.BENCHMARK_MANIFESTS, "seglst-ami-ihm-test", "longform_eval_set/ami_ihm_test.json")
     manifest_root = tmp_path / "manifests"
     audio = tmp_path / "audio" / "session.wav"
     audio.parent.mkdir(parents=True)
     audio.write_bytes(b"placeholder")
-    seglst = manifest_root / "over20s_eval_set/ref_session.seglst.json"
+    seglst = manifest_root / "longform_eval_set/ref_session.seglst.json"
     seglst.parent.mkdir(parents=True, exist_ok=True)
     seglst.write_text(
         json.dumps(
@@ -83,7 +92,7 @@ def test_over20_manifest_conversion_uses_reference_seglst(tmp_path):
         encoding="utf-8",
     )
     _write_jsonl(
-        manifest_root / "over20s_eval_set/ami_ihm_test.json",
+        manifest_root / "longform_eval_set/ami_ihm_test.json",
         [
             {
                 "audio_filepath": str(audio),
@@ -96,7 +105,7 @@ def test_over20_manifest_conversion_uses_reference_seglst(tmp_path):
     )
 
     count = prepare.prepare_manifest_set(
-        "over20s-ami-ihm-test",
+        "seglst-ami-ihm-test",
         manifest_root=manifest_root,
         output_dir=tmp_path / "bench",
         data_dir=tmp_path / "data",
@@ -107,21 +116,25 @@ def test_over20_manifest_conversion_uses_reference_seglst(tmp_path):
     )
 
     assert count == 1
-    record = json.loads((tmp_path / "bench/over20s-ami-ihm-test/test.jsonl").read_text().splitlines()[0])
+    record = json.loads((tmp_path / "bench/seglst-ami-ihm-test/test.jsonl").read_text().splitlines()[0])
     assert record["text"] == "<spk:0> hello <spk:1> yes"
     assert record["speaker_tag_map"] == {"A": "s0", "B": "s1"}
     assert record["reference_seglst_filepath"].startswith("/data/multispeaker-sot/seglst/")
 
 
 
-def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
+def test_seglst_manifest_conversion_uses_companion_reference_seglst(tmp_path, monkeypatch):
+    # Register an ad-hoc benchmark whose SOT reference is resolved from a companion
+    # SegLST file (looked up via REFERENCE_SEGLST_FILENAMES).
+    monkeypatch.setitem(prepare.BENCHMARK_MANIFESTS, "seglst-ami-ihm-test", "longform_eval_set/ami_ihm_test.json")
+    monkeypatch.setitem(prepare.REFERENCE_SEGLST_FILENAMES, "seglst-ami-ihm-test", "ref_ami_ihm_test.seglst.json")
     manifest_root = tmp_path / "manifests"
     audio = tmp_path / "audio" / "EN2002a.Mix-Headset.wav"
     audio_b = tmp_path / "audio" / "EN2002b.Mix-Headset.wav"
     audio.parent.mkdir(parents=True)
     audio.write_bytes(b"placeholder")
     audio_b.write_bytes(b"placeholder")
-    seglst = manifest_root / "over20s_eval_set/ref_ami_ihm_test.seglst.json"
+    seglst = manifest_root / "longform_eval_set/ref_ami_ihm_test.seglst.json"
     seglst.parent.mkdir(parents=True, exist_ok=True)
     seglst.write_text(
         json.dumps(
@@ -134,7 +147,7 @@ def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
         encoding="utf-8",
     )
     _write_jsonl(
-        manifest_root / "over20s_eval_set/ami_ihm_test.json",
+        manifest_root / "longform_eval_set/ami_ihm_test.json",
         [
             {
                 "audio_filepath": str(audio),
@@ -154,7 +167,7 @@ def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
     )
 
     count = prepare.prepare_manifest_set(
-        "over20s-ami-ihm-test",
+        "seglst-ami-ihm-test",
         manifest_root=manifest_root,
         output_dir=tmp_path / "bench",
         data_dir=tmp_path / "data",
@@ -165,7 +178,7 @@ def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
     )
 
     assert count == 2
-    records = [json.loads(line) for line in (tmp_path / "bench/over20s-ami-ihm-test/test.jsonl").read_text().splitlines()]
+    records = [json.loads(line) for line in (tmp_path / "bench/seglst-ami-ihm-test/test.jsonl").read_text().splitlines()]
     assert len({record["sample_id"] for record in records}) == 2
     assert len({record["audio_filepath"] for record in records}) == 2
     assert records[0]["sample_id"].startswith("EN2002a.Mix-Headset_")
@@ -177,32 +190,37 @@ def test_over20_manifest_conversion_uses_companion_reference_seglst(tmp_path):
     assert {entry["session_id"] for entry in ref_entries} == {"EN2002a"}
 
 
-def test_group_score_reports_duration_collapsed_dataset_and_mix_canonical_cpwer():
+def test_group_score_reports_duration_collapsed_dataset_and_mix_cpwer():
     group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
     combined = {
         "multispeaker-sot.under20s-ami-ihm-test": {
-            "pass@1": {"canonical_cpwer_errors": 3, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+            "pass@1": {"cpwer_errors": 3, "cpwer_ref_words": 10, "num_entries": 1}
         },
-        "multispeaker-sot.over20s-ami-ihm-test": {
-            "pass@1": {"canonical_cpwer_errors": 7, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+        "multispeaker-sot.full-ami-ihm-test": {
+            "pass@1": {"cpwer_errors": 7, "cpwer_ref_words": 10, "num_entries": 1}
         },
-        "multispeaker-sot.under20s-lsm-test-clean-1mix": {
-            "pass@1": {"canonical_cpwer_errors": 1, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+        "multispeaker-sot.lsm-test-clean-1mix": {
+            "pass@1": {"cpwer_errors": 1, "cpwer_ref_words": 10, "num_entries": 1}
         },
-        "multispeaker-sot.under20s-lsm-test-clean-2mix": {
-            "pass@1": {"canonical_cpwer_errors": 2, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+        "multispeaker-sot.lsm-test-clean-2mix": {
+            "pass@1": {"cpwer_errors": 2, "cpwer_ref_words": 10, "num_entries": 1}
         },
-        "multispeaker-sot.under20s-lsm-test-clean-3mix": {
-            "pass@1": {"canonical_cpwer_errors": 3, "canonical_cpwer_ref_words": 10, "num_entries": 1}
+        "multispeaker-sot.lsm-test-clean-3mix": {
+            "pass@1": {"cpwer_errors": 3, "cpwer_ref_words": 10, "num_entries": 1}
         },
     }
 
     output = group_module.compute_score(combined)["pass@1"]
 
-    assert output["ami-ihm-test"]["canonical_cpwer"] == 50.0
-    assert output["lsm-test-clean"]["canonical_cpwer"] == 20.0
-    assert output["1mix"]["canonical_cpwer"] == 10.0
-    assert output["2mix"]["canonical_cpwer"] == 20.0
-    assert output["3mix"]["canonical_cpwer"] == 30.0
-    assert output["all"]["canonical_cpwer"] == 32.0
+    # per-corpus collapse across duration splits (under20s + full)
+    assert output["ami-ihm-test"]["cpwer"] == 50.0
+    # duration buckets
+    assert output["under20s"]["cpwer"] == 30.0
+    assert output["full"]["cpwer"] == 70.0
+    # LibriSpeechMix collapse + per-mix
+    assert output["lsm-test-clean"]["cpwer"] == 20.0
+    assert output["1mix"]["cpwer"] == 10.0
+    assert output["2mix"]["cpwer"] == 20.0
+    assert output["3mix"]["cpwer"] == 30.0
+    assert output["all"]["cpwer"] == 32.0
     assert "4mix" not in output
