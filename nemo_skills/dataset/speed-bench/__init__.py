@@ -17,4 +17,4 @@ REQUIRES_DATA_DIR = True
 METRICS_TYPE = "specdec"
 EVAL_SPLIT = "qualitative"
 GENERATION_ARGS = "++prompt_format=openai ++eval_type=specdec ++inference.include_response=true"
-GENERATION_MODULE = "nemo_skills.inference.eval.specdec"
+GENERATION_MODULE = "nemo_skills.inference.eval.speedbench"
