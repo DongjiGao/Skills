@@ -57,6 +57,7 @@ DATASETS = [
     ("mmau-pro", ["test"]),
     ("contextasr-bench", ["test"]),
     ("contextual-earnings22", ["test"]),
+    ("halas", ["test"]),
     ("apptek-callcenter-dialogues", ["test"]),
     ("cs-fleurs", ["test"]),
     ("audiobench", ["test"]),
