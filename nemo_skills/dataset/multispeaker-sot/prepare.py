@@ -365,6 +365,30 @@ def _has_valid_audio_frames(path: Path, min_duration: float | None = None) -> bo
     return True
 
 
+def _audio_duration_seconds(path: Path) -> float | None:
+    """Return the audio length in seconds, or None when it cannot be read."""
+    if not path.exists():
+        return None
+    try:
+        import wave
+
+        with wave.open(str(path), "rb") as fin:
+            frames = fin.getnframes()
+            sample_rate = fin.getframerate()
+    except (OSError, EOFError, ValueError, wave.Error):
+        try:
+            import soundfile as sf
+
+            info = sf.info(str(path))
+            frames = info.frames
+            sample_rate = info.samplerate
+        except (OSError, RuntimeError, ValueError):
+            return None
+    if frames <= 0 or sample_rate <= 0:
+        return None
+    return frames / sample_rate
+
+
 def materialize_audio_segment(source_path: Path, output_path: Path, offset: float, duration: float | None) -> bool:
     if _has_valid_audio_frames(output_path, duration):
         return True
@@ -431,6 +455,17 @@ def build_record(
         )
     audio_filepath = _public_audio_path(local_audio_path, local_audio_root, audio_prefix)
 
+    # Full-session rows routinely omit "duration" (transcribe the whole file). A 0
+    # here would mis-size duration-based chunk balancing and the generation context,
+    # so fall back to the real audio length.
+    if duration is None:
+        if not no_audio and local_audio_path.exists():
+            duration = _audio_duration_seconds(local_audio_path)
+        else:
+            source_seconds = _audio_duration_seconds(source_audio)
+            duration = None if source_seconds is None else max(0.0, source_seconds - offset)
+    duration_seconds = round(float(duration or 0.0), 4)
+
     seglst_src = _reference_seglst_path(benchmark, row, manifest_path)
     text = str(row.get("text", "") or "").strip()
     speaker_tag_map = _speaker_tag_map_from_sot(text)
@@ -457,7 +492,7 @@ def build_record(
         "audio_filepath": audio_filepath,
         "source_audio_filepath": str(source_audio),
         "offset": offset,
-        "duration": round(float(duration or 0.0), 4),
+        "duration": duration_seconds,
         "text": text,
         "expected_answer": text,
         "source_lang": row.get("source_lang", "en"),
@@ -477,7 +512,7 @@ def build_record(
             {
                 "role": "user",
                 "content": DEFAULT_PROMPT,
-                "audio": {"path": audio_filepath, "duration": round(float(duration or 0.0), 4)},
+                "audio": {"path": audio_filepath, "duration": duration_seconds},
             }
         ],
     }

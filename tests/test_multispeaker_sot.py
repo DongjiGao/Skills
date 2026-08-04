@@ -4,16 +4,28 @@
 
 import importlib
 import json
+import struct
+import wave
 from pathlib import Path
 
 from nemo_skills.dataset.utils import get_dataset_module
 
 prepare = importlib.import_module("nemo_skills.dataset.multispeaker-sot.prepare")
+build_group_manifests = importlib.import_module("nemo_skills.dataset.multispeaker-sot.build_group_manifests")
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as fout:
+        fout.setnchannels(1)
+        fout.setsampwidth(2)
+        fout.setframerate(sample_rate)
+        fout.writeframes(struct.pack("<h", 0) * int(sample_rate * seconds))
 
 
 def test_group_registration():
@@ -30,6 +42,78 @@ def test_group_registration():
     assert sub_module.METRICS_TYPE == "audio"
     assert "++eval_config.speaker_token='<spk:*>'" in sub_module.EVAL_ARGS
     assert "++eval_config.cpwer_normalization=chime8" in sub_module.EVAL_ARGS
+
+
+def test_full_group_is_a_single_benchmark_covering_every_full_length_set():
+    group_module, _ = get_dataset_module("multispeaker-sot.full")
+
+    # Merged single benchmark (one generation + one summarize job), not a group.
+    assert getattr(group_module, "IS_BENCHMARK_GROUP", False) is False
+    assert group_module.METRICS_TYPE == "audio"
+    assert group_module.EVAL_SPLIT == "test"
+    assert "++eval_config.cpwer_normalization=chime8" in group_module.EVAL_ARGS
+    # The group runs through a generated shell script, where '<spk:*>' is parsed as
+    # input redirection + glob and kills the job; the bare token must be used.
+    assert "++eval_config.speaker_token=spk" in group_module.EVAL_ARGS
+    assert "<spk:*>" not in group_module.EVAL_ARGS
+
+    # SUBSETS must cover every full-length set registered by the benchmark group.
+    expected = sorted(name for name in prepare.BENCHMARK_MANIFESTS if name.startswith("full-"))
+    assert sorted(group_module.SUBSETS) == expected
+    assert all(f"multispeaker-sot.{name}" in get_dataset_module("multispeaker-sot")[0].BENCHMARKS for name in expected)
+
+
+def test_build_group_manifests_finds_full_group_when_data_dir_has_no_group_modules(tmp_path, monkeypatch):
+    # prepare.py writes only <set>/test.jsonl into the data dir, so group SUBSETS
+    # must be read from the dataset package instead.
+    data_root = tmp_path / "data"
+    bench_root = data_root / "multispeaker-sot"
+    subsets = get_dataset_module("multispeaker-sot.full")[0].SUBSETS
+    for name in subsets:
+        _write_jsonl(
+            bench_root / name / "test.jsonl",
+            [{"subset_for_metrics": name, "audio_filepath": f"/data/multispeaker-sot/audio/{name}/s.wav"}],
+        )
+    assert not list(bench_root.glob("*/__init__.py"))
+
+    monkeypatch.setattr(
+        "sys.argv", ["build_group_manifests.py", "--data-dir", str(data_root), "--groups", "full"]
+    )
+    build_group_manifests.main()
+
+    rows = [json.loads(line) for line in (bench_root / "full" / "test.jsonl").read_text().splitlines()]
+    assert [row["subset_for_metrics"] for row in rows] == list(subsets)
+    # The prep-time /data mount prefix is rewritten to the real data dir.
+    assert all(row["audio_filepath"].startswith(f"{data_root}/multispeaker-sot/audio/") for row in rows)
+
+
+def test_full_length_row_without_duration_uses_probed_audio_length(tmp_path, monkeypatch):
+    monkeypatch.setitem(prepare.BENCHMARK_MANIFESTS, "full-ami-ihm-test", "full_length_eval_set/ami_ihm_test_full.json")
+    manifest_root = tmp_path / "manifests"
+    audio = tmp_path / "audio" / "EN2002a.Mix-Headset.wav"
+    _write_wav(audio, 4.0)
+    # Full-session rows transcribe the whole file and routinely omit "duration".
+    _write_jsonl(
+        manifest_root / "full_length_eval_set/ami_ihm_test_full.json",
+        [{"audio_filepath": str(audio), "text": "[s0] hello [s1] yes", "num_speakers": 2}],
+    )
+
+    count = prepare.prepare_manifest_set(
+        "full-ami-ihm-test",
+        manifest_root=manifest_root,
+        output_dir=tmp_path / "bench",
+        data_dir=tmp_path / "data",
+        audio_prefix=Path("/data/multispeaker-sot/audio"),
+        no_audio=False,
+        max_samples=None,
+        speaker_tag_style="spk",
+    )
+
+    assert count == 1
+    record = json.loads((tmp_path / "bench/full-ami-ihm-test/test.jsonl").read_text().splitlines()[0])
+    assert record["duration"] == 4.0
+    assert record["messages"][0]["audio"]["duration"] == 4.0
+    assert record["subset_for_metrics"] == "full-ami-ihm-test"
 
 
 def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):

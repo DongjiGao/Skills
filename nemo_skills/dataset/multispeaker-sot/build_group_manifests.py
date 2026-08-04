@@ -11,6 +11,11 @@ each member's already-prepared ``<data_dir>/multispeaker-sot/<set>/test.jsonl``
 into ``<data_dir>/multispeaker-sot/<group>/test.jsonl`` so the group can be run
 as a *single* benchmark (one vLLM job + one summarize job).
 
+Group definitions are read from the dataset package next to this script, since
+``prepare.py`` writes only ``<set>/test.jsonl`` into the data dir and leaves no
+``__init__.py`` there to discover. A group dir inside the data dir that declares
+its own SUBSETS still takes precedence, so a data dir can override a group.
+
 Records are copied verbatim, so each keeps its ``subset_for_metrics`` tag and
 audio_filepath — the merge is a pure concatenation (no audio is touched). This
 is intentionally stdlib-only so it runs on a cluster login node.
@@ -18,6 +23,7 @@ is intentionally stdlib-only so it runs on a cluster login node.
 Usage:
     python3 build_group_manifests.py --data-dir /path/to/skills_data
     python3 build_group_manifests.py --data-dir /path/to/skills_data --groups under20s,lsm
+    python3 build_group_manifests.py --data-dir /path/to/skills_data --groups full
 """
 
 from __future__ import annotations
@@ -48,13 +54,22 @@ def _read_subsets(group_init: Path) -> list[str]:
     return [str(s) for s in subsets]
 
 
-def _discover_groups(root: Path) -> dict[str, list[str]]:
-    """Find group dirs (``<root>/<group>/__init__.py`` defining SUBSETS)."""
+def _discover_groups(*roots: Path) -> dict[str, list[str]]:
+    """Find group dirs (``<root>/<group>/__init__.py`` defining SUBSETS).
+
+    Roots are searched in order and the first definition of a group wins.
+    """
     groups: dict[str, list[str]] = {}
-    for init_path in sorted(root.glob("*/__init__.py")):
-        subsets = _read_subsets(init_path)
-        if subsets:
-            groups[init_path.parent.name] = subsets
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for init_path in sorted(root.glob("*/__init__.py")):
+            group = init_path.parent.name
+            if group in groups:
+                continue
+            subsets = _read_subsets(init_path)
+            if subsets:
+                groups[group] = subsets
     return groups
 
 
@@ -136,9 +151,12 @@ def main() -> None:
             audio_rewrite = (old_prefix, new_prefix)
             print(f"[build-group] audio path rewrite: {old_prefix!r} -> {new_prefix!r}")
 
-    discovered = _discover_groups(root)
+    package_root = Path(__file__).resolve().parent
+    discovered = _discover_groups(root, package_root)
     if not discovered:
-        raise SystemExit(f"[build-group] ERROR: no group modules with SUBSETS found under {root}")
+        raise SystemExit(
+            f"[build-group] ERROR: no group modules with SUBSETS found under {root} or {package_root}"
+        )
 
     requested = [g.strip() for g in args.groups.split(",") if g.strip()]
     if requested:
