@@ -918,6 +918,23 @@ LibriSpeechMix (`libri_speech_mix`, clean test, 1/2/3 speakers):
 - `multispeaker-sot.lsm-test-clean-2mix`
 - `multispeaker-sot.lsm-test-clean-3mix`
 
+### Merged Group Benchmarks
+
+Each duration bucket is also available as a *single* merged benchmark whose `test.jsonl` concatenates its member sets. Running one of these yields one generation job and one summarize job instead of one pair per member set, and keeps the job/log name short:
+
+| Benchmark | Members |
+| --- | --- |
+| `multispeaker-sot.under20s` | the 6 `under20s-*` sets |
+| `multispeaker-sot.60-90s` | the 4 `60-90s-*` sets |
+| `multispeaker-sot.120-180s` | the 4 `120-180s-*` sets |
+| `multispeaker-sot.full` | the 4 `full-*` sets (full-length sessions) |
+| `multispeaker-sot.lsm` | the 3 `lsm-test-clean-*` sets |
+| `multispeaker-sot.allsets` | `under20s` + `60-90s` + `120-180s` + `lsm` (excludes `full`) |
+
+Per-set cpWER is not lost: every record keeps its `subset_for_metrics` tag and `AudioMetrics` buckets by it, so a single `metrics.json` reports the overall cpWER plus one `cpwer::<set>` entry per member set.
+
+`allsets` deliberately excludes the full-length sets, because full sessions need a much larger context window (~36k audio tokens at 12.5 tokens/s) that would otherwise be forced onto every short-audio item. Evaluate `multispeaker-sot.full` separately.
+
 ### Preparing Data
 
 Manifests are converted from the shared multispeaker eval manifest root. Audio segments are materialized into your external `--data_dir` by default.
@@ -925,6 +942,15 @@ Manifests are converted from the shared multispeaker eval manifest root. Audio s
 ```bash
 ns prepare_data multispeaker-sot --cluster=iad --data_dir=/path/to/data
 ```
+
+The merged group benchmarks above need one extra step, which concatenates the already-prepared member `test.jsonl` files (no audio is touched). Group membership is read from the dataset package, so the data dir only needs the prepared member sets:
+
+```bash
+python nemo_skills/dataset/multispeaker-sot/build_group_manifests.py \
+    --data-dir=/path/to/data --groups=full
+```
+
+Omit `--groups` to build every group. Pass `--audio-src-prefix=''` to keep the `/data/...` audio prefix as-is instead of rewriting it to `--data-dir`.
 
 Prepare a subset only:
 
@@ -960,7 +986,19 @@ ns eval \
     --installation_command="pip install -r requirements/audio.txt"
 ```
 
-Evaluate the full benchmark group:
+Evaluate every full-length session as one merged benchmark (after building its group manifest above). Full sessions are up to ~48 min, so raise the generation budget and the server context accordingly:
+
+```bash
+ns eval \
+    --cluster=iad \
+    --benchmarks=multispeaker-sot.full \
+    --output_dir=/workspace/msasr-eval \
+    --model=/workspace/checkpoint \
+    --data_dir=/path/to/data \
+    ++inference.tokens_to_generate=16384
+```
+
+Evaluate the whole benchmark group (every member set as its own benchmark):
 
 ```bash
 ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...
@@ -969,7 +1007,7 @@ ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...
 Default evaluator settings:
 
 - `++eval_type=audio`
-- `++eval_config.speaker_token='<spk:*>'`
+- `++eval_config.speaker_token='<spk:*>'` (merged group benchmarks use the equivalent bare `spk` token, since `<spk:*>` is parsed by the generated shell script as input redirection plus a glob)
 - `++eval_config.cpwer_normalization=chime8`
 
 ### Understanding Results
