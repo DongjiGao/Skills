@@ -15,11 +15,11 @@
 """Audio evaluation framework supporting ASR, ASR-PC, Translation, CER, and more."""
 
 import asyncio
-import itertools
 import logging
 import re
 import unicodedata
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -703,6 +703,14 @@ def resolve_asr_normalization_mode(config: AudioEvaluatorConfig) -> str:
     return config.normalization_mode if config.apply_normalization else "none"
 
 
+@lru_cache(maxsize=1)
+def _get_open_asr_english_normalizer():
+    """Construct the Open ASR PR #142 normalizer once per evaluator process."""
+    from nemo_skills.evaluation.evaluator.open_asr_normalizer import OpenASREnglishTextNormalizer
+
+    return OpenASREnglishTextNormalizer()
+
+
 def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
     """Normalize ASR text for WER calculation.
 
@@ -750,9 +758,13 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
 
     from whisper_normalizer.english import EnglishTextNormalizer
 
-    if mode in ["standard", "hf_leaderboard"]:
+    if mode == "standard":
         text = text.lower()
         text = EnglishTextNormalizer()(text)
+        return normalize_whitespace(text)
+
+    if mode == "hf_leaderboard":
+        text = _get_open_asr_english_normalizer()(text)
         return normalize_whitespace(text)
 
     # "audiobench" uses additional (audiobench-specific) normalization
@@ -791,8 +803,25 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         return normalize_whitespace(text)
 
 
-def _wer_with_counts(ref: str, hyp: str) -> dict[str, Any]:
-    """Compute WER and return both the score and raw error/reference counts for corpus-level aggregation."""
+def _wer_with_counts(ref: str, hyp: str, merge_compounds: bool = False) -> dict[str, Any]:
+    """Compute WER and raw counts, optionally using Open ASR compound merging."""
+    if merge_compounds:
+        from kaldialign import batch_error_rate
+
+        measures = batch_error_rate(
+            [tuple(ref.split())],
+            [tuple(hyp.split())],
+            merge_compounds=True,
+        )
+        return {
+            "wer": measures["err_rate"],
+            "wer_errors": measures["total"],
+            "wer_ref_words": measures["ref_len"],
+            "wer_substitutions": measures["sub"],
+            "wer_insertions": measures["ins"],
+            "wer_deletions": measures["del"],
+        }
+
     import jiwer
 
     wer_score = jiwer.wer(ref, hyp)
@@ -872,10 +901,14 @@ def evaluate_asr(
         result = {"wer": None, "is_correct": None, "text": "", "pred_text": hyp or ""}
         return result
 
-    if not hyp:
-        hyp = "empty"
-
-    result = _wer_with_counts(ref, hyp)
+    if normalization_mode == "hf_leaderboard":
+        # Open ASR Leaderboard PR #142 uses kaldialign's merge_compounds mode.
+        # Per-sample scoring produces the same additive counts as its batch call.
+        result = _wer_with_counts(ref, hyp, merge_compounds=True)
+    else:
+        if not hyp:
+            hyp = "empty"
+        result = _wer_with_counts(ref, hyp)
     result["is_correct"] = result["wer"] < 0.5
     result["text"] = ref
     result["pred_text"] = hyp
