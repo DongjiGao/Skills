@@ -419,6 +419,53 @@ def test_normalize_mounts_list_supports_sandbox_modes(monkeypatch):
     ) == ["/cluster/sandbox-data:/sandbox/data:ro", "/host/scratch:/sandbox/scratch:rw"]
 
 
+def test_get_mounts_from_config_supports_modes(monkeypatch):
+    from nemo_skills.pipeline.utils.mounts import get_mounts_from_config
+
+    monkeypatch.setenv("READ_ONLY_DATA", "/cluster/read-only-data")
+    cluster_config = {
+        "mounts": [
+            "${READ_ONLY_DATA}:/data:ro",
+            "/cluster/scratch:/scratch:rw",
+            "/cluster/code:/code",
+        ]
+    }
+
+    assert get_mounts_from_config(cluster_config) == [
+        "/cluster/read-only-data:/data:ro",
+        "/cluster/scratch:/scratch:rw",
+        "/cluster/code:/code",
+    ]
+
+
+@pytest.mark.parametrize("mode", [None, "ro", "rw"])
+def test_mount_path_utilities_support_optional_modes(mode):
+    from nemo_skills.pipeline.utils.mounts import (
+        add_mount_path,
+        get_mounted_path,
+        get_unmounted_path,
+        is_mounted_filepath,
+    )
+
+    mount = "/cluster/data:/data" + (f":{mode}" if mode is not None else "")
+    cluster_config = {"executor": "slurm", "mounts": [mount]}
+
+    assert is_mounted_filepath(cluster_config, "/data/example.jsonl")
+    assert get_mounted_path(cluster_config, "/cluster/data/example.jsonl") == "/data/example.jsonl"
+    assert get_unmounted_path(cluster_config, "/data/example.jsonl") == "/cluster/data/example.jsonl"
+
+    add_mount_path("/cluster/data", "/data", cluster_config)
+    assert cluster_config["mounts"] == [mount]
+
+
+def test_add_mount_path_preserves_explicit_mode():
+    from nemo_skills.pipeline.utils.mounts import add_mount_path
+
+    cluster_config = {"executor": "slurm", "mounts": []}
+    add_mount_path("/cluster/data", "/data", cluster_config, mount_mode="ro")
+    assert cluster_config["mounts"] == ["/cluster/data:/data:ro"]
+
+
 @pytest.mark.parametrize("mount", ["/host/data:/sandbox/data:rw", ":/sandbox/data", "/host/data:"])
 def test_normalize_mounts_list_rejects_invalid_regular_mounts(mount):
     from nemo_skills.pipeline.utils.mounts import normalize_mounts_list

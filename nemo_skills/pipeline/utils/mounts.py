@@ -24,6 +24,23 @@ from nemo_skills.utils import get_logger_name
 LOG = logging.getLogger(get_logger_name(__file__))
 
 
+def _split_mount_spec(mount: str, allow_rw_mode: bool = True) -> tuple[str, str, str | None]:
+    """Split a ``src:dst[:mode]`` mount without discarding an access mode."""
+    parts = mount.split(":")
+    if len(parts) not in ({2, 3} if allow_rw_mode else {2}):
+        raise ValueError(
+            f"Invalid mount format: {mount}. Expected src:dst" + (" or src:dst:mode." if allow_rw_mode else ".")
+        )
+
+    mount_source, mount_target = parts[0], parts[1]
+    mount_mode = parts[2] if len(parts) == 3 else None
+    if not mount_source or not mount_target:
+        raise ValueError(f"Invalid mount format: {mount}. Source and target paths must not be empty.")
+    if mount_mode is not None and mount_mode not in {"ro", "rw"}:
+        raise ValueError(f"Invalid mount mode: {mount_mode} in `{mount}`. Supported mount modes are `ro` and `rw`.")
+    return mount_source, mount_target, mount_mode
+
+
 def is_mounted_filepath(cluster_config: dict | None, path: str, mounts: Optional[list] = None) -> bool:
     """
     Check if the filepath is mounted using the cluster config. Does not raise an error if the filepath is not mounted.
@@ -39,7 +56,7 @@ def is_mounted_filepath(cluster_config: dict | None, path: str, mounts: Optional
     mounts = mounts or (get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"])
     # Find which mount path matches the filepaths prefix
     for mount in mounts:
-        mount_source, mount_dest = mount.split(":")
+        _, mount_dest, _ = _split_mount_spec(mount)
         if path.startswith(mount_dest):
             return True
 
@@ -185,7 +202,7 @@ def get_mounted_path(cluster_config: dict, path: str):
     # Find which mount path matches the filepaths prefix
     mount_path = None
     for mount in get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]:
-        mount_source, mount_dest = mount.split(":")
+        mount_source, mount_dest, _ = _split_mount_spec(mount)
         mount_source = mount_source.rstrip("/")
         if path.startswith(mount_source):
             mount_path = mount
@@ -202,7 +219,7 @@ def get_mounted_path(cluster_config: dict, path: str):
         )
 
     # replace the mount destination inside the filepath with the mount source
-    mount_source, mount_dest = mount_path.split(":")
+    mount_source, mount_dest, _ = _split_mount_spec(mount_path)
     # append the rest of the path to the mount destination
     relative = path[len(mount_source) :].lstrip("/")
     filepath = os.path.join(mount_dest, relative)
@@ -234,7 +251,7 @@ def get_unmounted_path(cluster_config: dict, path: str):
     # Find which mount path matches the filepaths prefix
     mount_path = None
     for mount in get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]:
-        mount_source, mount_dest = mount.split(":")
+        mount_source, mount_dest, _ = _split_mount_spec(mount)
         if path.startswith(mount_dest):
             mount_path = mount
             break
@@ -250,7 +267,7 @@ def get_unmounted_path(cluster_config: dict, path: str):
         )
 
     # replace the mount destination inside the filepath with the mount source
-    mount_source, mount_dest = mount_path.split(":")
+    mount_source, mount_dest, _ = _split_mount_spec(mount_path)
 
     # append the rest of the path to the mount source
     filepath = mount_source + path[len(mount_dest) :]  # replace the mount destination with the mount source
@@ -258,7 +275,7 @@ def get_unmounted_path(cluster_config: dict, path: str):
     return filepath
 
 
-def add_mount_path(mount_source: str, mount_dest: str, cluster_config):
+def add_mount_path(mount_source: str, mount_dest: str, cluster_config, mount_mode: str | None = None):
     """Add a mount path to the cluster configuration."""
 
     if cluster_config is None:
@@ -268,14 +285,18 @@ def add_mount_path(mount_source: str, mount_dest: str, cluster_config):
         original_mounts = get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]
         added_mount = False
         for mount_path in original_mounts:
-            source, destination = mount_path.split(":")
+            source, destination, _ = _split_mount_spec(mount_path)
 
             if source == mount_source and destination == mount_dest:
                 return
 
         if not added_mount:
-            cluster_config["mounts"].append(f"{mount_source}:{mount_dest}")
-            logging.info(f"Added mount path: `{mount_source}:{mount_dest}`")
+            mount_path = f"{mount_source}:{mount_dest}"
+            if mount_mode is not None:
+                _split_mount_spec(f"{mount_path}:{mount_mode}")
+                mount_path = f"{mount_path}:{mount_mode}"
+            cluster_config["mounts"].append(mount_path)
+            logging.info(f"Added mount path: `{mount_path}`")
 
     else:
         raise ValueError("No mounts found in cluster config, can only add to existing mount list.")
@@ -320,7 +341,7 @@ def resolve_mount_paths(cluster_config: dict, mount_paths: str | list | dict, cr
     Args:
         cluster_config: The cluster configuration dictionary to update.
         mount_paths: The mount paths to resolve - can be a string (comma separated), dict or a list of strings.
-            Each mount path should be in the format `src:dest`.
+            Each mount path should be in the format `src:dest[:ro|rw]`.
         create_remote_dir: Whether to create the remote directories for the mount paths.
     """
     if mount_paths is not None:
@@ -337,13 +358,13 @@ def resolve_mount_paths(cluster_config: dict, mount_paths: str | list | dict, cr
 
         for idx, path in enumerate(mount_paths_list):
             assert ":" in path, f"Invalid mount path: {path}. Each path must be in the format `src:dest`"
-            src, dest = path.split(":")
+            src, dest, mode = _split_mount_spec(path)
             src = src.strip().strip("\n")
             dest = dest.strip().strip("\n")
 
-            LOG.info(f"Adding mount path:- {src}:{dest}")
+            LOG.info(f"Adding mount path:- {src}:{dest}" + (f":{mode}" if mode is not None else ""))
             mount_paths_list[idx] = (src, dest)
-            add_mount_path(src, dest, cluster_config)
+            add_mount_path(src, dest, cluster_config, mount_mode=mode)
 
         if create_remote_dir:
             LOG.info("Creating remote directories for mount paths:")
@@ -423,20 +444,7 @@ def normalize_mounts_list(mounts: list[str], allow_rw_mode: bool = False):
         if "$" in mount:
             mount = os.path.expandvars(mount)
 
-        parts = mount.split(":")
-        if len(parts) != 2 and not (allow_rw_mode and len(parts) == 3):
-            raise ValueError(
-                f"Invalid mount format: {mount}. Expected src:dst" + (" or src:dst:mode." if allow_rw_mode else ".")
-            )
-
-        mount_source, mount_target = parts[0], parts[1]
-        mount_mode = parts[2] if len(parts) == 3 else None
-        if not mount_source or not mount_target:
-            raise ValueError(f"Invalid mount format: {mount}. Source and target paths must not be empty.")
-        if mount_mode is not None and mount_mode not in {"ro", "rw"}:
-            raise ValueError(
-                f"Invalid mount mode: {mount_mode} in `{mount}`. Supported mount modes are `ro` and `rw`."
-            )
+        mount_source, mount_target, mount_mode = _split_mount_spec(mount, allow_rw_mode=allow_rw_mode)
 
         # Then handle {VAR} style for full path replacement (legacy support)
         if mount_source[0] == "{" and mount_source[-1] == "}":
@@ -474,8 +482,9 @@ def get_mounts_from_config(cluster_config: dict):
     """
     Selects the key in the cluster config called `mounts` which is a list of strings.
     Normalizes the mount paths to resolve environment variables.
-    Each string is in the format of `<str | {env_var} | ${env_var}>:<str | {env_var} | ${env_var}>` where `env_var`
-    is the name of the environment variable.
+    Each string is in the format of
+    `<str | {env_var} | ${env_var}>:<str | {env_var} | ${env_var}>[:ro|rw]`
+    where `env_var` is the name of the environment variable.
 
     Args:
         cluster_config (dict): cluster config dictionary
@@ -483,4 +492,4 @@ def get_mounts_from_config(cluster_config: dict):
     Returns:
         list: updated list of mounts
     """
-    return normalize_mounts_list(cluster_config.get("mounts", []))
+    return normalize_mounts_list(cluster_config.get("mounts", []), allow_rw_mode=True)
