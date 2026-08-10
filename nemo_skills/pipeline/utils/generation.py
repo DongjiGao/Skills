@@ -369,14 +369,20 @@ def separate_hydra_args(extra_arguments: str) -> tuple[str, str]:
         "--info",
     }
 
+    def quote_if_needed(arg: str) -> str:
+        if any(ch.isspace() for ch in arg) or '"' in arg or "'" in arg:
+            return shlex.quote(arg)
+        return arg
+
     args_parts = shlex.split(extra_arguments)
     i = 0
     while i < len(args_parts):
         arg = args_parts[i]
+        quoted_arg = quote_if_needed(arg)
 
         # Exact match for no-value hydra flags
         if arg in hydra_flags_no_value:
-            hydra_config_args += f" {arg}"
+            hydra_config_args += f" {quoted_arg}"
             i += 1
             continue
 
@@ -387,17 +393,17 @@ def separate_hydra_args(extra_arguments: str) -> tuple[str, str]:
                 is_with_value_flag = True
                 # Handle both formats
                 if "=" in arg:
-                    hydra_config_args += f" {arg}"
+                    hydra_config_args += f" {quoted_arg}"
                 else:
-                    hydra_config_args += f" {arg}"
+                    hydra_config_args += f" {quoted_arg}"
                     if i + 1 < len(args_parts) and not args_parts[i + 1].startswith("-"):
                         i += 1
-                        hydra_config_args += f" {args_parts[i]}"
+                        hydra_config_args += f" {quote_if_needed(args_parts[i])}"
                 break
 
         if not is_with_value_flag:
             # Not a recognized hydra flag → treat as override
-            override_args += f" {arg}"
+            override_args += f" {quoted_arg}"
 
         i += 1
 
