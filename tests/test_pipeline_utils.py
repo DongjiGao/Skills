@@ -348,8 +348,8 @@ def test_separate_hydra_args_with_spaces_in_values():
     """Test with parameter values containing spaces (using quotes)."""
     extra_args = '--config-path "/path with spaces" ++description="some text with spaces" --config-name my_config'
     hydra_args, override_args = separate_hydra_args(extra_args)
-    assert hydra_args == " --config-path /path with spaces --config-name my_config"
-    assert override_args == " ++description=some text with spaces"
+    assert hydra_args == " --config-path '/path with spaces' --config-name my_config"
+    assert override_args == " '++description=some text with spaces'"
 
 
 def test_separate_hydra_args_with_quoted_special_chars():
@@ -357,7 +357,7 @@ def test_separate_hydra_args_with_quoted_special_chars():
     extra_args = """--config-path /configs ++end_reasoning_string="END_TAG" ++prompt="Question: {question}" """
     hydra_args, override_args = separate_hydra_args(extra_args)
     assert hydra_args == " --config-path /configs"
-    assert override_args == " ++end_reasoning_string=END_TAG ++prompt=Question: {question}"
+    assert override_args == " ++end_reasoning_string=END_TAG '++prompt=Question: {question}'"
 
 
 # --- SandboxScript.keep_mounts wiring tests ---
