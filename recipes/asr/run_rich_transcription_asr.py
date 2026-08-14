@@ -105,6 +105,7 @@ def main() -> None:
             "++prompt_format=openai "
             "++prompt_config=null "
             "++enable_audio=true "
+            "++enable_audio_chunking=false "
             "++server.server_type=vllm_multimodal "
             "++max_concurrent_requests=16 "
             "++inference.tokens_to_generate=1024 "
@@ -125,6 +126,7 @@ def main() -> None:
         server_args=(
             f"--backend nemo_asr --batch_size {args.batch_size} "
             f"--num_workers {args.num_workers} --dtype {args.dtype} --no_warmup "
+            "--attention_backend sdpa "
             f"--code_path {shlex.quote(args.nemo_code_path)}"
         ),
         server_container=args.server_container,

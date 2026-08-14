@@ -916,7 +916,9 @@ python recipes/asr/run_rich_transcription_asr.py \
 ```
 
 The recipe pins the server to the `moe_pee_ggemm/Speech` checkout used by the checkpoint. Override
-`--nemo_code_path` when that checkout is mounted elsewhere.
+`--nemo_code_path` when that checkout is mounted elsewhere. It also keeps each materialized manifest segment intact
+(`enable_audio_chunking=false`) and selects the reference evaluator's dense-SDPA Transformer fallback. The latter avoids
+FlexAttention Triton resource failures without changing model weights, decoding, references, or WER filtering.
 
 To rescore an existing NeMo-Skills predictions JSONL under a different mode:
 

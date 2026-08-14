@@ -29,6 +29,88 @@ from .base import BackendConfig, GenerationRequest, GenerationResult, InferenceB
 logger = logging.getLogger(__name__)
 
 
+def _patch_transformer_encoder_attention(attention_backend: str) -> None:
+    """Select the Transformer attention implementation used for ASR inference.
+
+    ``sdpa`` installs the dense fallback used by the Rich Transcription ASR
+    reference evaluator. It avoids FlexAttention Triton resource failures on
+    devices where the generated kernel cannot launch. The default ``None``
+    leaves NeMo untouched, and ``flex`` explicitly keeps the model's native
+    implementation.
+    """
+
+    if attention_backend == "flex":
+        return
+    if attention_backend != "sdpa":
+        raise ValueError(f"Unsupported NeMo ASR attention_backend={attention_backend!r}; expected 'flex' or 'sdpa'.")
+
+    import torch
+
+    from nemo.collections.asr.modules import transformer_encoder as te
+
+    if getattr(te.MultiHeadAttention, "_rich_transcription_asr_eval_sdpa_patched", False):
+        return
+
+    te.MultiHeadAttention._rich_transcription_asr_eval_flex_forward = te.MultiHeadAttention.forward
+
+    def dense_mask_from_block_mask(block_mask, device):
+        if block_mask is None:
+            return None
+        mask_mod = getattr(block_mask, "mask_mod", None)
+        shape = getattr(block_mask, "shape", None)
+        if mask_mod is None or shape is None:
+            return None
+
+        batch_size, num_heads, query_length, key_value_length = shape
+        batch = torch.arange(batch_size, device=device)[:, None, None, None]
+        head = torch.arange(num_heads, device=device)[None, :, None, None]
+        query_index = torch.arange(query_length, device=device)[None, None, :, None]
+        key_value_index = torch.arange(key_value_length, device=device)[None, None, None, :]
+        mask = mask_mod(batch, head, query_index, key_value_index)
+        if not torch.is_tensor(mask):
+            mask = torch.as_tensor(mask, device=device)
+        return mask.to(device=device, dtype=torch.bool)
+
+    def sdpa_forward(self, x, block_mask=None, pos_emb=None):
+        batch_size, sequence_length, _ = x.shape
+        num_heads, head_dim = self.n_heads, self.head_dim
+
+        qkv = self.w_qkv(x).view(batch_size, sequence_length, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)
+        query, key, value = qkv.unbind(0)
+
+        if self.qk_norm:
+            query = self.q_norm(query).to(value.dtype)
+            key = self.k_norm(key).to(value.dtype)
+
+        if getattr(self, "_uses_rope", False):
+            query, key = self.rope(query, key)
+
+        scale = head_dim**-0.5
+        if self._uses_rel_pos and pos_emb is not None:
+            position = self.linear_pos(pos_emb).view(pos_emb.size(0), -1, num_heads, head_dim).transpose(1, 2)
+            bias_u = self.pos_bias_u.view(1, num_heads, 1, head_dim).to(dtype=query.dtype)
+            bias_v = self.pos_bias_v.view(1, num_heads, 1, head_dim).to(dtype=query.dtype)
+            content_score = torch.matmul(query + bias_u, key.transpose(-2, -1)) * scale
+            relative_score = torch.matmul(query + bias_v, position.transpose(-2, -1))
+            relative_score = self._rel_shift(relative_score)[..., :sequence_length] * scale
+            scores = content_score + relative_score
+        else:
+            scores = torch.matmul(query, key.transpose(-2, -1)) * scale
+
+        attention_mask = dense_mask_from_block_mask(block_mask, scores.device)
+        if attention_mask is not None:
+            scores = scores.masked_fill(~attention_mask, torch.finfo(scores.dtype).min)
+
+        attention = torch.softmax(scores, dim=-1)
+        output = torch.matmul(attention, value)
+        output = output.transpose(1, 2).contiguous().view(batch_size, sequence_length, self.d_model)
+        return self.out_proj(output)
+
+    te.MultiHeadAttention.forward = sdpa_forward
+    te.MultiHeadAttention._rich_transcription_asr_eval_sdpa_patched = True
+    logger.info("Using dense SDPA Transformer attention fallback for NeMo ASR evaluation")
+
+
 @dataclass
 class NeMoASRConfig(BackendConfig):
     """Configuration for NeMo ASR backend."""
@@ -41,6 +123,7 @@ class NeMoASRConfig(BackendConfig):
     num_workers: int = 0
     return_hypotheses: bool = True
     warmup: bool = True
+    attention_backend: Optional[str] = None
 
     # Tarred audio / datastore support.
     tarred_audio_filepaths: Optional[str] = None
@@ -64,6 +147,7 @@ class NeMoASRConfig(BackendConfig):
             "num_workers",
             "return_hypotheses",
             "warmup",
+            "attention_backend",
             "tarred_audio_filepaths",
             "data_dir",
         }
@@ -106,6 +190,9 @@ class NeMoASRBackend(InferenceBackend):
 
         import torch
         from nemo.collections.asr.models import ASRModel
+
+        if self.asr_config.attention_backend is not None:
+            _patch_transformer_encoder_attention(self.asr_config.attention_backend)
 
         model_ref = self._model_name
         map_location = torch.device(self.config.device)

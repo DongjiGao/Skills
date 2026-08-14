@@ -8,4 +8,4 @@ EVAL_ARGS = (
     "++eval_type=nemo_skills.dataset.rich_transcription_asr.rich_transcription_asr_eval::RichTranscriptionASREvaluator "
     "++eval_config.evaluation_mode=event"
 )
-GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
+GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true ++enable_audio_chunking=false"

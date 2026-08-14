@@ -34,6 +34,9 @@ eval_module = importlib.import_module(
 score_module = importlib.import_module(
     "nemo_skills.dataset.rich_transcription_asr.rich_transcription_asr_score"
 )
+nemo_asr_backend = importlib.import_module(
+    "recipes.multimodal.server.backends.nemo_asr_backend"
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -72,6 +75,7 @@ def test_group_and_subbenchmarks_are_registered():
     assert "::RichTranscriptionASREvaluator" in subbenchmark.EVAL_ARGS
     assert "++eval_config.evaluation_mode=event" in subbenchmark.EVAL_ARGS
     assert "++enable_audio=true" in subbenchmark.GENERATION_ARGS
+    assert "++enable_audio_chunking=false" in subbenchmark.GENERATION_ARGS
     eval_type = subbenchmark.EVAL_ARGS.split()[0].removeprefix("++eval_type=")
     evaluator = get_evaluator_class(eval_type, {})
     assert type(evaluator).__name__ == "RichTranscriptionASREvaluator"
@@ -107,6 +111,16 @@ def test_four_evaluation_modes_and_event_default():
     assert event_style["wer"] == pytest.approx(1 / 3)
     assert all_tokens["evaluation_mode"] == "all"
     assert all_tokens["wer"] > 0
+
+
+def test_nemo_asr_backend_accepts_explicit_sdpa_fallback():
+    config = nemo_asr_backend.NeMoASRConfig.from_dict(
+        {"model_path": "model.nemo", "attention_backend": "sdpa"}
+    )
+    assert config.attention_backend == "sdpa"
+
+    with pytest.raises(ValueError, match="Unsupported NeMo ASR attention_backend"):
+        nemo_asr_backend._patch_transformer_encoder_attention("unknown")
 
 
 def test_special_token_extraction_canonicalizes_spacing_and_excludes_flat():
