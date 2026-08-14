@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -36,6 +37,7 @@ BENCHMARK_MANIFESTS = {
 }
 DEFAULT_PROMPT = "Transcribe the following audio and include audible sound-event and speaking-style tags inline."
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+MIN_AUDIO_DURATION_SECONDS = 0.1
 
 
 class InvalidAudioSegmentError(ValueError):
@@ -107,7 +109,13 @@ def _materialize_audio_segment(
     *,
     overwrite: bool = False,
 ) -> float:
-    """Write one manifest segment as a standalone WAV and return its duration."""
+    """Write one manifest segment as a standalone WAV and return its duration.
+
+    Very short reference segments are right-padded with silence. The Sound
+    Expert encoder cannot transcribe a standalone 10 ms clip, while 100 ms is
+    the model backend's established warm-up/input floor.
+    """
+    import numpy as np
     import soundfile as sf
 
     if not source_path.is_file():
@@ -115,7 +123,8 @@ def _materialize_audio_segment(
 
     if output_path.is_file() and not overwrite:
         info = sf.info(str(output_path))
-        if info.frames > 0 and info.samplerate > 0:
+        minimum_frames = math.ceil(MIN_AUDIO_DURATION_SECONDS * info.samplerate)
+        if info.frames >= minimum_frames and info.samplerate > 0:
             return float(info.frames / info.samplerate)
 
     info = sf.info(str(source_path))
@@ -142,6 +151,10 @@ def _materialize_audio_segment(
             f"Decoded {len(audio)} of {requested_frames} requested samples: "
             f"source={source_path} offset={offset} duration={duration}"
         )
+
+    minimum_frames = math.ceil(MIN_AUDIO_DURATION_SECONDS * info.samplerate)
+    if len(audio) < minimum_frames:
+        audio = np.pad(audio, ((0, minimum_frames - len(audio)), (0, 0)))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.tmp.wav")

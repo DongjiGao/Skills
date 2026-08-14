@@ -226,6 +226,24 @@ def test_materialize_audio_segment_honors_offset_and_duration(tmp_path):
         assert fin.getframerate() == 16000
 
 
+def test_materialize_audio_segment_pads_ten_millisecond_clip(tmp_path):
+    source_audio = tmp_path / "source.wav"
+    output_audio = tmp_path / "segments" / "slice.wav"
+    _write_wav(source_audio, seconds=0.01)
+
+    duration = prepare._materialize_audio_segment(
+        source_audio,
+        output_audio,
+        offset=0.0,
+        duration=0.01,
+    )
+
+    assert duration == pytest.approx(0.1)
+    with wave.open(str(output_audio), "rb") as fin:
+        assert fin.getnframes() == 1600
+        assert fin.getframerate() == 16000
+
+
 def test_materialize_audio_segment_rejects_manifest_overrun(tmp_path):
     source_audio = tmp_path / "source.wav"
     _write_wav(source_audio, seconds=1.0)

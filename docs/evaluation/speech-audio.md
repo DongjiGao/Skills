@@ -874,7 +874,8 @@ The selected evaluation mode controls which tokens are retained before corpus WE
 | 4 | `all` or `4` | All transcript words and tokens |
 
 Prepare all four manifests from the mounted RT source. D12a rows contain offsets into shared recordings, so preparation
-materializes every requested segment as a standalone WAV instead of passing full recordings to inference.
+materializes every requested segment as a standalone WAV instead of passing full recordings to inference. Segments
+shorter than 100 ms are right-padded with silence to satisfy the Sound Expert encoder's minimum standalone input length.
 
 ```bash
 ns prepare_data rich_transcription_asr \
