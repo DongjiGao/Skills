@@ -117,6 +117,7 @@ def main() -> None:
         server_type="generic",
         server_gpus=args.server_gpus,
         server_entrypoint=(
+            f"PYTHONPATH={shlex.quote(args.nemo_code_path)}:$PYTHONPATH "
             "MKL_SERVICE_FORCE_INTEL=1 MKL_THREADING_LAYER=GNU "
             "MKL_NUM_THREADS=1 VML_NUM_THREADS=1 "
             "python -m nemo_skills.inference.server.serve_unified"
