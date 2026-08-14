@@ -856,6 +856,67 @@ or
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
 
+## Rich Transcription ASR Evaluation
+
+`rich_transcription_asr` evaluates ASR models that emit event and speaking-style tags inline with the transcript.
+It exposes two benchmark groups, each micro-averaged over its D12a and D8 members:
+
+- `rich_transcription_asr.val` from `d12a_val.json` and `d8_val_noflat.json`
+- `rich_transcription_asr.test` from `d12a_test.json` and `d8_test_noflat.json`
+
+The selected evaluation mode controls which tokens are retained before corpus WER is calculated:
+
+| Mode | `--evaluation_mode` | Retained tokens |
+| --- | --- | --- |
+| 1 (default) | `event` or `1` | `<ev:*>` only |
+| 2 | `style` or `2` | `<sty:*>` only |
+| 3 | `event_style` or `3` | Jointly ordered `<ev:*>` and `<sty:*>` tokens |
+| 4 | `all` or `4` | All transcript words and tokens |
+
+Prepare all four manifests from the mounted RT source. D12a rows contain offsets into shared recordings, so preparation
+materializes every requested segment as a standalone WAV instead of passing full recordings to inference.
+
+```bash
+ns prepare_data rich_transcription_asr \
+    --cluster=oci_iad \
+    --data_dir=/path/to/skills_data
+```
+
+Prepare only one set or run a small manifest-only smoke check:
+
+```bash
+python -m nemo_skills.dataset.prepare rich_transcription_asr \
+    --sets val \
+    --max-samples 8 \
+    --no-audio \
+    --output-dir /tmp/rich_transcription_asr-smoke
+```
+
+Run event-only WER on both groups with the provided NeMo ASR recipe:
+
+```bash
+python recipes/asr/run_rich_transcription_asr.py \
+    --model /path/to/Sound_Expert.nemo \
+    --cluster oci_iad \
+    --data_dir /path/to/skills_data \
+    --benchmark rich_transcription_asr.val \
+    --benchmark rich_transcription_asr.test \
+    --evaluation_mode event \
+    --output_dir /path/to/results
+```
+
+The recipe pins the server to the `moe_pee_ggemm/Speech` checkout used by the checkpoint. Override
+`--nemo_code_path` when that checkout is mounted elsewhere.
+
+To rescore an existing NeMo-Skills predictions JSONL under a different mode:
+
+```bash
+python -m nemo_skills.dataset.rich_transcription_asr.rich_transcription_asr_metrics \
+    --predictions /path/to/output.jsonl \
+    --evaluation-mode style \
+    --json-out /path/to/style_metrics.json
+```
+
 ## Multispeaker ASR (cpWER)
 
 Multispeaker ASR evaluates SALM-style serialized-overlap transcription (SOT) with speaker tags like `<spk:0>` and `<spk:1>`. The primary metric is **cpWER** (concatenated minimum-permutation WER), computed in the shared audio evaluator (`task_type=MS-ASR`) using:
