@@ -45,14 +45,23 @@ def main() -> None:
         required=True,
         help="Root under which rich_transcription_asr/ will be created.",
     )
+    parser.add_argument(
+        "--manifest_root",
+        default=None,
+        help="Optional directory containing the exact D12a/D8 source manifests.",
+    )
     parser.add_argument("--sets", nargs="+", default=["all"])
     parser.add_argument("--expname", default="prepare-rich-transcription-asr")
     parser.add_argument("--partition", default=None)
     parser.add_argument("--config_dir", default=None)
     args = parser.parse_args()
 
+    prepare_args = ["rich_transcription_asr", "--sets", *args.sets]
+    if args.manifest_root:
+        prepare_args.extend(["--manifest-root", args.manifest_root])
+
     prepare_data(
-        ctx=_Context(["rich_transcription_asr", "--sets", *args.sets]),
+        ctx=_Context(prepare_args),
         cluster=args.cluster,
         data_dir=args.data_dir,
         expname=args.expname,

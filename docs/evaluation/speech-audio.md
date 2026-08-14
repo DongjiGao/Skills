@@ -882,6 +882,16 @@ ns prepare_data rich_transcription_asr \
     --data_dir=/path/to/skills_data
 ```
 
+If the cluster's central manifest directory does not expose the exact no-flat D8 manifests, stage the four exact source
+manifests in a mounted directory and pass that directory explicitly:
+
+```bash
+python recipes/asr/prepare_rich_transcription_asr.py \
+    --cluster oci_iad \
+    --data_dir /path/to/skills_data \
+    --manifest_root /path/to/exact/RT_dev_eval
+```
+
 Prepare only one set or run a small manifest-only smoke check:
 
 ```bash
