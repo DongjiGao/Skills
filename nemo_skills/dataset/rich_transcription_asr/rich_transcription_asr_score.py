@@ -16,7 +16,23 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+PRIMARY_BENCHMARK_RE = re.compile(
+    r"rich_transcription_asr\.(?:val|test)\.(?:d12a|d8)"
+)
+
+
+def _primary_benchmarks(
+    combined_metrics: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Discard summarize_results subset mirrors before group aggregation."""
+    return {
+        name: metrics
+        for name, metrics in combined_metrics.items()
+        if PRIMARY_BENCHMARK_RE.fullmatch(name)
+    }
 
 
 def _aggregate(benchmarks: dict[str, dict[str, Any]], eval_mode: str) -> dict[str, Any]:
@@ -54,6 +70,7 @@ def compute_score(
     combined_metrics: dict[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Compute one micro-averaged score for every reported evaluation aggregate."""
+    combined_metrics = _primary_benchmarks(combined_metrics)
     eval_modes = sorted(
         {
             eval_mode

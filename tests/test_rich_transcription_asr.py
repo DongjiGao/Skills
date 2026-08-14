@@ -307,6 +307,15 @@ def test_group_score_micro_averages_d12a_and_d8():
                 "ref_words": 10,
             }
         },
+        "rich_transcription_asr.test.d8-test.d8": {
+            "pass@1": {
+                "evaluation_mode": "event",
+                "num_entries": 3,
+                "wer_errors": 3,
+                "deletions": 3,
+                "ref_words": 10,
+            }
+        },
     }
 
     result = score_module.compute_score(combined)["pass@1"]
