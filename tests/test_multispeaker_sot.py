@@ -63,6 +63,47 @@ def test_full_group_is_a_single_benchmark_covering_every_full_length_set():
     assert all(f"multispeaker-sot.{name}" in get_dataset_module("multispeaker-sot")[0].BENCHMARKS for name in expected)
 
 
+def test_allsets_group_contains_exactly_five_merged_groups():
+    group_module, _ = get_dataset_module("multispeaker-sot.allsets")
+    expected_groups = ["under20s", "60-90s", "120-180s", "full", "lsm"]
+
+    assert group_module.SUBSETS == expected_groups
+
+    flattened = [
+        subset
+        for group_name in expected_groups
+        for subset in get_dataset_module(f"multispeaker-sot.{group_name}")[0].SUBSETS
+    ]
+    assert len(flattened) == len(set(flattened))
+    assert set(flattened) == set(prepare.BENCHMARK_MANIFESTS)
+
+
+def test_build_allsets_manifest_merges_all_five_groups(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    bench_root = data_root / "multispeaker-sot"
+    groups = get_dataset_module("multispeaker-sot.allsets")[0].SUBSETS
+    for group_name in groups:
+        _write_jsonl(
+            bench_root / group_name / "test.jsonl",
+            [{"subset_for_metrics": group_name, "audio_filepath": f"/data/multispeaker-sot/{group_name}.wav"}],
+        )
+    # A data directory may retain a copied pre-update module. The canonical
+    # package definition must win so a normal rebuild cannot drop `full` again.
+    (bench_root / "allsets" / "__init__.py").parent.mkdir(parents=True, exist_ok=True)
+    (bench_root / "allsets" / "__init__.py").write_text(
+        'SUBSETS = ["under20s", "60-90s", "120-180s", "lsm"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "sys.argv", ["build_group_manifests.py", "--data-dir", str(data_root), "--groups", "allsets"]
+    )
+    build_group_manifests.main()
+
+    rows = [json.loads(line) for line in (bench_root / "allsets" / "test.jsonl").read_text().splitlines()]
+    assert [row["subset_for_metrics"] for row in rows] == groups
+
+
 def test_build_group_manifests_finds_full_group_when_data_dir_has_no_group_modules(tmp_path, monkeypatch):
     # prepare.py writes only <set>/test.jsonl into the data dir, so group SUBSETS
     # must be read from the dataset package instead.

@@ -6,11 +6,12 @@
 
 This exists so an ENTIRE multispeaker-sot sweep runs as ONE benchmark per
 checkpoint -> one convert + one vLLM generation job + one summarize job (3 jobs
-per step). Its ``test.jsonl`` is the concatenation of the four already-merged,
+per step). Its ``test.jsonl`` is the concatenation of the five already-merged,
 audio-path-fixed GROUP manifests listed in ``SUBSETS`` (under20s / 60-90s /
-120-180s / lsm), built on the cluster by ``build_group_manifests.py``. We merge
-the GROUP manifests (not the raw member sets) so we reuse their fixed audio
-paths verbatim -- the merge is a pure concatenation and touches no audio.
+120-180s / full / lsm), built on the cluster by
+``build_group_manifests.py``. We merge the GROUP manifests (not the raw member
+sets) so we reuse their fixed audio paths verbatim -- the merge is a pure
+concatenation and touches no audio.
 
 Per-set cpWER is still fully recovered: every record carries its original
 ``subset_for_metrics`` tag (e.g. ``under20s-ami-ihm-dev``), and AudioMetrics
@@ -19,10 +20,8 @@ one ``cpwer::<set>`` entry per underlying eval set. The merged output.jsonl can
 likewise be split back apart by ``subset_for_metrics`` (or the dataset name in
 each record's audio path).
 
-NOTE: ``full`` (full-session) sets are intentionally excluded -- they need the
-~2869s "mixed" vLLM profile and would balloon the context length / KV cache for
-every short-audio item. Add ``full`` to SUBSETS (and widen the profile) only if
-you actually want full-session sessions in the same job.
+The launcher must use its ``full`` long-audio profile for this aggregate because
+it now includes full-session recordings up to approximately 2869 seconds.
 """
 
 METRICS_TYPE = "audio"
@@ -42,5 +41,6 @@ SUBSETS = [
     "under20s",
     "60-90s",
     "120-180s",
+    "full",
     "lsm",
 ]
