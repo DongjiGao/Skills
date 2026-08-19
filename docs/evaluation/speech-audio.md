@@ -1003,11 +1003,12 @@ Each duration bucket is also available as a *single* merged benchmark whose `tes
 | `multispeaker-sot.120-180s` | the 4 `120-180s-*` sets |
 | `multispeaker-sot.full` | the 4 `full-*` sets (full-length sessions) |
 | `multispeaker-sot.lsm` | the 3 `lsm-test-clean-*` sets |
-| `multispeaker-sot.allsets` | `under20s` + `60-90s` + `120-180s` + `lsm` (excludes `full`) |
+| `multispeaker-sot.allsets` | `under20s` + `60-90s` + `120-180s` + `full` + `lsm` |
 
 Per-set cpWER is not lost: every record keeps its `subset_for_metrics` tag and `AudioMetrics` buckets by it, so a single `metrics.json` reports the overall cpWER plus one `cpwer::<set>` entry per member set.
 
-`allsets` deliberately excludes the full-length sets, because full sessions need a much larger context window (~36k audio tokens at 12.5 tokens/s) that would otherwise be forced onto every short-audio item. Evaluate `multispeaker-sot.full` separately.
+Because `allsets` includes full-length sessions, launchers must use the same
+long-audio context and generation budget as `multispeaker-sot.full`.
 
 ### Preparing Data
 
@@ -1072,7 +1073,8 @@ ns eval \
     ++inference.tokens_to_generate=16384
 ```
 
-Evaluate the whole benchmark group (every member set as its own benchmark):
+Evaluate the regular benchmark group as five merged benchmarks (`under20s`,
+`60-90s`, `120-180s`, `full`, and `lsm`):
 
 ```bash
 ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...

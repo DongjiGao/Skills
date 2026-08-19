@@ -45,6 +45,16 @@ def _aggregate(benchmarks: dict, eval_mode: str) -> dict:
     return output
 
 
+def _select_eval_group(combined_metrics: dict, group_name: str) -> dict:
+    """Select a merged group or its legacy per-set benchmark entries."""
+    prefix = f"multispeaker-sot.{group_name}"
+    return {
+        name: metrics
+        for name, metrics in combined_metrics.items()
+        if name == prefix or name.startswith(f"{prefix}-")
+    }
+
+
 def compute_score(combined_metrics: dict) -> dict:
     """Aggregate cpWER overall and by dataset/mix, collapsing duration splits."""
     if not combined_metrics:
@@ -55,10 +65,11 @@ def compute_score(combined_metrics: dict) -> dict:
     groups = {
         "all": combined_metrics,
         # Duration buckets
-        "under20s": {k: v for k, v in combined_metrics.items() if ".under20s-" in k},
-        "60-90s": {k: v for k, v in combined_metrics.items() if ".60-90s-" in k},
-        "120-180s": {k: v for k, v in combined_metrics.items() if ".120-180s-" in k},
-        "full": {k: v for k, v in combined_metrics.items() if ".full-" in k},
+        "under20s": _select_eval_group(combined_metrics, "under20s"),
+        "60-90s": _select_eval_group(combined_metrics, "60-90s"),
+        "120-180s": _select_eval_group(combined_metrics, "120-180s"),
+        "full": _select_eval_group(combined_metrics, "full"),
+        "lsm": _select_eval_group(combined_metrics, "lsm"),
         # Per-corpus buckets (collapsed across duration splits)
         "ami-ihm-dev": {k: v for k, v in combined_metrics.items() if "-ami-ihm-dev" in k},
         "ami-ihm-test": {k: v for k, v in combined_metrics.items() if "-ami-ihm-test" in k},

@@ -31,13 +31,14 @@ def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
 def test_group_registration():
     group_module, _ = get_dataset_module("multispeaker-sot")
     assert group_module.IS_BENCHMARK_GROUP is True
-    # one benchmark from each of the registered eval sets
-    assert "multispeaker-sot.under20s-ami-ihm-dev" in group_module.BENCHMARKS
-    assert "multispeaker-sot.60-90s-ami-ihm-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.120-180s-mixer6-ch04-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.full-chaes-ch109-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.lsm-test-clean-1mix" in group_module.BENCHMARKS
+    expected_groups = ("under20s", "60-90s", "120-180s", "full", "lsm")
+    assert group_module.EVAL_GROUPS == expected_groups
+    assert tuple(group_module.BENCHMARKS) == tuple(
+        f"multispeaker-sot.{name}" for name in expected_groups
+    )
+    assert "multispeaker-sot.full" in group_module.BENCHMARKS
 
+    # Individual leaf benchmarks remain directly addressable.
     sub_module, _ = get_dataset_module("multispeaker-sot.60-90s-ami-ihm-test")
     assert sub_module.METRICS_TYPE == "audio"
     assert "++eval_config.speaker_token='<spk:*>'" in sub_module.EVAL_ARGS
@@ -60,7 +61,10 @@ def test_full_group_is_a_single_benchmark_covering_every_full_length_set():
     # SUBSETS must cover every full-length set registered by the benchmark group.
     expected = sorted(name for name in prepare.BENCHMARK_MANIFESTS if name.startswith("full-"))
     assert sorted(group_module.SUBSETS) == expected
-    assert all(f"multispeaker-sot.{name}" in get_dataset_module("multispeaker-sot")[0].BENCHMARKS for name in expected)
+    assert all(
+        get_dataset_module(f"multispeaker-sot.{name}")[0].METRICS_TYPE == "audio"
+        for name in expected
+    )
 
 
 def test_allsets_group_contains_exactly_five_merged_groups():
@@ -349,3 +353,30 @@ def test_group_score_reports_duration_collapsed_dataset_and_mix_cpwer():
     assert output["3mix"]["cpwer"] == 30.0
     assert output["all"]["cpwer"] == 32.0
     assert "4mix" not in output
+
+
+def test_group_score_aggregates_the_five_regular_merged_benchmarks():
+    group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
+    group_errors = {
+        "under20s": 1,
+        "60-90s": 2,
+        "120-180s": 3,
+        "full": 4,
+        "lsm": 5,
+    }
+    combined = {
+        f"multispeaker-sot.{name}": {
+            "pass@1": {
+                "cpwer_errors": errors,
+                "cpwer_ref_words": 10,
+                "num_entries": 1,
+            }
+        }
+        for name, errors in group_errors.items()
+    }
+
+    output = group_module.compute_score(combined)["pass@1"]
+
+    assert output["all"]["cpwer"] == 30.0
+    for name, errors in group_errors.items():
+        assert output[name]["cpwer"] == errors * 10.0

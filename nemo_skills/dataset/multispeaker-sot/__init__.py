@@ -37,7 +37,12 @@ BENCHMARK_MANIFESTS = {
     "lsm-test-clean-3mix": "libri_speech_mix/lsm-test-clean-3mix_nemo_sot.json",
 }
 
-BENCHMARKS = {f"multispeaker-sot.{name}": {} for name in BENCHMARK_MANIFESTS}
+EVAL_GROUPS = ("under20s", "60-90s", "120-180s", "full", "lsm")
+
+# A regular `multispeaker-sot` evaluation runs the five merged benchmarks. Each
+# merged manifest retains `subset_for_metrics`, so all 21 underlying eval sets
+# remain visible in the per-group metrics without launching 21 generation jobs.
+BENCHMARKS = {f"multispeaker-sot.{name}": {} for name in EVAL_GROUPS}
 
 FORMAT_EXPECTATIONS = {
     "multispeaker-sot": {
