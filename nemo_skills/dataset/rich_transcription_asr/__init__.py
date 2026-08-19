@@ -15,4 +15,9 @@
 """Rich Transcription ASR validation and test benchmark groups."""
 
 REQUIRES_DATA_DIR = True
-AVAILABLE_GROUPS = ("rich_transcription_asr.val", "rich_transcription_asr.test")
+AVAILABLE_GROUPS = (
+    "rich_transcription_asr.val",
+    "rich_transcription_asr.test",
+    "rich_transcription_asr.d8_test",
+    "rich_transcription_asr.d12_test",
+)

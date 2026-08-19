@@ -60,6 +60,8 @@ def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
 def test_group_and_subbenchmarks_are_registered():
     val_group, _ = get_dataset_module("rich_transcription_asr.val")
     test_group, _ = get_dataset_module("rich_transcription_asr.test")
+    d8_test_group, _ = get_dataset_module("rich_transcription_asr.d8_test")
+    d12_test_group, _ = get_dataset_module("rich_transcription_asr.d12_test")
     assert set(val_group.BENCHMARKS) == {
         "rich_transcription_asr.val.d12a",
         "rich_transcription_asr.val.d8",
@@ -68,6 +70,16 @@ def test_group_and_subbenchmarks_are_registered():
         "rich_transcription_asr.test.d12a",
         "rich_transcription_asr.test.d8",
     }
+    assert d8_test_group.IS_BENCHMARK_GROUP
+    assert set(d8_test_group.BENCHMARKS) == {
+        "rich_transcription_asr.test.d8",
+    }
+    assert d8_test_group.SCORE_MODULE.endswith(".rich_transcription_asr_score")
+    assert d12_test_group.IS_BENCHMARK_GROUP
+    assert set(d12_test_group.BENCHMARKS) == {
+        "rich_transcription_asr.test.d12a",
+    }
+    assert d12_test_group.SCORE_MODULE.endswith(".rich_transcription_asr_score")
 
     subbenchmark, _ = get_dataset_module("rich_transcription_asr.val.d8")
     assert subbenchmark.EVAL_SPLIT == "validation"

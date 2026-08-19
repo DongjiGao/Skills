@@ -864,6 +864,10 @@ It exposes two benchmark groups, each micro-averaged over its D12a and D8 member
 - `rich_transcription_asr.val` from `d12a_val.json` and `d8_val_noflat.json`
 - `rich_transcription_asr.test` from `d12a_test.json` and `d8_test_noflat.json`
 
+For D8 test alone, use `rich_transcription_asr.d8_test`. This singleton group
+resolves to the canonical `rich_transcription_asr.test.d8` leaf and therefore
+reuses the same prepared manifest and event-token scoring implementation.
+
 The selected evaluation mode controls which tokens are retained before corpus WER is calculated:
 
 | Mode | `--evaluation_mode` | Retained tokens |
@@ -915,6 +919,9 @@ python recipes/asr/run_rich_transcription_asr.py \
     --evaluation_mode event \
     --output_dir /path/to/results
 ```
+
+The recipe defaults to `rich_transcription_asr.d8_test`; pass the validation or
+combined test groups explicitly when those additional splits are required.
 
 The recipe pins the server to the `moe_pee_ggemm/Speech` checkout used by the checkpoint. Override
 `--nemo_code_path` when that checkout is mounted elsewhere. It also keeps each materialized manifest segment intact

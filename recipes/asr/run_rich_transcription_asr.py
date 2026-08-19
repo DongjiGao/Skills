@@ -43,6 +43,7 @@ DEFAULT_NEMO_CODE_PATH = (
     "/lustre/fs12/portfolios/llmservice/users/taejinp/projects/moe_pee_ggemm/Speech"
 )
 BENCHMARKS = (
+    "rich_transcription_asr.d8_test",
     "rich_transcription_asr.val",
     "rich_transcription_asr.test",
 )
@@ -72,7 +73,10 @@ def main() -> None:
         action="append",
         choices=BENCHMARKS,
         default=None,
-        help="Repeat to evaluate both validation and test; defaults to rich_transcription_asr.test.",
+        help=(
+            "Repeat to evaluate multiple groups; defaults to the D8-only "
+            "rich_transcription_asr.d8_test benchmark."
+        ),
     )
     parser.add_argument(
         "--evaluation_mode",
@@ -113,7 +117,7 @@ def main() -> None:
         ),
         cluster=args.cluster,
         output_dir=args.output_dir,
-        benchmarks=",".join(args.benchmark or ["rich_transcription_asr.test"]),
+        benchmarks=",".join(args.benchmark or ["rich_transcription_asr.d8_test"]),
         model=args.model,
         server_type="generic",
         server_gpus=args.server_gpus,
