@@ -27,6 +27,7 @@ from tqdm import tqdm
 
 from nemo_skills.dataset.fleurs.languages import (
     CER_LOCALES,
+    LANGUAGE_SETS,
     LOCALES,
     get_lang_group,
     get_lang_name,
@@ -304,8 +305,14 @@ def main():
     parser.add_argument(
         "--languages",
         nargs="+",
-        default=LOCALES,
+        default=None,
         help="Languages to process",
+    )
+    parser.add_argument(
+        "--language-set",
+        choices=sorted(LANGUAGE_SETS),
+        default="all",
+        help="Named language set to process when --languages is not supplied",
     )
     parser.add_argument(
         "--no-audio",
@@ -314,7 +321,9 @@ def main():
     )
     args = parser.parse_args()
 
-    unknown = set(args.languages) - LOCALES
+    languages = args.languages if args.languages is not None else list(LANGUAGE_SETS[args.language_set])
+
+    unknown = set(languages) - LOCALES
     if unknown:
         raise ValueError(f"Unknown language(s): {', '.join(sorted(unknown))}. Available: {', '.join(sorted(LOCALES))}")
 
@@ -327,7 +336,7 @@ def main():
     prepare_fleurs(
         data_dir=data_dir,
         split=args.split,
-        languages=args.languages,
+        languages=languages,
         no_audio=args.no_audio,
     )
 
