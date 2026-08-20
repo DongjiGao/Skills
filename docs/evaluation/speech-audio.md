@@ -864,9 +864,12 @@ It exposes two benchmark groups, each micro-averaged over its D12a and D8 member
 - `rich_transcription_asr.val` from `d12a_val.json` and `d8_val_noflat.json`
 - `rich_transcription_asr.test` from `d12a_test.json` and `d8_test_noflat.json`
 
-For D8 test alone, use `rich_transcription_asr.d8_test`. This singleton group
-resolves to the canonical `rich_transcription_asr.test.d8` leaf and therefore
-reuses the same prepared manifest and event-token scoring implementation.
+For singleton test selection, use `rich_transcription_asr.d8_test` or
+`rich_transcription_asr.d12_test`. They resolve to the canonical
+`rich_transcription_asr.test.d8` and `rich_transcription_asr.test.d12a` leaves,
+respectively, and reuse the same prepared manifests and event-token scoring
+implementation. Use the combined `rich_transcription_asr.test` group to evaluate
+D8 and D12A together.
 
 The selected evaluation mode controls which tokens are retained before corpus WER is calculated:
 
@@ -877,56 +880,61 @@ The selected evaluation mode controls which tokens are retained before corpus WE
 | 3 | `event_style` or `3` | Jointly ordered `<ev:*>` and `<sty:*>` tokens |
 | 4 | `all` or `4` | All transcript words and tokens |
 
-Prepare all four manifests from the mounted RT source. D12a rows contain offsets into shared recordings, so preparation
-materializes every requested segment as a standalone WAV instead of passing full recordings to inference. Segments
-shorter than 100 ms are right-padded with silence to satisfy the Sound Expert encoder's minimum standalone input length.
+Prepare the D8 and D12A test manifests together from the mounted RT source. D12A
+rows contain offsets into shared recordings, so preparation materializes every
+requested segment as a standalone WAV instead of passing full recordings to
+inference. Segments shorter than 100 ms are right-padded with silence to satisfy
+the Sound Expert encoder's minimum standalone input length.
 
 ```bash
 ns prepare_data rich_transcription_asr \
     --cluster=oci_iad \
-    --data_dir=/path/to/skills_data
+    --data_dir=/path/to/skills_data \
+    --sets test.d8 test.d12a
 ```
 
-If the cluster's central manifest directory does not expose the exact no-flat D8 manifests, stage the four exact source
-manifests in a mounted directory and pass that directory explicitly:
+If the cluster's central manifest directory does not expose the exact test
+manifests, stage `d8_test_noflat.json` and `d12a_test.json` in a mounted directory
+and pass that directory explicitly:
 
 ```bash
 python recipes/asr/prepare_rich_transcription_asr.py \
     --cluster oci_iad \
     --data_dir /path/to/skills_data \
-    --manifest_root /path/to/exact/RT_dev_eval
+    --manifest_root /path/to/exact/RT_dev_eval \
+    --sets test.d8 test.d12a
 ```
 
 Prepare only one set or run a small manifest-only smoke check:
 
 ```bash
 python -m nemo_skills.dataset.prepare rich_transcription_asr \
-    --sets val \
+    --sets test.d8 \
     --max-samples 8 \
     --no-audio \
     --output-dir /tmp/rich_transcription_asr-smoke
 ```
 
-Run event-only WER on both groups with the provided NeMo ASR recipe:
+Run event-only WER on D8 and D12A together with the provided NeMo ASR recipe:
 
 ```bash
 python recipes/asr/run_rich_transcription_asr.py \
     --model /path/to/Sound_Expert.nemo \
     --cluster oci_iad \
     --data_dir /path/to/skills_data \
-    --benchmark rich_transcription_asr.val \
     --benchmark rich_transcription_asr.test \
     --evaluation_mode event \
     --output_dir /path/to/results
 ```
 
-The recipe defaults to `rich_transcription_asr.d8_test`; pass the validation or
-combined test groups explicitly when those additional splits are required.
+`rich_transcription_asr.test` expands to both canonical test leaves, so this one
+invocation evaluates the prepared D8 and D12A test sets and aggregates their
+event-token metrics.
 
-The recipe pins the server to the `moe_pee_ggemm/Speech` checkout used by the checkpoint. Override
-`--nemo_code_path` when that checkout is mounted elsewhere. It also keeps each materialized manifest segment intact
-(`enable_audio_chunking=false`) and selects the reference evaluator's dense-SDPA Transformer fallback. The latter avoids
-FlexAttention Triton resource failures without changing model weights, decoding, references, or WER filtering.
+The recipe keeps each materialized manifest segment intact
+(`enable_audio_chunking=false`) and selects the reference evaluator's dense-SDPA
+Transformer fallback. The latter avoids FlexAttention Triton resource failures
+without changing model weights, decoding, references, or WER filtering.
 
 To rescore an existing NeMo-Skills predictions JSONL under a different mode:
 
