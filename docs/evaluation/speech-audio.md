@@ -856,6 +856,95 @@ or
 ns prepare_data librispeech-pc --split test-other --data_dir=/path/to/data
 ```
 
+## Rich Transcription ASR Evaluation
+
+`rich_transcription_asr` evaluates ASR models that emit event and speaking-style tags inline with the transcript.
+It exposes two benchmark groups, each micro-averaged over its D12a and D8 members:
+
+- `rich_transcription_asr.val` from `d12a_val.json` and `d8_val_noflat.json`
+- `rich_transcription_asr.test` from `d12a_test.json` and `d8_test_noflat.json`
+
+For singleton test selection, use `rich_transcription_asr.d8_test` or
+`rich_transcription_asr.d12_test`. They resolve to the canonical
+`rich_transcription_asr.test.d8` and `rich_transcription_asr.test.d12a` leaves,
+respectively, and reuse the same prepared manifests and event-token scoring
+implementation. Use the combined `rich_transcription_asr.test` group to evaluate
+D8 and D12A together.
+
+The selected evaluation mode controls which tokens are retained before corpus WER is calculated:
+
+| Mode | `--evaluation_mode` | Retained tokens |
+| --- | --- | --- |
+| 1 (default) | `event` or `1` | `<ev:*>` only |
+| 2 | `style` or `2` | `<sty:*>` only |
+| 3 | `event_style` or `3` | Jointly ordered `<ev:*>` and `<sty:*>` tokens |
+| 4 | `all` or `4` | All transcript words and tokens |
+
+Prepare the D8 and D12A test manifests together from the mounted RT source. D12A
+rows contain offsets into shared recordings, so preparation materializes every
+requested segment as a standalone WAV instead of passing full recordings to
+inference. Segments shorter than 100 ms are right-padded with silence to satisfy
+the Sound Expert encoder's minimum standalone input length.
+
+```bash
+ns prepare_data rich_transcription_asr \
+    --cluster=oci_iad \
+    --data_dir=/path/to/skills_data \
+    --sets test.d8 test.d12a
+```
+
+If the cluster's central manifest directory does not expose the exact test
+manifests, stage `d8_test_noflat.json` and `d12a_test.json` in a mounted directory
+and pass that directory explicitly:
+
+```bash
+python recipes/asr/prepare_rich_transcription_asr.py \
+    --cluster oci_iad \
+    --data_dir /path/to/skills_data \
+    --manifest_root /path/to/exact/RT_dev_eval \
+    --sets test.d8 test.d12a
+```
+
+Prepare only one set or run a small manifest-only smoke check:
+
+```bash
+python -m nemo_skills.dataset.prepare rich_transcription_asr \
+    --sets test.d8 \
+    --max-samples 8 \
+    --no-audio \
+    --output-dir /tmp/rich_transcription_asr-smoke
+```
+
+Run event-only WER on D8 and D12A together with the provided NeMo ASR recipe:
+
+```bash
+python recipes/asr/run_rich_transcription_asr.py \
+    --model /path/to/Sound_Expert.nemo \
+    --cluster oci_iad \
+    --data_dir /path/to/skills_data \
+    --benchmark rich_transcription_asr.test \
+    --evaluation_mode event \
+    --output_dir /path/to/results
+```
+
+`rich_transcription_asr.test` expands to both canonical test leaves, so this one
+invocation evaluates the prepared D8 and D12A test sets and aggregates their
+event-token metrics.
+
+The recipe keeps each materialized manifest segment intact
+(`enable_audio_chunking=false`) and selects the reference evaluator's dense-SDPA
+Transformer fallback. The latter avoids FlexAttention Triton resource failures
+without changing model weights, decoding, references, or WER filtering.
+
+To rescore an existing NeMo-Skills predictions JSONL under a different mode:
+
+```bash
+python -m nemo_skills.dataset.rich_transcription_asr.rich_transcription_asr_metrics \
+    --predictions /path/to/output.jsonl \
+    --evaluation-mode style \
+    --json-out /path/to/style_metrics.json
+```
+
 ## Multispeaker ASR (cpWER)
 
 Multispeaker ASR evaluates SALM-style serialized-overlap transcription (SOT) with speaker tags like `<spk:0>` and `<spk:1>`. The primary metric is **cpWER** (concatenated minimum-permutation WER), computed in the shared audio evaluator (`task_type=MS-ASR`) using:
@@ -929,11 +1018,12 @@ Each duration bucket is also available as a *single* merged benchmark whose `tes
 | `multispeaker-sot.120-180s` | the 4 `120-180s-*` sets |
 | `multispeaker-sot.full` | the 4 `full-*` sets (full-length sessions) |
 | `multispeaker-sot.lsm` | the 3 `lsm-test-clean-*` sets |
-| `multispeaker-sot.allsets` | `under20s` + `60-90s` + `120-180s` + `lsm` (excludes `full`) |
+| `multispeaker-sot.allsets` | `under20s` + `60-90s` + `120-180s` + `full` + `lsm` |
 
 Per-set cpWER is not lost: every record keeps its `subset_for_metrics` tag and `AudioMetrics` buckets by it, so a single `metrics.json` reports the overall cpWER plus one `cpwer::<set>` entry per member set.
 
-`allsets` deliberately excludes the full-length sets, because full sessions need a much larger context window (~36k audio tokens at 12.5 tokens/s) that would otherwise be forced onto every short-audio item. Evaluate `multispeaker-sot.full` separately.
+Because `allsets` includes full-length sessions, launchers must use the same
+long-audio context and generation budget as `multispeaker-sot.full`.
 
 ### Preparing Data
 
@@ -998,7 +1088,8 @@ ns eval \
     ++inference.tokens_to_generate=16384
 ```
 
-Evaluate the whole benchmark group (every member set as its own benchmark):
+Evaluate the regular benchmark group as five merged benchmarks (`under20s`,
+`60-90s`, `120-180s`, `full`, and `lsm`):
 
 ```bash
 ns eval --benchmarks=multispeaker-sot --output_dir=/workspace/msasr-eval ...

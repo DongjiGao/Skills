@@ -31,13 +31,14 @@ def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
 def test_group_registration():
     group_module, _ = get_dataset_module("multispeaker-sot")
     assert group_module.IS_BENCHMARK_GROUP is True
-    # one benchmark from each of the registered eval sets
-    assert "multispeaker-sot.under20s-ami-ihm-dev" in group_module.BENCHMARKS
-    assert "multispeaker-sot.60-90s-ami-ihm-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.120-180s-mixer6-ch04-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.full-chaes-ch109-test" in group_module.BENCHMARKS
-    assert "multispeaker-sot.lsm-test-clean-1mix" in group_module.BENCHMARKS
+    expected_groups = ("under20s", "60-90s", "120-180s", "full", "lsm")
+    assert group_module.EVAL_GROUPS == expected_groups
+    assert tuple(group_module.BENCHMARKS) == tuple(
+        f"multispeaker-sot.{name}" for name in expected_groups
+    )
+    assert "multispeaker-sot.full" in group_module.BENCHMARKS
 
+    # Individual leaf benchmarks remain directly addressable.
     sub_module, _ = get_dataset_module("multispeaker-sot.60-90s-ami-ihm-test")
     assert sub_module.METRICS_TYPE == "audio"
     assert "++eval_config.speaker_token='<spk:*>'" in sub_module.EVAL_ARGS
@@ -60,7 +61,51 @@ def test_full_group_is_a_single_benchmark_covering_every_full_length_set():
     # SUBSETS must cover every full-length set registered by the benchmark group.
     expected = sorted(name for name in prepare.BENCHMARK_MANIFESTS if name.startswith("full-"))
     assert sorted(group_module.SUBSETS) == expected
-    assert all(f"multispeaker-sot.{name}" in get_dataset_module("multispeaker-sot")[0].BENCHMARKS for name in expected)
+    assert all(
+        get_dataset_module(f"multispeaker-sot.{name}")[0].METRICS_TYPE == "audio"
+        for name in expected
+    )
+
+
+def test_allsets_group_contains_exactly_five_merged_groups():
+    group_module, _ = get_dataset_module("multispeaker-sot.allsets")
+    expected_groups = ["under20s", "60-90s", "120-180s", "full", "lsm"]
+
+    assert group_module.SUBSETS == expected_groups
+
+    flattened = [
+        subset
+        for group_name in expected_groups
+        for subset in get_dataset_module(f"multispeaker-sot.{group_name}")[0].SUBSETS
+    ]
+    assert len(flattened) == len(set(flattened))
+    assert set(flattened) == set(prepare.BENCHMARK_MANIFESTS)
+
+
+def test_build_allsets_manifest_merges_all_five_groups(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    bench_root = data_root / "multispeaker-sot"
+    groups = get_dataset_module("multispeaker-sot.allsets")[0].SUBSETS
+    for group_name in groups:
+        _write_jsonl(
+            bench_root / group_name / "test.jsonl",
+            [{"subset_for_metrics": group_name, "audio_filepath": f"/data/multispeaker-sot/{group_name}.wav"}],
+        )
+    # A data directory may retain a copied pre-update module. The canonical
+    # package definition must win so a normal rebuild cannot drop `full` again.
+    (bench_root / "allsets" / "__init__.py").parent.mkdir(parents=True, exist_ok=True)
+    (bench_root / "allsets" / "__init__.py").write_text(
+        'SUBSETS = ["under20s", "60-90s", "120-180s", "lsm"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "sys.argv", ["build_group_manifests.py", "--data-dir", str(data_root), "--groups", "allsets"]
+    )
+    build_group_manifests.main()
+
+    rows = [json.loads(line) for line in (bench_root / "allsets" / "test.jsonl").read_text().splitlines()]
+    assert [row["subset_for_metrics"] for row in rows] == groups
 
 
 def test_build_group_manifests_finds_full_group_when_data_dir_has_no_group_modules(tmp_path, monkeypatch):
@@ -308,3 +353,30 @@ def test_group_score_reports_duration_collapsed_dataset_and_mix_cpwer():
     assert output["3mix"]["cpwer"] == 30.0
     assert output["all"]["cpwer"] == 32.0
     assert "4mix" not in output
+
+
+def test_group_score_aggregates_the_five_regular_merged_benchmarks():
+    group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
+    group_errors = {
+        "under20s": 1,
+        "60-90s": 2,
+        "120-180s": 3,
+        "full": 4,
+        "lsm": 5,
+    }
+    combined = {
+        f"multispeaker-sot.{name}": {
+            "pass@1": {
+                "cpwer_errors": errors,
+                "cpwer_ref_words": 10,
+                "num_entries": 1,
+            }
+        }
+        for name, errors in group_errors.items()
+    }
+
+    output = group_module.compute_score(combined)["pass@1"]
+
+    assert output["all"]["cpwer"] == 30.0
+    for name, errors in group_errors.items():
+        assert output[name]["cpwer"] == errors * 10.0

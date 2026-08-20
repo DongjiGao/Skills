@@ -13,8 +13,9 @@ as a *single* benchmark (one vLLM job + one summarize job).
 
 Group definitions are read from the dataset package next to this script, since
 ``prepare.py`` writes only ``<set>/test.jsonl`` into the data dir and leaves no
-``__init__.py`` there to discover. A group dir inside the data dir that declares
-its own SUBSETS still takes precedence, so a data dir can override a group.
+``__init__.py`` there to discover. Canonical package definitions take precedence
+over stale copies in the data dir; data-local modules can still add custom group
+names that do not exist in the package.
 
 Records are copied verbatim, so each keeps its ``subset_for_metrics`` tag and
 audio_filepath — the merge is a pure concatenation (no audio is touched). This
@@ -152,7 +153,7 @@ def main() -> None:
             print(f"[build-group] audio path rewrite: {old_prefix!r} -> {new_prefix!r}")
 
     package_root = Path(__file__).resolve().parent
-    discovered = _discover_groups(root, package_root)
+    discovered = _discover_groups(package_root, root)
     if not discovered:
         raise SystemExit(
             f"[build-group] ERROR: no group modules with SUBSETS found under {root} or {package_root}"
