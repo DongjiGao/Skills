@@ -123,6 +123,54 @@ FLEURS_LANGUAGES: dict[str, dict[str, str]] = {
 
 LOCALES: frozenset[str] = frozenset(FLEURS_LANGUAGES)
 
+# Product ASR reporting set from the 40-row ASR language table. ``nn_no`` is
+# intentionally absent because Google FLEURS does not provide that locale.
+NEMOTRON_ASR_LOCALES: tuple[str, ...] = (
+    "ar_eg",
+    "hy_am",
+    "bg_bg",
+    "cmn_hans_cn",
+    "hr_hr",
+    "cs_cz",
+    "da_dk",
+    "nl_nl",
+    "en_us",
+    "et_ee",
+    "fil_ph",
+    "fi_fi",
+    "fr_fr",
+    "de_de",
+    "el_gr",
+    "he_il",
+    "hi_in",
+    "hu_hu",
+    "id_id",
+    "it_it",
+    "ja_jp",
+    "ko_kr",
+    "lv_lv",
+    "lt_lt",
+    "mt_mt",
+    "nb_no",
+    "pl_pl",
+    "pt_br",
+    "ro_ro",
+    "ru_ru",
+    "sk_sk",
+    "sl_si",
+    "es_419",
+    "sv_se",
+    "th_th",
+    "tr_tr",
+    "uk_ua",
+    "vi_vn",
+)
+
+LANGUAGE_SETS: dict[str, tuple[str, ...]] = {
+    "all": tuple(sorted(LOCALES)),
+    "nemotron-asr": NEMOTRON_ASR_LOCALES,
+}
+
 # Locales evaluated with Character Error Rate instead of Word Error Rate
 # (scripts without explicit word boundaries).
 CER_LOCALES: frozenset[str] = frozenset(

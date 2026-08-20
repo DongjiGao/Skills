@@ -1490,6 +1490,8 @@ Audio is downloaded automatically from HuggingFace. A single `prepare_data fleur
 
 The `--languages` flag selects which FLEURS locales are prepared. ASR records are emitted for the listed locales. ST records are emitted for every (`en_us` → locale) and (locale → `en_us`) pair touching the listed locales — even if `en_us` is not itself in `--languages`, since it is the pivot. Omit `--languages` to prepare all 102 locales.
 
+For the Nemotron ASR product reporting set from the 40-row language table, use `--language-set nemotron-asr`.
+
 ```bash
 ns prepare_data fleurs \
     --data_dir /path/to/data \
