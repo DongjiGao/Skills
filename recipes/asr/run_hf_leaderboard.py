@@ -14,8 +14,10 @@
 
 """HuggingFace Open ASR Leaderboard evaluation for NeMo ASR models.
 
-Runs the HF Open ASR Leaderboard benchmark (8 datasets, WER metric) on
-NeMo ASR models using the unified server with the nemo_asr or salm backend.
+Runs the HF Open ASR Leaderboard benchmark on NeMo ASR models using the unified
+server with the nemo_asr or salm backend. The default track is the English
+short-form leaderboard; pass ``--track multilingual`` for the public
+multilingual leaderboard.
 
 Uses 1 GPU for the server (NeMo ASR model). The evaluation client runs
 on CPU alongside it.
@@ -50,7 +52,11 @@ def main():
     parser.add_argument("--model", required=True, help="NeMo ASR model name or path (e.g. nvidia/canary-qwen-2.5b)")
     parser.add_argument("--cluster", required=True, help="Cluster name (e.g. oci_iad)")
     parser.add_argument("--output_dir", required=True, help="Directory for evaluation outputs")
-    parser.add_argument("--data_dir", default="/dataset", help="Root data directory (must contain asr-leaderboard/)")
+    parser.add_argument(
+        "--data_dir",
+        default="/dataset",
+        help="Root data directory (must contain asr-leaderboard/ or asr-leaderboard-multilingual/)",
+    )
     parser.add_argument("--server_container", default=DEFAULT_SERVER_CONTAINER, help="NeMo container image")
     parser.add_argument("--server_gpus", type=int, default=1, help="Number of GPUs for the ASR server")
     parser.add_argument(
@@ -67,8 +73,15 @@ def main():
     parser.add_argument("--partition", default=None, help="Slurm partition (e.g. interactive)")
     parser.add_argument("--config_dir", default=None, help="Directory containing cluster config YAMLs")
     parser.add_argument("--split", default=None, help="Dataset split to evaluate (default: test = all datasets)")
+    parser.add_argument(
+        "--track",
+        default="english",
+        choices=["english", "multilingual"],
+        help="Leaderboard track to evaluate",
+    )
 
     args = parser.parse_args()
+    benchmark = "asr-leaderboard" if args.track == "english" else "asr-leaderboard-multilingual"
 
     run_eval(
         ctx=wrap_arguments(
@@ -81,7 +94,7 @@ def main():
         ),
         cluster=args.cluster,
         output_dir=args.output_dir,
-        benchmarks="asr-leaderboard",
+        benchmarks=benchmark,
         model=args.model,
         server_type="generic",
         server_gpus=args.server_gpus,

@@ -58,6 +58,92 @@ def _set_asr_leaderboard_macro_wer(metrics: dict):
         overall_metrics["wer"] = round(sum(subset_wers) / len(subset_wers), 2)
 
 
+ASR_LEADERBOARD_MULTILINGUAL_LANGUAGE_DATASETS = {
+    "de": ("fleurs_de", "mcv_de"),
+    "fr": ("fleurs_fr", "mcv_fr", "mls_fr"),
+    "it": ("fleurs_it", "mcv_it", "mls_it"),
+    "es": ("fleurs_es", "mcv_es", "mls_es"),
+    "pt": ("fleurs_pt", "mls_pt"),
+}
+
+
+def _weighted_mean(metrics: list[dict], key: str):
+    weighted_sum = 0.0
+    total_entries = 0
+    for item in metrics:
+        value = item.get(key)
+        num_entries = item.get("num_entries", 0)
+        if value is None or num_entries == 0:
+            continue
+        weighted_sum += value * num_entries
+        total_entries += num_entries
+    if total_entries == 0:
+        return None
+    return weighted_sum / total_entries
+
+
+def _sum_present(metrics: list[dict], key: str):
+    values = [item[key] for item in metrics if key in item and item[key] is not None]
+    return sum(values) if values else None
+
+
+def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
+    """Add language averages and set _all_ WER to the official language mean.
+
+    The HF multilingual leaderboard first averages dataset-level WER within each
+    language, then averages the five language scores. Dataset-specific entries
+    are retained and synthetic language entries are added for reporting.
+    """
+    if "_all_" not in metrics:
+        return
+
+    for eval_mode, overall_metrics in metrics["_all_"].items():
+        language_wers = []
+        language_metrics_by_code = {}
+
+        for language, datasets in ASR_LEADERBOARD_MULTILINGUAL_LANGUAGE_DATASETS.items():
+            subset_metrics = [
+                metrics[dataset][eval_mode]
+                for dataset in datasets
+                if dataset in metrics
+                and eval_mode in metrics[dataset]
+                and metrics[dataset][eval_mode].get("wer") is not None
+            ]
+            if not subset_metrics:
+                continue
+
+            language_wer = round(sum(item["wer"] for item in subset_metrics) / len(subset_metrics), 2)
+            language_wers.append(language_wer)
+
+            total_entries = sum(item.get("num_entries", 0) for item in subset_metrics)
+            language_metrics = {
+                "avg_tokens": int(_weighted_mean(subset_metrics, "avg_tokens") or 0),
+                "gen_seconds": _sum_present(subset_metrics, "gen_seconds") or 0,
+                "success_rate": round(_weighted_mean(subset_metrics, "success_rate") or 0.0, 2),
+                "no_answer": round(_weighted_mean(subset_metrics, "no_answer") or 0.0, 2),
+                "num_entries": total_entries,
+                "wer": language_wer,
+            }
+
+            for key in ("wer_macro", "cer", "cer_macro"):
+                value = _weighted_mean(subset_metrics, key)
+                if value is not None:
+                    language_metrics[key] = round(value, 2)
+
+            for key in ("gen_seconds", "substitutions", "insertions", "deletions", "ref_words"):
+                value = _sum_present(subset_metrics, key)
+                if value is not None:
+                    language_metrics[key] = value
+
+            language_metrics_by_code[language] = language_metrics
+
+        if language_wers:
+            overall_metrics["wer"] = round(sum(language_wers) / len(language_wers), 2)
+
+        for language, language_metrics in language_metrics_by_code.items():
+            metrics.setdefault(language, {})[eval_mode] = language_metrics
+
+
 def add_benchmark_groups(results, metrics_to_print, evaluations_to_print):
     # Average results for benchmarks with dot notation (e.g., ruler.niah_single_1, ruler.niah_single_2)
     benchmark_groups = defaultdict(list)
@@ -372,6 +458,8 @@ def summarize_results(
         metrics = metrics_calculator.compute_metrics(input_files=input_files)
         if benchmark == "asr-leaderboard" and len(metrics) > 1:
             _set_asr_leaderboard_macro_wer(metrics)
+        if benchmark == "asr-leaderboard-multilingual" and len(metrics) > 1:
+            _set_asr_leaderboard_multilingual_macro_wer(metrics)
         if len(metrics) > 1:  # has subsets
             for subset, subset_metrics in metrics.items():
                 results[get_subset_name(benchmark, subset)].update(subset_metrics)
