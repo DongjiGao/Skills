@@ -806,13 +806,22 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
 def _wer_with_counts(ref: str, hyp: str, merge_compounds: bool = False) -> dict[str, Any]:
     """Compute WER and raw counts, optionally using Open ASR compound merging."""
     if merge_compounds:
-        from kaldialign import batch_error_rate
+        try:
+            from kaldialign import batch_error_rate
 
-        measures = batch_error_rate(
-            [tuple(ref.split())],
-            [tuple(hyp.split())],
-            merge_compounds=True,
-        )
+            measures = batch_error_rate(
+                [tuple(ref.split())],
+                [tuple(hyp.split())],
+                merge_compounds=True,
+            )
+        except ImportError:
+            from kaldialign import edit_distance
+
+            ref_words = ref.split()
+            ref, hyp = normalize_compound_pairs(ref, hyp)
+            measures = edit_distance(tuple(ref.split()), tuple(hyp.split()))
+            measures["ref_len"] = len(ref_words)
+            measures["err_rate"] = measures["total"] / measures["ref_len"] if measures["ref_len"] else 0.0
         return {
             "wer": measures["err_rate"],
             "wer_errors": measures["total"],
@@ -901,14 +910,10 @@ def evaluate_asr(
         result = {"wer": None, "is_correct": None, "text": "", "pred_text": hyp or ""}
         return result
 
-    if normalization_mode == "hf_leaderboard":
-        # Open ASR Leaderboard PR #142 uses kaldialign's merge_compounds mode.
-        # Per-sample scoring produces the same additive counts as its batch call.
-        result = _wer_with_counts(ref, hyp, merge_compounds=True)
-    else:
-        if not hyp:
-            hyp = "empty"
-        result = _wer_with_counts(ref, hyp)
+    merge_compounds = normalization_mode == "hf_leaderboard" or kwargs.get("merge_compounds", False)
+    if not hyp and not merge_compounds:
+        hyp = "empty"
+    result = _wer_with_counts(ref, hyp, merge_compounds=merge_compounds)
     result["is_correct"] = result["wer"] < 0.5
     result["text"] = ref
     result["pred_text"] = hyp
@@ -1237,7 +1242,7 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
             src_lang = src_lang.split("_")[0]
         preprocess_kwargs = {
             "lang": src_lang,
-            "remove_diacritics": True,
+            "remove_diacritics": extra_fields.get("remove_diacritics", True),
         }
         # For code-switched data (use_mer, i.e. cs-fleurs), preserve combining marks in
         # the multilingual normalization so MER counts Thai/Myanmar vowels/tones (and so
@@ -1245,8 +1250,11 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # apply. Monolingual benchmarks keep the existing mark-stripping behavior.
         if extra_fields.get("use_mer", False):
             preprocess_kwargs["preserve_marks"] = True
-        # Only normalize compound pairs for non-English languages
-        normalize_compound = src_lang not in [None, "en"]
+        elif extra_fields.get("preserve_marks", False):
+            preprocess_kwargs["preserve_marks"] = True
+        # Only normalize compound pairs for non-English languages by default.
+        normalize_compound = extra_fields.get("normalize_compound", src_lang not in [None, "en"])
+        merge_compounds = extra_fields.get("merge_compounds", False)
 
         # Mixed WER column: CJK-style languages (use_cer) fold their CER into the WER
         # column (stored under wer* keys), all other languages contribute standard WER.
@@ -1278,6 +1286,7 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 generation,
                 normalization_mode=mode,
                 normalize_compound=normalize_compound,
+                merge_compounds=merge_compounds,
                 **preprocess_kwargs,
             )
         updates.update(metrics)

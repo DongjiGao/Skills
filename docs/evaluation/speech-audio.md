@@ -20,6 +20,8 @@ This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Da
 - **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Both stay in the average.
 - **VoxPopuli uses the Artificial Analysis cleaned config** (`voxpopuli_cleaned_aa` = 628), reported under the `voxpopuli_aa` subset.
 
+For the public multilingual leaderboard, use `asr-leaderboard-multilingual`. It prepares the official FLEURS, MCV, and MLS configs for German, French, Italian, Spanish, and Portuguese. Summarization reports every dataset subset, adds per-language averages, and sets the top-line WER to the mean of those language averages.
+
 #### Dataset Location
 
 - Benchmark is defined in [`nemo_skills/dataset/asr-leaderboard/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/asr-leaderboard/__init__.py)
