@@ -47,6 +47,7 @@ from nemo_skills.evaluation.metrics.mcq_multilingual_metrics import MCQMultiling
 from nemo_skills.evaluation.metrics.mmau_pro_metrics import MMAUProMetrics
 from nemo_skills.evaluation.metrics.mrcr_metrics import MRCRMetrics
 from nemo_skills.evaluation.metrics.omni_metrics import OmniMetrics
+from nemo_skills.evaluation.metrics.open_asr_metrics import OpenASRLeaderboardMetrics
 from nemo_skills.evaluation.metrics.physics_metrics import PhysicsMetrics
 from nemo_skills.evaluation.metrics.ruler2_metrics import Ruler2Metrics
 from nemo_skills.evaluation.metrics.ruler_metrics import RulerMetrics
@@ -71,6 +72,7 @@ METRICS_MAP = {
     "answer-judgement": AnswerJudgementMetrics,
     "arena": ArenaMetrics,
     "audio": AudioMetrics,
+    "open_asr_leaderboard": OpenASRLeaderboardMetrics,
     "speechlm": AudioMetrics,  # Alias for backward compatibility
     "bfcl": BFCLMetrics,
     "bird": BirdMetrics,

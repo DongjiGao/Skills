@@ -19,7 +19,7 @@ soundfile
 torchcodec
 
 # Lightweight text normalization (EnglishTextNormalizer)
-whisper-normalizer
+whisper-normalizer==0.1.12
 
 # Open ASR compound-aware WER and NeMo-compatible cpWER edit distance
-kaldialign
+kaldialign==0.12.0

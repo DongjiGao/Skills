@@ -17,6 +17,6 @@
 # Uses the audio evaluator which computes WER with HuggingFace leaderboard preprocessing
 
 REQUIRES_DATA_DIR = True
-METRICS_TYPE = "audio"
+METRICS_TYPE = "open_asr_leaderboard"
 EVAL_ARGS = "++eval_type=audio ++eval_config.normalization_mode=hf_leaderboard"
 GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
