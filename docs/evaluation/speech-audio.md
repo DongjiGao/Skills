@@ -17,7 +17,7 @@ ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingfac
 
 This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the repositories selected by the current leaderboard, including [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) and AA-Earnings22, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
 
-- **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Both stay in the average.
+- **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 source rows and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Applying the leaderboard's normalized-empty-reference filter leaves 7,715 and 18,757 prepared rows, respectively. Both stay in the average.
 - **VoxPopuli uses the Artificial Analysis cleaned config** (`voxpopuli_cleaned_aa` = 628), reported under the `voxpopuli_aa` subset.
 - **Earnings22 uses the Artificial Analysis cleaned set** ([`Earnings22-Cleaned-AA-chunked`](https://huggingface.co/datasets/ArtificialAnalysis/Earnings22-Cleaned-AA-chunked) = 341 chunks from 6 calls), reported under `earnings22_aa`. Predictions are concatenated by `chunk_index` within each call before corpus WER is computed against the six session-level references.
 
@@ -287,7 +287,7 @@ pass@1          | ...        | ...         | ...          | ...       | ...    |
 
 ----------------------------------- asr-leaderboard-ami ------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | ...        | ...         | ...          | ...       | ...    | 7805
+pass@1          | ...        | ...         | ...          | ...       | ...    | 7715
 
 -------------------------------- asr-leaderboard-earnings22_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
@@ -295,7 +295,7 @@ pass@1          | ...        | ...         | ...          | ...       | ...    |
 
 -------------------------------- asr-leaderboard-gigaspeech --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | ...        | ...         | ...          | ...       | ...    | 18768
+pass@1          | ...        | ...         | ...          | ...       | ...    | 18757
 
 ---------------------------- asr-leaderboard-librispeech_clean ----------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
