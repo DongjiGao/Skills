@@ -13,12 +13,13 @@ This section details how to evaluate speech and audio benchmarks, including unde
 
 ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard). Evaluates transcription quality using Word Error Rate (WER).
 
-**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
+**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `gigaspeech`, `spgispeech`, `earnings22_aa`, `ami`
 
-This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the official [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) dataset using its own config names, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
+This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the repositories selected by the current leaderboard, including [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) and AA-Earnings22, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
 
 - **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Both stay in the average.
 - **VoxPopuli uses the Artificial Analysis cleaned config** (`voxpopuli_cleaned_aa` = 628), reported under the `voxpopuli_aa` subset.
+- **Earnings22 uses the Artificial Analysis cleaned set** ([`Earnings22-Cleaned-AA-chunked`](https://huggingface.co/datasets/ArtificialAnalysis/Earnings22-Cleaned-AA-chunked) = 341 chunks from 6 calls), reported under `earnings22_aa`. Predictions are concatenated by `chunk_index` within each call before corpus WER is computed against the six session-level references.
 
 For the public multilingual leaderboard, use `asr-leaderboard-multilingual`. It prepares the official FLEURS, MCV, and MLS configs for German, French, Italian, Spanish, and Portuguese. Summarization reports every dataset subset, adds per-language averages, and sets the top-line WER to the mean of those language averages.
 
@@ -282,19 +283,19 @@ Example output:
 ```
 ------------------------------------- asr-leaderboard --------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233522      | 86.70%       | 0.00%     | 7.82%  | 143597
+pass@1          | ...        | ...         | ...          | ...       | ...    | ...
 
 ----------------------------------- asr-leaderboard-ami ------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 732        | 3680        | 81.27%       | 0.00%     | 18.45% | 12620
+pass@1          | ...        | ...         | ...          | ...       | ...    | 7805
 
--------------------------------- asr-leaderboard-earnings22 --------------------------------
+-------------------------------- asr-leaderboard-earnings22_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 3522        | 83.97%       | 0.00%     | 14.72% | 57390
+pass@1          | ...        | ...         | ...          | ...       | ...    | 6
 
 -------------------------------- asr-leaderboard-gigaspeech --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233469      | 71.86%       | 0.00%     | 12.34% | 25376
+pass@1          | ...        | ...         | ...          | ...       | ...    | 18768
 
 ---------------------------- asr-leaderboard-librispeech_clean ----------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
@@ -308,13 +309,9 @@ pass@1          | 733        | 3927        | 98.67%       | 0.00%     | 4.34% | 
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
 pass@1          | 740        | 4510        | 99.99%       | 0.00%     | 3.81% | 39341
 
---------------------------------- asr-leaderboard-tedlium ----------------------------------
+-------------------------------- asr-leaderboard-voxpopuli_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 732        | 3878        | 77.74%       | 0.00%     | 7.89% | 1469
-
--------------------------------- asr-leaderboard-voxpopuli --------------------------------
-evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 741        | 4007        | 99.51%       | 0.00%     | 6.47% | 1842
+pass@1          | ...        | ...         | ...          | ...       | ...    | 628
 ```
 
 ### AppTek Call-Center Dialogues Results
@@ -670,19 +667,19 @@ Example output:
 ```
 ------------------------------------- asr-leaderboard --------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233522      | 86.70%       | 0.00%     | 7.82%  | 143597
+pass@1          | ...        | ...         | ...          | ...       | ...    | ...
 
 ----------------------------------- asr-leaderboard-ami ------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 732        | 3680        | 81.27%       | 0.00%     | 18.45% | 12620
+pass@1          | ...        | ...         | ...          | ...       | ...    | 7805
 
--------------------------------- asr-leaderboard-earnings22 --------------------------------
+-------------------------------- asr-leaderboard-earnings22_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 3522        | 83.97%       | 0.00%     | 14.72% | 57390
+pass@1          | ...        | ...         | ...          | ...       | ...    | 6
 
 -------------------------------- asr-leaderboard-gigaspeech --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233469      | 71.86%       | 0.00%     | 12.34% | 25376
+pass@1          | ...        | ...         | ...          | ...       | ...    | 18768
 
 ---------------------------- asr-leaderboard-librispeech_clean ----------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
@@ -696,13 +693,9 @@ pass@1          | 733        | 3927        | 98.67%       | 0.00%     | 4.34% | 
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
 pass@1          | 740        | 4510        | 99.99%       | 0.00%     | 3.81% | 39341
 
---------------------------------- asr-leaderboard-tedlium ----------------------------------
+-------------------------------- asr-leaderboard-voxpopuli_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 732        | 3878        | 77.74%       | 0.00%     | 7.89% | 1469
-
--------------------------------- asr-leaderboard-voxpopuli --------------------------------
-evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 741        | 4007        | 99.51%       | 0.00%     | 6.47% | 1842
+pass@1          | ...        | ...         | ...          | ...       | ...    | 628
 ```
 
 ### MMAU-Pro Results
