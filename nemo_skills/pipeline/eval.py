@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import enum
+import hashlib
+import json
 import logging
 import os
 from collections import defaultdict
@@ -40,10 +42,31 @@ from nemo_skills.utils import (
 
 LOG = logging.getLogger(get_logger_name(__file__))
 
+MAX_EVAL_TASK_NAME_BYTES = 160
+
+
+def _bounded_eval_task_name(expname: str, job_idx: int, benchmark_keys: list[str]) -> str:
+    """Build a deterministic eval task name that leaves room for log suffixes.
+
+    NeMo-Run derives each ``srun`` stdout filename from the declarative group
+    name, which itself extends this task name (for example with ``_group0``).
+    A pooled eval may contain many benchmarks, so bound the UTF-8 byte length
+    here and retain a hash of the complete identity to avoid collisions.
+    """
+    full_name = f"{expname}-job{job_idx}-{'-'.join(benchmark_keys)}"
+    if len(full_name.encode("utf-8")) <= MAX_EVAL_TASK_NAME_BYTES:
+        return full_name
+
+    digest_suffix = f"-h{hashlib.sha256(full_name.encode('utf-8')).hexdigest()[:12]}"
+    prefix_budget = MAX_EVAL_TASK_NAME_BYTES - len(digest_suffix.encode("utf-8"))
+    prefix = full_name.encode("utf-8")[:prefix_budget].decode("utf-8", errors="ignore")
+    return f"{prefix}{digest_suffix}"
+
 
 class SingleNodeMode(str, enum.Enum):
     sequential = "sequential"
     parallel = "parallel"
+    parallel_chunks = "parallel_chunks"
 
 
 def _resolve_child_sbatch_kwargs(sbatch_kwargs, child_sbatch_kwargs):
@@ -270,7 +293,9 @@ def eval(
         SingleNodeMode.parallel,
         help="Whether to run benchmarks in parallel or sequentially on a single node. "
         "If running in parallel, ++max_concurrent_requests parameter is respected per "
-        "benchmark, but not globally across benchmarks.",
+        "benchmark, but not globally across benchmarks. parallel_chunks runs chunks "
+        "sharing one output directory concurrently while processing output directories "
+        "sequentially.",
     ),
     run_after: List[str] = typer.Option(
         None, help="Can specify a list of expnames that need to be completed before this one starts"
@@ -349,6 +374,13 @@ def eval(
         "Can also specify through NEMO_SKILLS_EXTRA_BENCHMARK_MAP environment variable. "
         "When calling from Python, can also pass a dict directly.",
     ),
+    benchmark_extra_args: str = typer.Option(
+        None,
+        help="JSON mapping from benchmark name to extra generation arguments. "
+        "These arguments are appended only to that benchmark's request units, "
+        "allowing heterogeneous prompts to share one hosted server job. When "
+        "calling from Python, a dict can be passed directly.",
+    ),
     metric_type: Optional[str] = typer.Option(
         None,
         help="Specify metric type to use a specific metric calculator.",
@@ -369,6 +401,19 @@ def eval(
     """
     setup_logging(disable_hydra_logs=False, use_rich=True)
     extra_arguments = f"{' '.join(ctx.args)}"
+    if benchmark_extra_args is None:
+        benchmark_extra_arguments = {}
+    elif isinstance(benchmark_extra_args, str):
+        benchmark_extra_arguments = json.loads(benchmark_extra_args)
+    elif isinstance(benchmark_extra_args, dict):
+        benchmark_extra_arguments = dict(benchmark_extra_args)
+    else:
+        raise ValueError("benchmark_extra_args must be a JSON object or dict")
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in benchmark_extra_arguments.items()
+    ):
+        raise ValueError("benchmark_extra_args must map strings to strings")
     LOG.info("Starting evaluation job")
     LOG.info("Extra arguments that will be passed to the underlying script: %s", extra_arguments)
 
@@ -477,6 +522,7 @@ def eval(
         generation_type=generation_type,
         generation_module=generation_module,
         extra_benchmark_map=extra_benchmark_map,
+        benchmark_extra_arguments=benchmark_extra_arguments,
     )
 
     summarize_sbatch_kwargs_raw = summarize_sbatch_kwargs
@@ -530,7 +576,7 @@ def eval(
             ) = job_args
 
             benchmark_keys = [b for b in benchmarks_dict.keys() if b in job_benchmarks]
-            task_name = f"{expname}-job{job_idx}-{'-'.join(benchmark_keys)}"
+            task_name = _bounded_eval_task_name(expname, job_idx, benchmark_keys)
 
             # Build server scripts list (one per model, None if pre-hosted)
             server_scripts: list[ServerScript | None] = []

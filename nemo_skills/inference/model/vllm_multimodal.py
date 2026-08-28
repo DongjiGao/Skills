@@ -80,6 +80,7 @@ class VLLMMultimodalModel(VLLMModel):
         chunk_audio_threshold_sec: int = 30,
         audio_format: str | None = None,
         audio_as_path: bool | None = None,
+        shared_filesystem_server: bool = False,
         **kwargs,
     ):
         """Initialize VLLMMultimodalModel with audio I/O and external API support.
@@ -93,12 +94,16 @@ class VLLMMultimodalModel(VLLMModel):
             audio_format: Format for audio content ("audio_url" or "input_audio"). If None, select by mode.
             audio_as_path: If True, send local audio paths as file:// URLs instead of inlining base64.
                 Requires vLLM to be launched with ``--allowed-local-media-path``. If None, defaults to False.
+            shared_filesystem_server: Explicitly attest that a server reached through a non-loopback URL
+                shares the client's filesystem namespace. This permits ``audio_as_path=True`` for a
+                co-scheduled server addressed by its node hostname; leave False for external APIs.
             **kwargs: Other parameters passed to VLLMModel/BaseModel.
         """
         super().__init__(model=model, base_url=base_url, **kwargs)
 
         # Determine if this is an external API (non-local URL)
         self._external_api_mode = not self._is_local_url(self.base_url)
+        self.shared_filesystem_server = shared_filesystem_server
 
         # Audio INPUT config
         self.enable_audio_chunking = enable_audio_chunking
@@ -106,14 +111,21 @@ class VLLMMultimodalModel(VLLMModel):
         self.chunk_audio_threshold_sec = chunk_audio_threshold_sec
 
         if audio_format is None:
-            audio_format = "input_audio" if self._external_api_mode else "audio_url"
+            audio_format = (
+                "input_audio"
+                if self._external_api_mode and not self.shared_filesystem_server
+                else "audio_url"
+            )
         if audio_format not in ("audio_url", "input_audio"):
             raise ValueError(f"Unsupported audio_format '{audio_format}'. Use 'audio_url' or 'input_audio'.")
         self.audio_format = audio_format
         if audio_as_path is None:
             audio_as_path = False
-        if audio_as_path and (self._external_api_mode or self.audio_format != "audio_url"):
-            raise ValueError("audio_as_path is only supported for local vLLM audio_url requests.")
+        server_can_read_paths = not self._external_api_mode or self.shared_filesystem_server
+        if audio_as_path and (not server_can_read_paths or self.audio_format != "audio_url"):
+            raise ValueError(
+                "audio_as_path is only supported for local/shared-filesystem vLLM audio_url requests."
+            )
         self.audio_as_path = audio_as_path
 
         # Audio OUTPUT config
@@ -361,7 +373,11 @@ class VLLMMultimodalModel(VLLMModel):
     def _make_audio_input_block(self, audio_path: str) -> dict:
         """Create an audio input block for a local file path."""
         if self.audio_as_path:
-            return make_audio_url_content_block(Path(audio_path).resolve().as_uri())
+            # Preserve portable container aliases such as /data and /dataset.
+            # resolve() dereferences their bind mounts to a cluster-specific
+            # Lustre source, preventing a replicated router from mapping the
+            # request to its checksum-addressed node-local data root.
+            return make_audio_url_content_block(Path(audio_path).absolute().as_uri())
 
         base64_audio = audio_file_to_base64(audio_path)
         return make_audio_content_block(base64_audio, self.audio_format)

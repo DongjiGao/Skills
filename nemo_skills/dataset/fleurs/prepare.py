@@ -207,11 +207,19 @@ def _collect_st_records(
     no_audio: bool,
 ) -> list[dict]:
     pairs = build_translation_pairs(languages)
+    row_cache: dict[str, list[dict]] = {}
     target_cache: dict[str, dict[int, dict]] = {}
+
+    def get_rows(locale: str) -> list[dict]:
+        if locale not in row_cache:
+            row_cache[locale] = load_fleurs(
+                locale, split, local_dir=local_dir
+            )
+        return row_cache[locale]
 
     def get_target_index(locale: str) -> dict[int, dict]:
         if locale not in target_cache:
-            target_cache[locale] = index_by_id(load_fleurs(locale, split, local_dir=local_dir))
+            target_cache[locale] = index_by_id(get_rows(locale))
         return target_cache[locale]
 
     records: list[dict] = []
@@ -221,7 +229,7 @@ def _collect_st_records(
             locale_audio_dir.mkdir(parents=True, exist_ok=True)
         target_by_id = get_target_index(tgt_locale)
         tag = f"{src_locale}->{tgt_locale}"
-        for source_row in tqdm(load_fleurs(src_locale, split, local_dir=local_dir), desc=tag):
+        for source_row in tqdm(get_rows(src_locale), desc=tag):
             target_row = target_by_id.get(source_row["id"])
             if target_row is None:
                 continue

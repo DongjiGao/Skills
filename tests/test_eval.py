@@ -67,6 +67,39 @@ def test_eval_client_script_parallel_fails_if_any_unit_fails(monkeypatch, tmp_pa
     assert succeeded_marker.read_text().strip() == "succeeded"
 
 
+def test_eval_client_script_parallelizes_chunks_but_sequences_outputs(
+    monkeypatch, tmp_path
+):
+    trace = tmp_path / "trace.txt"
+    monkeypatch.setattr(
+        eval_scripts, "get_generation_cmd", lambda *, command, **kwargs: command
+    )
+    monkeypatch.setattr(eval_scripts, "wrap_python_path", lambda cmd: cmd)
+
+    units = [
+        {
+            "output_dir": "benchmark-a",
+            "command": f"sleep 0.2; echo a1 >> {shlex.quote(str(trace))}",
+        },
+        {
+            "output_dir": "benchmark-a",
+            "command": f"sleep 0.1; echo a2 >> {shlex.quote(str(trace))}",
+        },
+        {
+            "output_dir": "benchmark-b",
+            "command": f"echo b >> {shlex.quote(str(trace))}",
+        },
+    ]
+    client_script = EvalClientScript(
+        units=units, single_node_mode="parallel_chunks"
+    )
+
+    cmd, _ = client_script.inline()
+    subprocess.run(["bash", "-lc", cmd], check=True)
+
+    assert trace.read_text().splitlines() == ["a2", "a1", "b"]
+
+
 def test_eval_client_script_uses_slurm_master_ref_for_self_hosted_single_group(monkeypatch):
     captured = {}
 
@@ -150,12 +183,112 @@ def test_prepare_eval_commands_propagates_cli_with_sandbox_to_generation_cmd(mon
     assert captured["with_sandbox"] is True
 
 
+def test_prepare_eval_commands_applies_benchmark_specific_extra_arguments(monkeypatch):
+    def benchmark(name):
+        return eval_utils.BenchmarkArgs(
+            name=name,
+            input_file=f"/tmp/{name}.jsonl",
+            generation_args="",
+            judge_args="",
+            judge_pipeline_args={},
+            requires_sandbox=False,
+            keep_mounts_for_sandbox=False,
+            generation_module="nemo_skills.inference.generate",
+            num_samples=0,
+            num_chunks=None,
+            eval_subfolder=f"eval-results/{name}",
+        )
+
+    monkeypatch.setattr(
+        eval_utils,
+        "add_default_args",
+        lambda _config, name, *_args, **_kwargs: [benchmark(name)],
+    )
+    monkeypatch.setattr(
+        eval_utils.pipeline_utils,
+        "get_remaining_jobs",
+        lambda **_kwargs: {None: [None]},
+    )
+
+    _, job_batches = eval_utils.prepare_eval_commands(
+        cluster_config={"executor": "none"},
+        benchmarks_or_groups="alpha,beta",
+        split=None,
+        num_jobs=1,
+        starting_seed=0,
+        output_dir="/tmp/out",
+        num_chunks=None,
+        chunk_ids=None,
+        rerun_done=False,
+        extra_arguments="++common=true",
+        data_dir=None,
+        exclusive=False,
+        with_sandbox=False,
+        keep_mounts_for_sandbox=False,
+        wandb_parameters=None,
+        eval_requires_judge=False,
+        benchmark_extra_arguments={
+            "alpha": "++system_message=alpha",
+            "beta": "++system_message=beta",
+        },
+    )
+
+    units = job_batches[0][0]
+    assert len(units) == 2
+    assert "++common=true" in units[0].extra_arguments
+    assert "++system_message=alpha" in units[0].extra_arguments
+    assert "++system_message=beta" not in units[0].extra_arguments
+    assert "++common=true" in units[1].extra_arguments
+    assert "++system_message=beta" in units[1].extra_arguments
+    assert "++system_message=alpha" not in units[1].extra_arguments
+
+
 def test_resolve_child_sbatch_kwargs_inherits_or_overrides():
     parent = {"segment": 4, "qos": "batch"}
 
     assert eval_pipeline._resolve_child_sbatch_kwargs(parent, None) is parent
     assert eval_pipeline._resolve_child_sbatch_kwargs(parent, {}) is None
     assert eval_pipeline._resolve_child_sbatch_kwargs(parent, '{"segment": 1}') == {"segment": 1}
+
+
+def test_bounded_eval_task_name_keeps_short_names_unchanged():
+    assert eval_pipeline._bounded_eval_task_name("eval", 0, ["a", "b"]) == "eval-job0-a-b"
+
+
+def test_bounded_eval_task_name_hashes_large_pooled_benchmark_names():
+    benchmarks = [
+        "asr-leaderboard-multilingual",
+        "fleurs.asr",
+        "fleurs.st",
+        "covost2.asr",
+        "covost2.st",
+        "preference-asr.contextless",
+        "preference-asr.fine",
+        "nvtalks.contextless",
+        "nvtalks.fine",
+    ]
+    name = eval_pipeline._bounded_eval_task_name(
+        "throughput-ab-v2-broad-step5000-0827-r4-portable-eval-step-5000-vllm",
+        0,
+        benchmarks,
+    )
+    changed = eval_pipeline._bounded_eval_task_name(
+        "throughput-ab-v2-broad-step5000-0827-r4-portable-eval-step-5000-vllm",
+        0,
+        [*benchmarks[:-1], "nvtalks.changed"],
+    )
+
+    assert len(name.encode("utf-8")) <= eval_pipeline.MAX_EVAL_TASK_NAME_BYTES
+    assert name.startswith("throughput-ab-v2-broad-step5000-0827-r4-portable")
+    assert "-h" in name
+    assert name == eval_pipeline._bounded_eval_task_name(
+        "throughput-ab-v2-broad-step5000-0827-r4-portable-eval-step-5000-vllm",
+        0,
+        benchmarks,
+    )
+    assert name != changed
+    srun_component = f"main_{name}_group0_16783824_srun.log"
+    assert len(srun_component.encode("utf-8")) <= 255
 
 
 def _patch_eval_for_sbatch_tests(monkeypatch, benchmark_args):

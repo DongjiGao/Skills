@@ -140,6 +140,10 @@ class GenerationTaskConfig:
     generation_key: str = "generation"
 
     async_position_key: str = "_async_position"  # key to use for preserving position in async loop in data dict
+    # Text I/O buffering for the crash-recoverable async output. The historical
+    # value 1 retains line buffering; larger V2 values amortize shared-storage
+    # writes because every client shard owns a distinct output file.
+    async_output_buffer_bytes: int = 1
 
     # can add this flag to just print the first prompt instead of running generation
     # useful to double check that your data can be loaded and prompt has what you expect
@@ -228,6 +232,8 @@ class GenerationTaskConfig:
     structured_output: str | None = None
 
     def __post_init__(self):
+        if self.async_output_buffer_bytes < 1:
+            raise ValueError("async_output_buffer_bytes must be at least 1")
         self._post_init_validate_data()
         self._post_init_validate_server()
         self._post_init_validate_params()
@@ -1012,7 +1018,12 @@ class GenerationTask:
 
         pbar = tqdm(total=len(remaining_data_points), desc="Remaining generations")
 
-        with open(self.cfg.output_file + "-async", "at", encoding="utf-8", buffering=1) as fout:
+        with open(
+            self.cfg.output_file + "-async",
+            "at",
+            encoding="utf-8",
+            buffering=self.cfg.async_output_buffer_bytes,
+        ) as fout:
             # Dump prefilled data first
             if len(prefilled_data_points) > 0:
                 for output, data_point in zip(prefilled_outputs, prefilled_data_points):
