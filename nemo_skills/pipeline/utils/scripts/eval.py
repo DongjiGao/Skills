@@ -35,6 +35,19 @@ def _combine_cmds(cmds: List[str], single_node_mode: str) -> str:
     raise ValueError(f"Unknown single_node_mode: {single_node_mode}")
 
 
+def _combine_parallel_chunks(cmds: List[str], output_dirs: List[str]) -> str:
+    """Parallelize chunks of one output while sequencing distinct outputs."""
+    grouped: Dict[str, List[str]] = {}
+    for output_dir, cmd in zip(output_dirs, cmds, strict=True):
+        grouped.setdefault(output_dir, []).append(cmd)
+    # _combine_cmds(parallel) ends with `exit`, so isolate each benchmark in a
+    # subshell before chaining the next benchmark on successful completion.
+    return " && ".join(
+        f"( {_combine_cmds(group_cmds, 'parallel')} )"
+        for group_cmds in grouped.values()
+    )
+
+
 def _inject_if_missing(extra_arguments: str, needle: str, insertion: str) -> str:
     """Prepend insertion if needle isn't already present."""
     if needle in extra_arguments:
@@ -113,9 +126,11 @@ class EvalClientScript(BaseJobScript):
                     server_addresses.append(addr)
 
             cmds: List[str] = []
+            output_dirs: List[str] = []
             is_multi_model = bool(self.model_names) and len(self.model_names) > 1
             for unit in self.units:
                 unit = dict(unit)
+                output_dirs.append(str(unit.get("output_dir", "")))
 
                 if self.model_names and len(self.model_names) == 1:
                     server_type = self.server_types[0] if self.server_types else ""
@@ -146,7 +161,10 @@ class EvalClientScript(BaseJobScript):
                     )
                 )
 
-            combined = _combine_cmds(cmds, self.single_node_mode)
+            if self.single_node_mode == "parallel_chunks":
+                combined = _combine_parallel_chunks(cmds, output_dirs)
+            else:
+                combined = _combine_cmds(cmds, self.single_node_mode)
             combined = wrap_python_path(combined)
             return combined, {"environment": env_vars}
 

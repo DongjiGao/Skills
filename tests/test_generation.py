@@ -261,6 +261,19 @@ def test_base_model_initializes_tokenizer_only_when_needed(
     assert (model.tokenizer == "tokenizer") == (expected_requests == 1)
 
 
+def test_base_model_http_concurrency_is_configurable():
+    model = TokenizerProbeModel(http_max_concurrent_requests=4096)
+
+    assert model.http_max_concurrent_requests == 4096
+    assert model.concurrent_semaphore._value == 4096
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_base_model_http_concurrency_must_be_positive(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        TokenizerProbeModel(http_max_concurrent_requests=value)
+
+
 @pytest.mark.parametrize(
     "server_overrides,expected_tokenizer",
     [

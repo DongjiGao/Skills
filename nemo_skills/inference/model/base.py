@@ -95,6 +95,9 @@ class BaseModel:
         output_dir: str | None = None,
         # Request tokenizer initialization independent of soft_fail
         require_tokenizer: bool = False,
+        # Client-side HTTP transport concurrency. This is independent of the
+        # generation task's max_concurrent_requests admission limit.
+        http_max_concurrent_requests: int = 2048,
     ):
         self._tunnel = None
         self.model_name_or_path = model
@@ -169,7 +172,13 @@ class BaseModel:
         litellm.aclient_session = httpx.AsyncClient(limits=httpx_limits)
         # Controlling concurrent requests using semaphore since large
         # concurrent requests result into httpx hanging
-        self.concurrent_semaphore = asyncio.Semaphore(2048)
+        if http_max_concurrent_requests <= 0:
+            raise ValueError(
+                "http_max_concurrent_requests must be a positive integer; "
+                f"got {http_max_concurrent_requests!r}"
+            )
+        self.http_max_concurrent_requests = http_max_concurrent_requests
+        self.concurrent_semaphore = asyncio.Semaphore(http_max_concurrent_requests)
 
     def _get_api_key(self, api_key: str | None, api_key_env_var: str | None, base_url: str) -> str | None:
         if api_key:  # explicit cmd argument always takes precedence
