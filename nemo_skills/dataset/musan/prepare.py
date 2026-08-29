@@ -14,17 +14,16 @@
 
 """MUSAN Dataset Preparation for nemo-skills
 
-Prepares the MUSAN dataset (Music, Speech, and Noise Corpus) for use with nemo-skills.
+Prepares the official NeMo Gym MUSAN hallucination protocol for nemo-skills.
 
-Dataset sources:
-  - HuggingFace: 774 samples (~5h), incomplete, fast download
-  - Kaggle: 2016 files (10.3GB), nearly complete, requires API key
-  - OpenSLR: Complete dataset (11GB), official source
+The protocol defaults to the complete official OpenSLR-17 source, includes all
+three categories, assigns an empty expected answer to every item, and uses the
+exact Gym prompt.  ``huggingface`` and ``kaggle`` remain available only as
+explicit developer conveniences and do not instantiate the official profile.
 
 Usage:
-    python -m nemo_skills.dataset.musan.prepare --source kaggle --categories noise
-    python -m nemo_skills.dataset.musan.prepare --categories noise --max-samples 100
-    python -m nemo_skills.dataset.musan.prepare --source openslr --categories noise
+    python -m nemo_skills.dataset.musan.prepare
+    python -m nemo_skills.dataset.musan.prepare --source openslr
 """
 
 import argparse
@@ -39,6 +38,16 @@ from typing import Dict, List
 import numpy as np
 import soundfile as sf
 from tqdm import tqdm
+
+OPENSLR_URL = "https://www.openslr.org/resources/17/musan.tar.gz"
+NEMO_GYM_PROTOCOL_REVISION = "68cb9969d656d259846c45e7369acfe6529f0e97"
+ALL_CATEGORIES = ("noise", "music", "speech")
+DEFAULT_SOURCE = "openslr"
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Transcribe the speech in this audio. If there is no speech, do not output anything."
+EXPECTED_ANSWER = ""
+HALLUCINATION_CHAR_RATE_THRESHOLD = 1500.0
+NUM_REPEATED_GENERATIONS = 4
 
 # HuggingFace dataset label mappings
 CATEGORY_LABELS = {
@@ -71,7 +80,7 @@ def download_from_kaggle(output_dir: Path) -> Path:
 
 def download_from_openslr(output_dir: Path) -> Path:
     """Download MUSAN dataset from OpenSLR (11 GB)."""
-    url = "https://www.openslr.org/resources/17/musan.tar.gz"
+    url = OPENSLR_URL
     download_path = output_dir / "musan.tar.gz"
     extract_path = output_dir / "musan_openslr"
 
@@ -172,21 +181,18 @@ def create_manifest_entry(
     audio_rel_path = f"{audio_root}/musan/{category}/audio/{audio_filename}"
     audio_metadata = {"path": audio_rel_path, "duration": duration}
 
-    # Instruction for transcription (expects empty response for non-speech audio)
-    instruction = "Transcribe the speech in this audio. If there is no speech, do not output anything."
-
     entry = {
         "audio_path": [audio_rel_path],
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant. /no_think"},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": instruction,
+                "content": USER_PROMPT,
                 "audio": audio_metadata,
                 "audios": [audio_metadata],
             },
         ],
-        "expected_answer": "",
+        "expected_answer": EXPECTED_ANSWER,
         "dataset": "musan",
         "subset_for_metrics": f"musan_{category}",
         "sample_id": sample_id,
@@ -194,7 +200,12 @@ def create_manifest_entry(
         "original_label": label,
         "task_type": "Hallucination",
         "audio_duration": duration,
-        "question": instruction,
+        "question": USER_PROMPT,
+        "source_url": OPENSLR_URL,
+        "protocol_revision": NEMO_GYM_PROTOCOL_REVISION,
+        "hallucination_char_rate_threshold": HALLUCINATION_CHAR_RATE_THRESHOLD,
+        "hallucination_threshold_operator": ">",
+        "num_repeated_generations": NUM_REPEATED_GENERATIONS,
     }
 
     return entry
@@ -399,8 +410,8 @@ def main():
     parser.add_argument(
         "--source",
         choices=["huggingface", "kaggle", "openslr"],
-        default="huggingface",
-        help="Download source: huggingface (fast, incomplete), kaggle (complete, API key), openslr (complete, 11GB)",
+        default=DEFAULT_SOURCE,
+        help="Download source (default: openslr, the complete official protocol source)",
     )
     parser.add_argument("--split", default="train", choices=["train", "validation", "test"])
     parser.add_argument("--output-dir", type=str, default=None)
@@ -408,7 +419,7 @@ def main():
         "--categories",
         nargs="+",
         choices=["music", "speech", "noise"],
-        default=["music", "speech", "noise"],
+        default=list(ALL_CATEGORIES),
     )
     parser.add_argument("--no-audio", dest="save_audio", action="store_false")
     parser.add_argument("--max-samples", type=int, default=-1)
