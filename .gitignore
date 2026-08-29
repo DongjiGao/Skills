@@ -13,6 +13,8 @@
 # limitations under the License.
 
 *.json
+!nemo_skills/evaluation/metrics/utils/chime8_normalizer_data/
+!nemo_skills/evaluation/metrics/utils/chime8_normalizer_data/*.json
 !greptile.json
 !tests/data/dummy_external_benchmark/benchmark_map.json
 *.tar.gz
