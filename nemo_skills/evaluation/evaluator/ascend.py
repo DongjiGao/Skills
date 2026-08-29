@@ -171,18 +171,16 @@ def evaluate_ascend_sample(data_point: dict[str, Any]) -> dict[str, Any]:
     hypothesis_mer = mer_tokens(hypothesis)
     reference_cer = cer_tokens(reference)
     hypothesis_cer = cer_tokens(hypothesis)
-    if not reference_mer or not reference_cer:
-        raise ValueError("ASCEND reference is empty after official normalization")
     mer_errors = edit_distance(reference_mer, hypothesis_mer)
     cer_errors = edit_distance(reference_cer, hypothesis_cer)
     return {
         "generation": generation,
         "text": reference,
         "pred_text": hypothesis,
-        "mer": mer_errors / len(reference_mer),
+        "mer": mer_errors / len(reference_mer) if reference_mer else None,
         "mer_errors": mer_errors,
         "mer_ref_units": len(reference_mer),
-        "cer": cer_errors / len(reference_cer),
+        "cer": cer_errors / len(reference_cer) if reference_cer else None,
         "cer_errors": cer_errors,
         "cer_ref_chars": len(reference_cer),
         "is_correct": mer_errors == 0,

@@ -49,6 +49,28 @@ def test_ascend_evaluator_and_corpus_metrics_report_mer_then_cer():
     assert output["cer"] == 16.67
 
 
+def test_ascend_empty_reference_after_official_normalization_uses_corpus_counts():
+    # The official scorer's character class removes c/e/i/t because two of
+    # its nominal entries are multi-character strings. It accumulates edit
+    # counts over the corpus, so this row contributes insertions but no
+    # reference units instead of being scored with an utterance-level ratio.
+    empty_reference = evaluate_ascend_sample({"expected_answer": "e c e", "generation": "ab"})
+    assert empty_reference["mer"] is None
+    assert empty_reference["mer_errors"] == 1
+    assert empty_reference["mer_ref_units"] == 0
+    assert empty_reference["cer"] is None
+    assert empty_reference["cer_errors"] == 2
+    assert empty_reference["cer_ref_chars"] == 0
+
+    regular = evaluate_ascend_sample({"expected_answer": "hello 世界", "generation": "hello 世"})
+    metrics = ASCENDMetrics(max_k=1)
+    metrics.update([empty_reference])
+    metrics.update([regular])
+    output = metrics.get_metrics()["pass@1"]
+    assert output["mer"] == 66.67
+    assert output["cer"] == 50.0
+
+
 def test_ascend_manifest_is_plain_transcript_and_pinned():
     record = _format_entry({"id": "sample/1", "transcription": "你好 hello", "duration": 1.25, "language": "mixed"}, 0)
     assert record["messages"][0]["content"] == PROMPT
