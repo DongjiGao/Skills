@@ -398,6 +398,12 @@ def main():
                         fout.write(line)
                         combined_count += 1
 
+        concrete_dir = output_dir / variant_name
+        concrete_dir.mkdir(parents=True, exist_ok=True)
+        concrete_file = concrete_dir / "test.jsonl"
+        shutil.copy2(combined_file, concrete_file)
+        print(f"  {concrete_file}: Published {combined_count} rows for numb3rs.{variant_name}")
+
         print(f"  {combined_file.name}: Combined {combined_count} samples from {len(category_files)} categories")
 
     print(f"\nTotal: {total_samples} samples prepared across {len(PROMPT_VARIANTS)} prompt variants")

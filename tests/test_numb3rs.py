@@ -1,6 +1,11 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from importlib import import_module
+from pathlib import Path
+
+import pytest
+
 from nemo_skills.dataset.numb3rs.prepare import (
     EXPECTED_MANIFEST_ROWS,
     HF_REPO_ID,
@@ -67,3 +72,23 @@ def test_numb3rs_audio_is_copied_from_pinned_snapshot_without_decoding(tmp_path)
     )
 
     assert (audio_dir / "MONEY_1.wav").read_bytes() == b"unchanged wav bytes"
+
+
+@pytest.mark.parametrize("variant", ["neutral", "tn", "itn"])
+def test_numb3rs_prompt_variants_are_concrete_benchmarks(variant):
+    module = import_module(f"nemo_skills.dataset.numb3rs.{variant}")
+
+    assert module.DEFAULT_SPLIT == "test"
+    assert module.EVAL_SPLIT == "test"
+    assert module.METRICS_TYPE == "audio"
+    assert "reference_fields='[text_tn,text_itn]'" in module.EVAL_ARGS
+    assert "++prompt_format=openai" in module.GENERATION_ARGS
+
+
+def test_numb3rs_preparation_publishes_concrete_variant_manifests():
+    source = pytest.importorskip("nemo_skills.dataset.numb3rs.prepare").__file__
+    preparation = Path(source).read_text(encoding="utf-8")
+
+    assert 'concrete_dir = output_dir / variant_name' in preparation
+    assert 'concrete_file = concrete_dir / "test.jsonl"' in preparation
+    assert "shutil.copy2(combined_file, concrete_file)" in preparation
