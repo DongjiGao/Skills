@@ -13,7 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from nemo_skills.dataset.voicebench.prepare import (
+    EXPECTED_ROWS,
     HF_REVISION,
+    MMSU_EXPECTED_ROWS,
     MMSU_SPLITS,
     OFFICIAL_CODE_REVISION,
     PROFILES,
@@ -46,6 +48,8 @@ def test_public_leaf_inventory_and_revisions_are_pinned():
     assert OFFICIAL_CODE_REVISION == "3c3b0d3a7a956f745305eb348f5e03ce7ec73dad"
     assert len(SPEAKER_SPLITS) == 11
     assert len(MMSU_SPLITS) == 12
+    assert set(MMSU_SPLITS) == set(MMSU_EXPECTED_ROWS)
+    assert {split: EXPECTED_ROWS[f"mmsu/{split}"] for split in MMSU_SPLITS} == MMSU_EXPECTED_ROWS
     assert len(SD_QA_SPLITS) == 11
     assert set(PROFILES) == {
         "advbench",

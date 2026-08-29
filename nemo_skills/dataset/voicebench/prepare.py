@@ -34,19 +34,33 @@ SPEAKER_SPLITS = (
     "en_US_Wavenet_A_0.5_0.0_0.0",
 )
 MMSU_SPLITS = (
-    "law51",
-    "engineering107",
-    "other546",
-    "biology172",
-    "business236",
-    "economics280",
-    "health406",
-    "philosophy305",
-    "psychology317",
-    "history104",
-    "chemistry167",
-    "physics383",
+    "law",
+    "engineering",
+    "other",
+    "biology",
+    "business",
+    "economics",
+    "health",
+    "philosophy",
+    "psychology",
+    "history",
+    "chemistry",
+    "physics",
 )
+MMSU_EXPECTED_ROWS = {
+    "law": 51,
+    "engineering": 107,
+    "other": 546,
+    "biology": 172,
+    "business": 236,
+    "economics": 280,
+    "health": 406,
+    "philosophy": 305,
+    "psychology": 317,
+    "history": 104,
+    "chemistry": 167,
+    "physics": 383,
+}
 SD_QA_SPLITS = ("aus", "gbr", "ind_n", "ind_s", "irl", "kenya", "nga", "nzl", "phl", "usa", "zaf")
 
 PROFILES = {
@@ -75,7 +89,7 @@ EXPECTED_ROWS = {
     "openbookqa/test": 455,
     "wildvoice/test": 1000,
     **{f"alpacaeval_speaker/{split}": 636 for split in SPEAKER_SPLITS},
-    **{f"mmsu/{split}": int(''.join(c for c in split if c.isdigit())) for split in MMSU_SPLITS},
+    **{f"mmsu/{split}": count for split, count in MMSU_EXPECTED_ROWS.items()},
     **{f"sd-qa/{split}": 553 for split in SD_QA_SPLITS},
 }
 
