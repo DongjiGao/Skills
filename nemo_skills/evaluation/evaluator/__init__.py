@@ -44,6 +44,7 @@ _EVALUATOR_MAP_PATHS = {
     "human_eval_infilling": "nemo_skills.evaluation.evaluator.code:eval_human_eval_infilling",
     "mmau-pro": "nemo_skills.evaluation.evaluator.mmau_pro:eval_mmau_pro",
     "specdec": "nemo_skills.evaluation.evaluator.specdec:eval_specdec",
+    "set-token-mcq": "nemo_skills.evaluation.evaluator.set_token_mcq:eval_set_token_mcq",
 }
 
 # Class-based evaluators: eval_type -> "module_path:ClassName"

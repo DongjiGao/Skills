@@ -53,6 +53,7 @@ from nemo_skills.evaluation.metrics.ruler2_metrics import Ruler2Metrics
 from nemo_skills.evaluation.metrics.ruler_metrics import RulerMetrics
 from nemo_skills.evaluation.metrics.simpleqa_metrics import SimpleQAMetrics
 from nemo_skills.evaluation.metrics.specdec_metrics import SpecdecMetrics
+from nemo_skills.evaluation.metrics.set_token_mcq_metrics import SetTokenMCQMetrics
 from nemo_skills.evaluation.metrics.translation_metrics import TranslationMetrics
 from nemo_skills.evaluation.metrics.ugphysics_metrics import UGPhysicsMetrics
 from nemo_skills.evaluation.metrics.weighted_math_metrics import WeightedMathMetrics
@@ -99,6 +100,7 @@ METRICS_MAP = {
     "mmau_pro_closed_form": MMAUProMetrics,
     "mmau_pro_open_ended": MMAUProMetrics,
     "mmau_pro_instruction_following": MMAUProMetrics,
+    "set_token_mcq": SetTokenMCQMetrics,
     "omniscience": OmniMetrics,
     "compute-eval": ComputeEvalMetrics,
     "gradingbench": GradingBenchMetrics,
