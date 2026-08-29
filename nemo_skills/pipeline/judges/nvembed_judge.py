@@ -127,10 +127,12 @@ def create_judge_tasks(
     script_args.append("--skip-install")
 
     run_cmd = (
-        "NVEMBED_DEPS_DIR=/tmp/nvembed_deps_${SLURM_JOB_ID:-$$} && "
-        'mkdir -p "$NVEMBED_DEPS_DIR" && '
+        "NVEMBED_DEPS_DIR=${NEMO_SKILLS_NVEMBED_DEPS_DIR:-/opt/nemo-skills-nvembed} && "
+        'if [[ ! -d "$NVEMBED_DEPS_DIR" ]]; then '
+        "NVEMBED_DEPS_DIR=/tmp/nvembed_deps_${SLURM_JOB_ID:-$$}; "
+        'mkdir -p "$NVEMBED_DEPS_DIR"; '
         'python3 -m pip install -q --upgrade --target "$NVEMBED_DEPS_DIR" '
-        "'numpy==1.26.4' datasets einops transformers==4.42.4 tqdm && "
+        "'numpy==1.26.4' datasets einops transformers==4.42.4 tqdm; fi && "
         'export PYTHONPATH="$NVEMBED_DEPS_DIR:${PYTHONPATH:-}" && '
         "export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 HF_DATASETS_OFFLINE=0 && "
         "python3 /nemo_run/code/nemo_skills/evaluation/evaluator/nvembed_judge.py "
@@ -138,12 +140,20 @@ def create_judge_tasks(
     )
 
     # Create task with GPU support for NVEmbed
+    configured_containers = cluster_config.get("containers", {})
+    resolved_judge_container = (
+        judge_container
+        or configured_containers.get("nemo-skills")
+        or configured_containers.get("vllm")
+    )
+    if resolved_judge_container is None:
+        raise ValueError("NVEmbed judge requires a nemo-skills or vllm container")
     judge_task = add_task(
         exp,
         cmd=run_cmd,
         task_name=f"{expname}-{benchmark}-nvembed-judge",
         log_dir=log_dir + "/judge",
-        container=judge_container or cluster_config["containers"]["vllm"],
+        container=resolved_judge_container,
         cluster_config=cluster_config,
         num_gpus=judge_server_gpus or 1,
         num_nodes=judge_server_nodes or 1,
