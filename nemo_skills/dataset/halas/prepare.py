@@ -25,13 +25,15 @@ import json
 import os
 import re
 import wave
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
 HF_REPO_ID = "MatBar99/HALAS"
+HF_REVISION = "317cef3a10d1097edc37e8eb1c007f415e3d0c55"
 EARNINGS22_REPO_ID = "distil-whisper/earnings22"
+EARNINGS22_REVISION = "0a034f9ed86d33a3859d9025d3e621cf243773ab"
 EARNINGS22_CONFIG = "chunked"
 EARNINGS22_SPLIT = "test"
 BENCHMARK_NAME = "halas"
@@ -93,14 +95,14 @@ def _reference_text(row: dict) -> str:
 def _load_halas_rows(max_samples: int | None = None) -> list[dict]:
     from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 
-    loaded = load_dataset(HF_REPO_ID)
+    loaded = load_dataset(HF_REPO_ID, revision=HF_REVISION)
     if isinstance(loaded, DatasetDict):
         datasets = [ds for ds in loaded.values()]
         ds = datasets[0] if len(datasets) == 1 else concatenate_datasets(datasets)
     elif isinstance(loaded, Dataset):
         ds = loaded
     else:
-        ds = load_dataset(HF_REPO_ID, split="train")
+        ds = load_dataset(HF_REPO_ID, split="train", revision=HF_REVISION)
 
     rows = [dict(row) for row in ds]
     if max_samples is not None and max_samples > 0:
@@ -127,7 +129,7 @@ def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
     print(f"Extracting {len(target_ids)} HALAS clips to {audio_dir}")
     print("=" * 70)
 
-    ds = load_dataset(EARNINGS22_REPO_ID, EARNINGS22_CONFIG, split=EARNINGS22_SPLIT)
+    ds = load_dataset(EARNINGS22_REPO_ID, EARNINGS22_CONFIG, split=EARNINGS22_SPLIT, revision=EARNINGS22_REVISION)
     written = 0
     for e22_row in ds:
         audio_id = _earnings22_audio_id(e22_row)
@@ -192,6 +194,12 @@ def _format_entry(row: dict, audio_prefix: str) -> dict:
         "subset_for_metrics": _as_str(row.get("split") or "test"),
         "halas_released_system_hallucination_count": label_counts["hallucination_or_looping"],
         "halas_released_system_no_hallucination_count": label_counts["no_hallucination"],
+        "extra_fields": {
+            "source_repo": HF_REPO_ID,
+            "source_revision": HF_REVISION,
+            "audio_source_repo": EARNINGS22_REPO_ID,
+            "audio_source_revision": EARNINGS22_REVISION,
+        },
         "task_type": "HALAS-ASR",
     }
 
@@ -229,8 +237,9 @@ def main() -> None:
     for split, rows_for_split in split_rows.items():
         output_path = output_dir / f"{split}.jsonl"
         with open(output_path, "w", encoding="utf-8") as fout:
-            for row in rows_for_split:
-                fout.write(json.dumps(_format_entry(row, audio_prefix), ensure_ascii=False) + "\n")
+            fout.writelines(
+                json.dumps(_format_entry(row, audio_prefix), ensure_ascii=False) + "\n" for row in rows_for_split
+            )
         print(f"  {split}: wrote {len(rows_for_split)} rows to {output_path}")
 
 

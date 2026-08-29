@@ -17,7 +17,16 @@ import pytest
 pytest.importorskip("jiwer")
 pytest.importorskip("whisper_normalizer")
 
-from nemo_skills.dataset.halas.prepare import _default_audio_prefix, _default_data_dir, _model_label_counts
+from nemo_skills.dataset.halas.prepare import (
+    EARNINGS22_REPO_ID,
+    EARNINGS22_REVISION,
+    HF_REPO_ID,
+    HF_REVISION,
+    _default_audio_prefix,
+    _default_data_dir,
+    _format_entry,
+    _model_label_counts,
+)
 from nemo_skills.evaluation.evaluator.halas import evaluate_halas_sample
 from nemo_skills.evaluation.metrics.halas_metrics import HALASMetrics
 
@@ -59,3 +68,25 @@ def test_halas_prepare_defaults_honor_nemo_skills_data_dir(monkeypatch):
 
     assert str(data_dir) == "/cluster/skills_data/halas"
     assert _default_audio_prefix(None, data_dir) == "/data/halas"
+
+
+def test_halas_source_revisions_are_pinned_in_every_formatted_row():
+    formatted = _format_entry(
+        {
+            "audio_id": "sample.wav",
+            "audio_duration": 1.25,
+            "corrected_reference_text": "hello",
+            "e22_reference_text": "Hello",
+            "split": "test",
+        },
+        "/data/halas",
+    )
+
+    assert HF_REPO_ID == "MatBar99/HALAS"
+    assert EARNINGS22_REPO_ID == "distil-whisper/earnings22"
+    assert formatted["extra_fields"] == {
+        "source_repo": HF_REPO_ID,
+        "source_revision": HF_REVISION,
+        "audio_source_repo": EARNINGS22_REPO_ID,
+        "audio_source_revision": EARNINGS22_REVISION,
+    }
