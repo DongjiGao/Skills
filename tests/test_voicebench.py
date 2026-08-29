@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from nemo_skills.dataset.voicebench.ifeval import GENERATION_ARGS as IFEVAL_GENERATION_ARGS
 from nemo_skills.dataset.voicebench.prepare import (
     EXPECTED_ROWS,
     HF_REVISION,
@@ -105,7 +106,25 @@ def test_every_runnable_profile_module_is_registered():
     assert "voicebench.mtbench" in group.PUBLIC_DATA_ONLY_BENCHMARKS
     for benchmark in group.BENCHMARKS:
         module = importlib.import_module(f"nemo_skills.dataset.{benchmark}")
-        assert module.GENERATION_ARGS.endswith("++inference.temperature=0.0")
+        assert "++inference.temperature=0.0" in module.GENERATION_ARGS
+
+
+def test_ifeval_writes_response_and_tolerates_legacy_or_soft_failed_rows():
+    pytest.importorskip("immutabledict")
+    from nemo_skills.evaluation.evaluator.voicebench_ifeval import read_prompt_to_response_dict
+
+    assert "++generation_key=response" in IFEVAL_GENERATION_ARGS
+    assert read_prompt_to_response_dict(
+        [
+            {"prompt": "new", "response": "<1> exact <|user|>"},
+            {"prompt": "legacy", "generation": "older artifact"},
+            {"prompt": "soft-fail", "error": "HTTP 500"},
+        ]
+    ) == {
+        "new": "exact",
+        "legacy": "older artifact",
+        "soft-fail": "",
+    }
 
 
 def test_exact_judge_config_and_parsers():

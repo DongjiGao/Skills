@@ -154,7 +154,9 @@ def read_prompt_to_response_dict(data):
     for example in data:
         if isinstance(example, list):
             example = example[0]
-        tmp = example["response"]
+        tmp = example.get("response", example.get("generation", ""))
+        if not isinstance(tmp, str):
+            tmp = ""
         if tmp.startswith('<1>') or tmp.startswith('<2>') or tmp.startswith('<3>'):
             tmp = tmp[3:].strip()
         if tmp.endswith('<|user|>'):
