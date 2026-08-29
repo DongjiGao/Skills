@@ -71,9 +71,16 @@ def get_free_port(exclude: list[int] | None = None, strategy: int | str = 5000) 
             _SLURM_JOB_PORT_OFFSET += 1
             # Expanded inside the SLURM job, not at submit time. This keeps
             # ports stable between the co-scheduled server and client, while
-            # making concurrent jobs on the same node overwhelmingly unlikely
-            # to collide.
-            return f"$((20000+(${{SLURM_JOB_ID:-0}}+{offset})%45000))"
+            # spacing adjacent Slurm jobs far apart. Adjacent ports are unsafe
+            # for vLLM because its engine may bind auxiliary sockets near the
+            # public API port. Include heterogeneous-job and array indices for
+            # launchers whose tasks share a base SLURM_JOB_ID.
+            return (
+                "$((20000+(${SLURM_JOB_ID:-0}*7919"
+                "+${SLURM_HET_GROUP:-0}*1543"
+                "+${SLURM_ARRAY_TASK_ID:-0}*3137"
+                f"+{offset}*6151)%45000))"
+            )
 
         # These ports are embedded into SLURM scripts before the jobs land on
         # worker nodes. A plain random draw can assign the same port to many
