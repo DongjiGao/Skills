@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import importlib
 import io
+import json
 import random
 from types import SimpleNamespace
 
@@ -25,7 +26,8 @@ from nemo_skills.evaluation.evaluator.voicebench import (
     JUDGE_REQUEST_KWARGS,
     JUDGE_SYSTEM_PROMPT,
     OPEN_JUDGE_TEMPLATE,
-    PEDANT_ARTIFACT_SHA256,
+    PEDANT_PORTABLE_ARTIFACT_SHA256,
+    PEDANT_SOURCE_ARTIFACT_SHA256,
     PEDANT_SOURCE_REVISION,
     QA_JUDGE_TEMPLATE,
     VoiceBenchEvaluator,
@@ -124,32 +126,72 @@ def test_exact_judge_config_and_parsers():
     assert official_majority_vote(["Yes", "yes", "No"]) is True
 
 
-def test_pedant_artifacts_are_pinned_and_network_refresh_is_disabled(tmp_path, monkeypatch):
-    assert PEDANT_SOURCE_REVISION == "26623c6ca3313e7a58c48fd6ce2b8579eb0c742e"
-    package_dir = tmp_path / "qa_metrics"
-    artifact_dir = package_dir / "classifier"
-    artifact_dir.mkdir(parents=True)
-    pedant_py = package_dir / "pedant.py"
-    pedant_py.write_text("# synthetic module\n", encoding="utf-8")
+def test_pedant_artifacts_are_pinned_and_portable_without_constructor(tmp_path, monkeypatch):
+    import numpy as np
 
-    contents = {
-        "lr_classifier.pkl": b"classifier",
-        "tf-idf_vectorizer.pkl": b"vectorizer",
+    assert PEDANT_SOURCE_REVISION == "26623c6ca3313e7a58c48fd6ce2b8579eb0c742e"
+    assert set(PEDANT_SOURCE_ARTIFACT_SHA256) == {"lr_classifier.pkl", "tf-idf_vectorizer.pkl"}
+    artifact_dir = tmp_path / "portable"
+    artifact_dir.mkdir(parents=True)
+    np.save(artifact_dir / "classes.npy", np.asarray(["correct", "incorrect"]), allow_pickle=False)
+    np.save(artifact_dir / "coef.npy", np.asarray([[-1.0, 0.0, 0.0, 0.0]]), allow_pickle=False)
+    np.save(artifact_dir / "idf.npy", np.asarray([1.0]), allow_pickle=False)
+    np.save(artifact_dir / "intercept.npy", np.asarray([0.0]), allow_pickle=False)
+    documents = {
+        "model.json": {
+            "classes": ["correct", "incorrect"],
+            "coef_shape": [1, 4],
+            "intercept_shape": [1],
+            "vocabulary_size": 1,
+            "idf_size": 1,
+        },
+        "vectorizer.json": {
+            "analyzer": "word",
+            "binary": False,
+            "decode_error": "strict",
+            "encoding": "utf-8",
+            "input": "content",
+            "lowercase": True,
+            "ngram_range": [1, 1],
+            "norm": "l2",
+            "smooth_idf": True,
+            "stop_words": None,
+            "strip_accents": None,
+            "sublinear_tf": False,
+            "token_pattern": r"(?u)\b\w\w+\b",
+            "use_idf": True,
+        },
+        "vocabulary.json": {"paris": 0},
+        "parity.json": {
+            "texts": ["paris"],
+            "extras": [[0.0, 0.0, 0.0]],
+            "decision": [-1.0],
+            "prediction": ["correct"],
+        },
     }
-    expected = {}
-    for filename, content in contents.items():
-        (artifact_dir / filename).write_bytes(content)
-        expected[filename] = hashlib.sha256(content).hexdigest()
+    for filename, content in documents.items():
+        (artifact_dir / filename).write_text(
+            json.dumps(content, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+    expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in artifact_dir.iterdir()}
     monkeypatch.setattr(
-        "nemo_skills.evaluation.evaluator.voicebench.PEDANT_ARTIFACT_SHA256",
+        "nemo_skills.evaluation.evaluator.voicebench.PEDANT_PORTABLE_ARTIFACT_SHA256",
         expected,
     )
 
-    module = SimpleNamespace(__file__=str(pedant_py))
-    module.download_link = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network refresh"))
-    module.PEDANT = lambda: (module.download_link("file", "url", "name"), "pedant")[1]
-    assert load_pinned_pedant(module) == "pedant"
-    assert set(PEDANT_ARTIFACT_SHA256) == set(contents)
+    class FakePedant:
+        def __init__(self):
+            raise AssertionError("legacy PEDANT constructor must not run")
+
+    pedant = load_pinned_pedant(SimpleNamespace(PEDANT=FakePedant), portable_dir=artifact_dir)
+    features = pedant.tokenizer.transform(["paris"])
+    from scipy.sparse import hstack
+
+    features = hstack([features, np.zeros((1, 3))])
+    assert pedant.model.predict(features).tolist() == ["correct"]
+    assert set(PEDANT_PORTABLE_ARTIFACT_SHA256) == set(documents) | {
+        "classes.npy", "coef.npy", "idf.npy", "intercept.npy"
+    }
 
 
 class _Message:
