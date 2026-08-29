@@ -12,12 +12,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
-import urllib.request
 from pathlib import Path
 
 from nemo_skills.dataset.mandarin_meeting_common import (
     prepare_meeting_tree,
+    resumable_http_download,
     safe_stream_extract_tar_gz,
     sha256_file,
 )
@@ -27,6 +26,7 @@ SOURCE_URL = "https://speech-lab-share-data.oss-cn-shanghai.aliyuncs.com/AliMeet
 SOURCE_SPLIT = "Test_Ali_far"
 EXPECTED_SESSIONS = 20
 OFFICIAL_REPOSITORY_REVISION = "692a034fd510f1720f547c2c91e0fbadc9c24bf2"
+SOURCE_ARCHIVE_BYTES = 9_555_497_666
 
 
 def _default_data_dir() -> Path:
@@ -35,15 +35,12 @@ def _default_data_dir() -> Path:
 
 
 def _download(destination: Path) -> Path:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and destination.stat().st_size > 0:
-        return destination
-    partial = destination.with_suffix(destination.suffix + ".partial")
-    request = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "nemo-skills/alimeeting-sot"})
-    with urllib.request.urlopen(request, timeout=300) as source, partial.open("wb") as output:
-        shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
-    partial.replace(destination)
-    return destination
+    return resumable_http_download(
+        SOURCE_URL,
+        destination,
+        expected_size=SOURCE_ARCHIVE_BYTES,
+        user_agent="nemo-skills/alimeeting-sot",
+    )
 
 
 def _locate_far_tree(root: Path) -> tuple[Path, Path]:

@@ -16,6 +16,8 @@ import hashlib
 import json
 import re
 import shutil
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +46,81 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def resumable_http_download(
+    url: str,
+    destination: Path,
+    *,
+    expected_size: int,
+    user_agent: str,
+    timeout: int = 300,
+) -> Path:
+    """Download an immutable large object with validated byte-range resume."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file():
+        actual_size = destination.stat().st_size
+        if actual_size == expected_size:
+            return destination
+        raise ValueError(
+            f"Existing final download has {actual_size} bytes; expected "
+            f"{expected_size}: {destination}"
+        )
+
+    partial = destination.with_suffix(destination.suffix + ".partial")
+    offset = partial.stat().st_size if partial.is_file() else 0
+    if offset > expected_size:
+        raise ValueError(
+            f"Partial download has {offset} bytes; expected at most "
+            f"{expected_size}: {partial}"
+        )
+    if offset == expected_size:
+        partial.replace(destination)
+        return destination
+
+    headers = {"User-Agent": user_agent}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        if error.code == 416 and partial.is_file() and partial.stat().st_size == expected_size:
+            partial.replace(destination)
+            return destination
+        raise
+
+    status = getattr(response, "status", None) or response.getcode()
+    mode = "ab"
+    if offset:
+        if status == 206:
+            content_range = response.headers.get("Content-Range", "")
+            if not content_range.startswith(f"bytes {offset}-"):
+                response.close()
+                raise ValueError(
+                    f"Server resumed at an unexpected range {content_range!r}; "
+                    f"requested byte {offset}"
+                )
+        elif status == 200:
+            offset = 0
+            mode = "wb"
+        else:
+            response.close()
+            raise ValueError(f"Unexpected HTTP {status} while resuming {url}")
+    elif status not in {200, 206}:
+        response.close()
+        raise ValueError(f"Unexpected HTTP {status} while downloading {url}")
+
+    with response, partial.open(mode) as output:
+        shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
+    actual_size = partial.stat().st_size
+    if actual_size != expected_size:
+        raise OSError(
+            f"Partial download has {actual_size} bytes after transfer; "
+            f"expected {expected_size}: {partial}"
+        )
+    partial.replace(destination)
+    return destination
 
 
 def _praat_string(value: str) -> str:

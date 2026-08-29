@@ -1,4 +1,6 @@
+import io
 import json
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +10,7 @@ from nemo_skills.dataset.mandarin_meeting_common import (
     cpcer_token_string,
     parse_long_textgrid,
     prepare_meeting_tree,
+    resumable_http_download,
 )
 from nemo_skills.evaluation.evaluator.mandarin_meeting import evaluate_mandarin_meeting_sample
 
@@ -109,3 +112,37 @@ def test_prepare_meeting_tree_materializes_first_channel(tmp_path: Path):
     info = sf.info(output / "audio" / "session.wav")
     assert info.channels == 1
     assert info.frames == 16000
+
+
+def test_resumable_http_download_preserves_partial_bytes(tmp_path: Path, monkeypatch):
+    destination = tmp_path / "archive.tar.gz"
+    partial = destination.with_suffix(destination.suffix + ".partial")
+    partial.write_bytes(b"abc")
+    captured = {}
+
+    class FakeResponse(io.BytesIO):
+        def __init__(self, data: bytes):
+            super().__init__(data)
+            self.status = 206
+            self.headers = {"Content-Range": "bytes 3-5/6"}
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        captured["range"] = request.get_header("Range")
+        captured["timeout"] = timeout
+        return FakeResponse(b"def")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = resumable_http_download(
+        "https://example.invalid/archive.tar.gz",
+        destination,
+        expected_size=6,
+        user_agent="test",
+    )
+
+    assert result == destination
+    assert destination.read_bytes() == b"abcdef"
+    assert not partial.exists()
+    assert captured == {"range": "bytes=3-", "timeout": 300}
