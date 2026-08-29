@@ -44,6 +44,9 @@ import soundfile as sf
 from datasets import load_dataset
 from tqdm import tqdm
 
+HF_REPO_ID = "nvidia/Numb3rs"
+HF_REVISION = "192908075e1bd293914cc7b508f4a183ba6ef2b8"
+
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 
 # Prompt variants for TN/ITN evaluation
@@ -131,6 +134,10 @@ def save_audio_and_format_entry(entry, category, audio_dir, sample_idx, with_aud
         "category": category,
         "sample_id": sample_id,
         "subset_for_metrics": f"numb3rs_{category}",
+        "extra_fields": {
+            "source_repo": HF_REPO_ID,
+            "source_revision": HF_REVISION,
+        },
         "audio_metadata": audio_metadata,  # Store for message building
     }
 
@@ -253,11 +260,11 @@ def main():
 
     # Load dataset from HuggingFace
     print("\nLoading Numb3rs dataset from HuggingFace...")
-    dataset = load_dataset("nvidia/Numb3rs", split="test", trust_remote_code=True)
+    dataset = load_dataset(HF_REPO_ID, split="test", revision=HF_REVISION, trust_remote_code=True)
     print(f"Loaded {len(dataset)} total samples")
 
     # Get all available categories
-    all_categories = sorted(set(s["category"].upper() for s in dataset))
+    all_categories = sorted({sample["category"].upper() for sample in dataset})
     print(f"Available categories: {', '.join(all_categories)}")
 
     # Determine which categories to process
@@ -288,7 +295,7 @@ def main():
 
     categories_dir = output_dir / "categories"
 
-    for variant_name in PROMPT_VARIANTS.keys():
+    for variant_name in PROMPT_VARIANTS:
         combined_file = output_dir / f"test_{variant_name}.jsonl"
 
         # Get all category files for this variant from categories/ subfolder
