@@ -7,7 +7,7 @@ import pytest
 judge = import_module("nemo_skills.pipeline.judges.nvembed_judge")
 
 
-def _create(monkeypatch: pytest.MonkeyPatch, judge_container=None):
+def _create(monkeypatch: pytest.MonkeyPatch, judge_container=None, include_gpu_container=True):
     captured = {}
     monkeypatch.setattr(
         judge,
@@ -18,6 +18,13 @@ def _create(monkeypatch: pytest.MonkeyPatch, judge_container=None):
     def fake_add_task(exp, **kwargs):
         captured.update(kwargs)
         return "judge-task"
+
+    containers = {
+        "nemo-skills": "skills-eval.sqsh",
+        "vllm": "server.sqsh",
+    }
+    if include_gpu_container:
+        containers["nemo-skills-gpu"] = "skills-gpu-eval.sqsh"
 
     monkeypatch.setattr(judge, "add_task", fake_add_task)
     tasks = judge.create_judge_tasks(
@@ -33,10 +40,7 @@ def _create(monkeypatch: pytest.MonkeyPatch, judge_container=None):
         output_dir="/unused",
         cluster_config={
             "executor": "slurm",
-            "containers": {
-                "nemo-skills": "skills-eval.sqsh",
-                "vllm": "server.sqsh",
-            },
+            "containers": containers,
         },
         judge_server_gpus=None,
         judge_server_nodes=None,
@@ -57,14 +61,20 @@ def _create(monkeypatch: pytest.MonkeyPatch, judge_container=None):
     return captured
 
 
-def test_nvembed_judge_prefers_eval_image_and_baked_dependencies(monkeypatch):
+def test_nvembed_judge_prefers_gpu_eval_image_and_baked_dependencies(monkeypatch):
     captured = _create(monkeypatch)
 
-    assert captured["container"] == "skills-eval.sqsh"
+    assert captured["container"] == "skills-gpu-eval.sqsh"
     assert "NEMO_SKILLS_NVEMBED_DEPS_DIR" in captured["cmd"]
     assert "/opt/nemo-skills-nvembed" in captured["cmd"]
     assert 'if [[ ! -d "$NVEMBED_DEPS_DIR" ]]' in captured["cmd"]
     assert "python3 -m pip install" in captured["cmd"]
+
+
+def test_nvembed_judge_falls_back_to_regular_eval_image(monkeypatch):
+    captured = _create(monkeypatch, include_gpu_container=False)
+
+    assert captured["container"] == "skills-eval.sqsh"
 
 
 def test_nvembed_judge_explicit_container_wins(monkeypatch):

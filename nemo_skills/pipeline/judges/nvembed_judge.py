@@ -143,11 +143,12 @@ def create_judge_tasks(
     configured_containers = cluster_config.get("containers", {})
     resolved_judge_container = (
         judge_container
+        or configured_containers.get("nemo-skills-gpu")
         or configured_containers.get("nemo-skills")
         or configured_containers.get("vllm")
     )
     if resolved_judge_container is None:
-        raise ValueError("NVEmbed judge requires a nemo-skills or vllm container")
+        raise ValueError("NVEmbed judge requires a CUDA-capable eval or vllm container")
     judge_task = add_task(
         exp,
         cmd=run_cmd,
