@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -36,6 +37,7 @@ from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorCo
 from nemo_skills.utils import nested_dataclass
 
 OFFICIAL_REVISION = "af309592118b83fdf9b0ad896b564a142657aac8"
+FORMAT_INVARIANT_WER_REFERENCE = "acoustic_or_canonical_entity_lattice"
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
 TEMPLATE_ENTITY_RE = re.compile(r"<([^>]+)>")
 
@@ -176,7 +178,7 @@ def compute_format_invariant_wer(datapoint: dict[str, Any], hypothesis_text: str
     )
 
 
-def _load_official_package(data_dir: str) -> tuple[ModuleType, ModuleType, str]:
+def _official_root(data_dir: str) -> Path:
     root = Path(data_dir) / "voice-code-bench"
     revision_path = root / "NEMO_SKILLS_REVISION"
     revision = revision_path.read_text(encoding="utf-8").strip()
@@ -184,9 +186,23 @@ def _load_official_package(data_dir: str) -> tuple[ModuleType, ModuleType, str]:
         raise ValueError(
             f"VoiceCodeBench scorer revision mismatch: expected {OFFICIAL_REVISION}, found {revision}"
         )
+    return root
+
+
+def _ensure_typing_not_required() -> None:
+    """Make the pinned Python 3.11 scorer importable in Python 3.10 images."""
+    if not hasattr(typing, "NotRequired"):
+        from typing_extensions import NotRequired
+
+        setattr(typing, "NotRequired", NotRequired)
+
+
+def _load_official_package(data_dir: str) -> tuple[ModuleType, ModuleType, str]:
+    root = _official_root(data_dir)
+    _ensure_typing_not_required()
     package_dir = root / "scripts" / "voice_code_bench"
     init_path = package_dir / "__init__.py"
-    package_name = f"_nemo_skills_voice_code_bench_{revision[:12]}"
+    package_name = f"_nemo_skills_voice_code_bench_{OFFICIAL_REVISION[:12]}"
     if package_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             package_name, init_path, submodule_search_locations=[str(package_dir)]
@@ -221,8 +237,12 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
     async def eval_full(self) -> None:
         if not self.eval_config.input_file or not self.eval_config.data_dir:
             raise ValueError("VoiceCodeBench evaluation requires input_file and data_dir")
-        official_metrics, official_verifier, official_root = _load_official_package(self.eval_config.data_dir)
-        config = official_verifier.load_verifier_config(self.eval_config.verifier_id)
+        official_root = str(_official_root(self.eval_config.data_dir))
+        official_verifier: ModuleType | None = None
+        verifier_config = None
+        if self.eval_config.entity_verifier_mode != "off":
+            _, official_verifier, official_root = _load_official_package(self.eval_config.data_dir)
+            verifier_config = official_verifier.load_verifier_config(self.eval_config.verifier_id)
         input_path = Path(self.eval_config.input_file)
         cache_path = Path(
             self.eval_config.verifier_cache_path
@@ -246,9 +266,8 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
                 return await asyncio.to_thread(
                     self._evaluate_row,
                     row,
-                    official_metrics,
                     official_verifier,
-                    config,
+                    verifier_config,
                     cache,
                     api_key,
                     official_root,
@@ -264,8 +283,7 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
     def _evaluate_row(
         self,
         row: dict[str, Any],
-        official_metrics: ModuleType,
-        official_verifier: ModuleType,
+        official_verifier: ModuleType | None,
         verifier_config: Any,
         cache: Any,
         api_key: str,
@@ -277,7 +295,7 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
         generation = str(row.get("generation") or "").strip()
         wer = compute_format_invariant_wer(datapoint, generation)
         updates: dict[str, Any] = {
-            "voice_code_wer_reference": official_metrics.FORMAT_INVARIANT_WER_REFERENCE,
+            "voice_code_wer_reference": FORMAT_INVARIANT_WER_REFERENCE,
             "voice_code_wer_errors": wer.substitutions + wer.deletions + wer.insertions,
             "voice_code_wer_ref_words": wer.reference_words,
             "voice_code_wer_hyp_words": wer.hypothesis_words,
@@ -290,6 +308,9 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
             updates["voice_code_entity_verifier_status"] = "off"
             updates["is_correct"] = wer.wer == 0.0
             return {**row, **updates}
+
+        if official_verifier is None or verifier_config is None:
+            raise RuntimeError("VoiceCodeBench entity verifier was not initialized")
 
         matches = official_verifier.verify_entity_matches(
             datapoint,

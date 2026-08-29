@@ -1,6 +1,9 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
+import json
+import typing
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -8,6 +11,9 @@ import pytest
 
 from nemo_skills.evaluation.evaluator.voice_code_bench import (
     OFFICIAL_REVISION,
+    VoiceCodeBenchEvaluator,
+    _ensure_typing_not_required,
+    _load_official_package,
     compute_format_invariant_wer,
 )
 from nemo_skills.evaluation.metrics.voice_code_bench_metrics import VoiceCodeBenchMetrics
@@ -56,6 +62,72 @@ def test_format_invariant_wer_counts_changed_structured_value():
     result = compute_format_invariant_wer(_phone_datapoint(), "Call area code 212-555-0199 tomorrow")
     assert result.wer > 0
     assert result.substitutions + result.deletions + result.insertions > 0
+
+
+def test_wer_only_evaluator_does_not_import_official_python_311_package(tmp_path):
+    root = tmp_path / "voice-code-bench"
+    root.mkdir()
+    (root / "NEMO_SKILLS_REVISION").write_text(OFFICIAL_REVISION, encoding="utf-8")
+    datapoint = _phone_datapoint()
+    input_path = tmp_path / "predictions.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "audio_id": "phone",
+                "generation": datapoint["transcripts"]["acoustic"],
+                "voice_code_bench_revision": OFFICIAL_REVISION,
+                "voice_code_bench": datapoint,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    evaluator = VoiceCodeBenchEvaluator(
+        {
+            "input_file": str(input_path),
+            "data_dir": str(tmp_path),
+            "entity_verifier_mode": "off",
+        }
+    )
+    asyncio.run(evaluator.eval_full())
+
+    result = json.loads(input_path.read_text(encoding="utf-8"))
+    assert result["voice_code_wer_reference"] == "acoustic_or_canonical_entity_lattice"
+    assert result["voice_code_wer_errors"] == 0
+    assert result["voice_code_entity_verifier_status"] == "off"
+
+
+def test_official_loader_installs_not_required_compatibility(monkeypatch):
+    monkeypatch.delattr(typing, "NotRequired", raising=False)
+
+    _ensure_typing_not_required()
+
+    assert typing.NotRequired is not None
+
+
+def test_official_loader_imports_pinned_package_on_python_310(tmp_path, monkeypatch):
+    package = tmp_path / "voice-code-bench" / "scripts" / "voice_code_bench"
+    package.mkdir(parents=True)
+    (tmp_path / "voice-code-bench" / "NEMO_SKILLS_REVISION").write_text(
+        OFFICIAL_REVISION, encoding="utf-8"
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "models.py").write_text(
+        "from typing import NotRequired\n", encoding="utf-8"
+    )
+    (package / "metrics.py").write_text(
+        "from .models import NotRequired\n"
+        "FORMAT_INVARIANT_WER_REFERENCE = 'acoustic_or_canonical_entity_lattice'\n",
+        encoding="utf-8",
+    )
+    (package / "verifier.py").write_text("", encoding="utf-8")
+    monkeypatch.delattr(typing, "NotRequired", raising=False)
+
+    metrics, _, root = _load_official_package(str(tmp_path))
+
+    assert metrics.FORMAT_INVARIANT_WER_REFERENCE == "acoustic_or_canonical_entity_lattice"
+    assert root == str(tmp_path / "voice-code-bench")
 
 
 def test_prepare_manifest_keeps_scorer_metadata_out_of_prompt():
