@@ -458,6 +458,46 @@ def test_mount_path_utilities_support_optional_modes(mode):
     assert cluster_config["mounts"] == [mount]
 
 
+def test_mount_path_utilities_prefer_most_specific_overlapping_mount():
+    from nemo_skills.pipeline.utils.mounts import get_mounted_path, get_unmounted_path
+
+    identity_root = "/lustre/fsw/portfolios/llmservice/users/example/dataset"
+    cluster_config = {
+        "executor": "slurm",
+        "mounts": [
+            "/mirror/llmservice:/lustre/fsw/portfolios/llmservice",
+            f"{identity_root}:{identity_root}:ro",
+            "/cluster/data:/data",
+            "/cluster/data/special:/special:ro",
+        ],
+    }
+    identity_child = f"{identity_root}/splits"
+
+    assert get_unmounted_path(cluster_config, identity_child) == identity_child
+    assert (
+        get_unmounted_path(cluster_config, "/lustre/fsw/portfolios/llmservice/other")
+        == "/mirror/llmservice/other"
+    )
+    assert get_mounted_path(cluster_config, "/cluster/data/special/file") == "/special/file"
+    assert get_mounted_path(cluster_config, "/cluster/data/ordinary") == "/data/ordinary"
+
+
+def test_mount_path_prefixes_are_component_bounded():
+    from nemo_skills.pipeline.utils.mounts import (
+        get_mounted_path,
+        get_unmounted_path,
+        is_mounted_filepath,
+    )
+
+    cluster_config = {"executor": "slurm", "mounts": ["/cluster/data:/data"]}
+
+    assert not is_mounted_filepath(cluster_config, "/database/file")
+    with pytest.raises(ValueError, match="Could not find a mount path"):
+        get_mounted_path(cluster_config, "/cluster/database/file")
+    with pytest.raises(ValueError, match="Could not find a mount path"):
+        get_unmounted_path(cluster_config, "/database/file")
+
+
 def test_add_mount_path_preserves_explicit_mode():
     from nemo_skills.pipeline.utils.mounts import add_mount_path
 
