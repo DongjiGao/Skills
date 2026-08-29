@@ -63,6 +63,7 @@ _EVALUATOR_CLASS_MAP_PATHS = {
     "ascend": "nemo_skills.evaluation.evaluator.ascend:ASCENDEvaluator",
     "fleurs_lid": "nemo_skills.evaluation.evaluator.fleurs_lid:FleursLIDEvaluator",
     "language_id": "nemo_skills.evaluation.evaluator.language_id:LanguageIDEvaluator",
+    "mandarin_meeting": "nemo_skills.evaluation.evaluator.mandarin_meeting:MandarinMeetingEvaluator",
     "voice_code_bench": "nemo_skills.evaluation.evaluator.voice_code_bench:VoiceCodeBenchEvaluator",
     "voicebench": "nemo_skills.evaluation.evaluator.voicebench:VoiceBenchEvaluator",
     "contextual_earnings22": ("nemo_skills.evaluation.evaluator.contextual_earnings22:ContextualEarnings22Evaluator"),

@@ -44,6 +44,7 @@ from nemo_skills.evaluation.metrics.icpc_metrics import ICPCMetrics
 from nemo_skills.evaluation.metrics.if_metrics import IFMetrics
 from nemo_skills.evaluation.metrics.ioi_metrics import IOIMetrics
 from nemo_skills.evaluation.metrics.language_id_metrics import LanguageIDMetrics
+from nemo_skills.evaluation.metrics.mandarin_meeting_metrics import MandarinMeetingMetrics
 from nemo_skills.evaluation.metrics.lean4_metrics import Lean4Metrics
 from nemo_skills.evaluation.metrics.math_metrics import MathMetrics
 from nemo_skills.evaluation.metrics.mcq_multilingual_metrics import MCQMultilingualMetrics
@@ -81,6 +82,7 @@ METRICS_MAP = {
     "ascend": ASCENDMetrics,
     "fleurs_lid": FleursLIDMetrics,
     "language_id": LanguageIDMetrics,
+    "mandarin_meeting": MandarinMeetingMetrics,
     "voice_code_bench": VoiceCodeBenchMetrics,
     "voicebench": VoiceBenchMetrics,
     "open_asr_leaderboard": OpenASRLeaderboardMetrics,
