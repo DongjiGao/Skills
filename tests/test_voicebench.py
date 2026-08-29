@@ -2,9 +2,11 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 
 import asyncio
+import hashlib
 import importlib
 import io
 import random
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,9 +25,12 @@ from nemo_skills.evaluation.evaluator.voicebench import (
     JUDGE_REQUEST_KWARGS,
     JUDGE_SYSTEM_PROMPT,
     OPEN_JUDGE_TEMPLATE,
+    PEDANT_ARTIFACT_SHA256,
+    PEDANT_SOURCE_REVISION,
     QA_JUDGE_TEMPLATE,
     VoiceBenchEvaluator,
     extract_open_rating,
+    load_pinned_pedant,
     official_majority_vote,
 )
 from nemo_skills.evaluation.evaluator.voicebench_bbh_official import BBHEvaluator
@@ -117,6 +122,34 @@ def test_exact_judge_config_and_parsers():
     with pytest.raises(ValueError):
         extract_open_rating("five")
     assert official_majority_vote(["Yes", "yes", "No"]) is True
+
+
+def test_pedant_artifacts_are_pinned_and_network_refresh_is_disabled(tmp_path, monkeypatch):
+    assert PEDANT_SOURCE_REVISION == "26623c6ca3313e7a58c48fd6ce2b8579eb0c742e"
+    package_dir = tmp_path / "qa_metrics"
+    artifact_dir = package_dir / "classifier"
+    artifact_dir.mkdir(parents=True)
+    pedant_py = package_dir / "pedant.py"
+    pedant_py.write_text("# synthetic module\n", encoding="utf-8")
+
+    contents = {
+        "lr_classifier.pkl": b"classifier",
+        "tf-idf_vectorizer.pkl": b"vectorizer",
+    }
+    expected = {}
+    for filename, content in contents.items():
+        (artifact_dir / filename).write_bytes(content)
+        expected[filename] = hashlib.sha256(content).hexdigest()
+    monkeypatch.setattr(
+        "nemo_skills.evaluation.evaluator.voicebench.PEDANT_ARTIFACT_SHA256",
+        expected,
+    )
+
+    module = SimpleNamespace(__file__=str(pedant_py))
+    module.download_link = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network refresh"))
+    module.PEDANT = lambda: (module.download_link("file", "url", "name"), "pedant")[1]
+    assert load_pinned_pedant(module) == "pedant"
+    assert set(PEDANT_ARTIFACT_SHA256) == set(contents)
 
 
 class _Message:

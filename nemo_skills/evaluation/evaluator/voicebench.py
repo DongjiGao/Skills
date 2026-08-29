@@ -4,10 +4,12 @@
 """Pinned VoiceBench evaluation, with random fallback isolated as parity only."""
 
 import asyncio
+import hashlib
 import os
 import random
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorConfig
@@ -17,6 +19,11 @@ from nemo_skills.evaluation.evaluator.voicebench_mcq_official import MCQEvaluato
 from nemo_skills.utils import nested_dataclass
 
 OFFICIAL_CODE_REVISION = "3c3b0d3a7a956f745305eb348f5e03ce7ec73dad"
+PEDANT_SOURCE_REVISION = "26623c6ca3313e7a58c48fd6ce2b8579eb0c742e"
+PEDANT_ARTIFACT_SHA256 = {
+    "lr_classifier.pkl": "9c3dd5998745ece1cfb6cb16b953358f794e8716d63a08f3b212d8bc32a59b8b",
+    "tf-idf_vectorizer.pkl": "e886c9ba3ddb15a4b693b075dfe19cfad36dc74e7f8f195b8d9e98e989f2ba4f",
+}
 JUDGE_MODEL = "gpt-4o-mini"
 JUDGE_SYSTEM_PROMPT = "You are a helpful assistant who tries to help answer the user's question."
 JUDGE_REQUEST_KWARGS = {
@@ -95,6 +102,43 @@ def judge_messages(prompt: str) -> list[dict[str, str]]:
     ]
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_pinned_pedant(pedant_module=None):
+    """Load PEDANT without its unconditional mutable-master network refresh."""
+    if pedant_module is None:
+        try:
+            import qa_metrics.pedant as pedant_module
+        except ImportError as exc:
+            raise RuntimeError("Official SD-QA PEDANT scoring requires qa_metrics==0.2.17") from exc
+
+    artifact_dir = Path(pedant_module.__file__).resolve().parent / "classifier"
+    for filename, expected_hash in PEDANT_ARTIFACT_SHA256.items():
+        artifact = artifact_dir / filename
+        if not artifact.is_file():
+            raise RuntimeError(
+                f"Pinned PEDANT artifact is missing: {artifact}. Use the validated NeMo Skills eval image."
+            )
+        actual_hash = _sha256(artifact)
+        if actual_hash != expected_hash:
+            raise RuntimeError(
+                f"Pinned PEDANT artifact hash mismatch for {artifact}: expected {expected_hash}, got {actual_hash}"
+            )
+
+    original_download = pedant_module.download_link
+    pedant_module.download_link = lambda *_args, **_kwargs: None
+    try:
+        return pedant_module.PEDANT()
+    finally:
+        pedant_module.download_link = original_download
+
+
 @nested_dataclass(kw_only=True)
 class VoiceBenchEvaluatorConfig(BaseEvaluatorConfig):
     openai_api_key_env: str = "OPENAI_API_KEY"
@@ -142,11 +186,7 @@ class VoiceBenchEvaluator(BaseEvaluator):
 
     def _pedant_sync(self, data_point: dict, response: str) -> bool:
         if self._pedant is None:
-            try:
-                from qa_metrics.pedant import PEDANT
-            except ImportError as exc:
-                raise RuntimeError("Official SD-QA PEDANT scoring requires qa_metrics==0.2.17") from exc
-            self._pedant = PEDANT()
+            self._pedant = load_pinned_pedant()
         return bool(
             self._pedant.evaluate(
                 [str(data_point["reference"]).lower()], response.lower(), str(data_point["prompt"]).lower()
