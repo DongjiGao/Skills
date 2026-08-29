@@ -23,3 +23,6 @@ whisper-normalizer==0.1.12
 
 # Open ASR compound-aware WER and NeMo-compatible cpWER edit distance
 kaldialign==0.12.0
+
+# Official ASCEND mixed-error-rate segmentation
+jieba==0.42.1
