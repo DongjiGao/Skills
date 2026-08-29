@@ -103,7 +103,11 @@ def download_audio(split: str, audio_dir: Path):
 def process_split(split: str, data_dir: Path, audio_dir: Path, with_audio: bool) -> int:
     """Process one LibriSpeech-PC split into nemo-skills format."""
 
-    output_file = data_dir / f"{split}.jsonl"
+    # Dotted benchmark names map to nested directories in NeMo Skills. Keep
+    # the legacy top-level split file as well so the original
+    # ``librispeech-pc`` benchmark remains reproducible.
+    output_file = data_dir / split / "test.jsonl"
+    legacy_output_file = data_dir / f"{split}.jsonl"
     manifest_file = data_dir / f"{split}.json"
     if not manifest_file.exists():
         print(f"✗ Manifest not found: {manifest_file}")
@@ -114,6 +118,7 @@ def process_split(split: str, data_dir: Path, audio_dir: Path, with_audio: bool)
 
     with open(manifest_file, "r") as f:
         entries = [json.loads(line) for line in f if line.strip()]
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     processed = 0
     skipped = 0
@@ -153,6 +158,7 @@ def process_split(split: str, data_dir: Path, audio_dir: Path, with_audio: bool)
 
             fout.write(json.dumps(output_entry, ensure_ascii=False) + "\n")
             processed += 1
+    shutil.copyfile(output_file, legacy_output_file)
 
     print(f"✓ {split}: {processed} samples" + (f" ({skipped} skipped)" if skipped > 0 else ""))
 
