@@ -26,3 +26,12 @@ kaldialign==0.12.0
 
 # Official ASCEND mixed-error-rate segmentation
 jieba==0.42.1
+
+# Official VoiceBench SD-QA PEDANT metric
+qa_metrics==0.2.17
+
+# VoiceBench's pinned local IFEval fork
+absl-py
+immutabledict
+langdetect
+nltk

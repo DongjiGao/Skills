@@ -60,6 +60,7 @@ from nemo_skills.evaluation.metrics.set_token_mcq_metrics import SetTokenMCQMetr
 from nemo_skills.evaluation.metrics.translation_metrics import TranslationMetrics
 from nemo_skills.evaluation.metrics.ugphysics_metrics import UGPhysicsMetrics
 from nemo_skills.evaluation.metrics.voice_code_bench_metrics import VoiceCodeBenchMetrics
+from nemo_skills.evaluation.metrics.voicebench_metrics import VoiceBenchMetrics
 from nemo_skills.evaluation.metrics.weighted_math_metrics import WeightedMathMetrics
 
 METRICS_MAP = {
@@ -81,6 +82,7 @@ METRICS_MAP = {
     "fleurs_lid": FleursLIDMetrics,
     "language_id": LanguageIDMetrics,
     "voice_code_bench": VoiceCodeBenchMetrics,
+    "voicebench": VoiceBenchMetrics,
     "open_asr_leaderboard": OpenASRLeaderboardMetrics,
     "speechlm": AudioMetrics,  # Alias for backward compatibility
     "bfcl": BFCLMetrics,
