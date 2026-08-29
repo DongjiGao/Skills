@@ -50,7 +50,10 @@ ns = "nemo_skills.pipeline.cli:app"
 include-package-data = true
 
 [tool.setuptools.package-data]
-nemo_skills = ["evaluation/metrics/utils/chime8_normalizer_data/*.json"]
+nemo_skills = [
+    "evaluation/metrics/utils/chime8_normalizer_data/*.json",
+    "evaluation/evaluator/resources/voicebench_pedant/*",
+]
 
 [tool.setuptools.packages.find]
 exclude = ["tests", "tests.*"]

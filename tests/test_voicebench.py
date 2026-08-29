@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import random
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +125,11 @@ def test_exact_judge_config_and_parsers():
     with pytest.raises(ValueError):
         extract_open_rating("five")
     assert official_majority_vote(["Yes", "yes", "No"]) is True
+
+
+def test_portable_pedant_resources_are_in_wheel_package_data():
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"evaluation/evaluator/resources/voicebench_pedant/*"' in pyproject
 
 
 def test_pedant_artifacts_are_pinned_and_portable_without_constructor(tmp_path, monkeypatch):
