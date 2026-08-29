@@ -22,6 +22,9 @@ from tqdm import tqdm
 from nemo_skills.dataset.utils import filter_by_subset, get_mcq_fields, load_subset_ids
 
 SUBSETS_DIR = Path(__file__).absolute().parent / "subsets"
+DATASET_REPO_ID = "TIGER-Lab/MMLU-Pro"
+DATASET_REVISION = "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+EXPECTED_ROWS = {"validation": 70, "test": 12032}
 
 
 def format_entry(entry):
@@ -31,6 +34,10 @@ def format_entry(entry):
         "expected_answer": entry["answer"],
         "examples_type": f"mmlu_pro_few_shot_{category}",
         "subset_for_metrics": category,
+        "extra_fields": {
+            "source_repo": DATASET_REPO_ID,
+            "source_revision": DATASET_REVISION,
+        },
         **get_mcq_fields(entry["question"], entry["options"]),
     }
 
@@ -44,14 +51,23 @@ def write_data_to_file(output_file, data):
 
 def main(args):
     if args.split in ("validation", "test"):
-        dataset = load_dataset("TIGER-Lab/MMLU-Pro")[args.split]
+        dataset = load_dataset(DATASET_REPO_ID, split=args.split, revision=DATASET_REVISION)
+        if len(dataset) != EXPECTED_ROWS[args.split]:
+            raise ValueError(
+                f"Expected {EXPECTED_ROWS[args.split]} {args.split} rows from "
+                f"{DATASET_REPO_ID}@{DATASET_REVISION}, found {len(dataset)}"
+            )
     else:
         subset_file = SUBSETS_DIR / f"{args.split}.txt"
         if not subset_file.exists():
             raise ValueError(
                 f"Unknown split '{args.split}'. Expected 'validation', 'test', or a subset file at subsets/{args.split}.txt"
             )
-        dataset = load_dataset("TIGER-Lab/MMLU-Pro")["test"]
+        dataset = load_dataset(
+            DATASET_REPO_ID,
+            split="test",
+            revision=DATASET_REVISION,
+        )
         subset_ids = load_subset_ids(subset_file)
         dataset = filter_by_subset(dataset, subset_ids, question_key="question", options_key="options")
 

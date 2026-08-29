@@ -13,17 +13,16 @@
 # limitations under the License.
 
 import argparse
-import csv
-import io
 import json
-import os
-import tarfile
-import urllib.request
 from pathlib import Path
+
+from datasets import load_dataset
 
 from nemo_skills.dataset.utils import get_mcq_fields
 
-URL = "https://people.eecs.berkeley.edu/~hendrycks/data.tar"
+DATASET_REPO_ID = "cais/mmlu"
+DATASET_REVISION = "c30699e8356da336a370243923dbaf21066bb9fe"
+EXPECTED_ROWS = {"dev": 285, "test": 14042, "val": 1531}
 
 # mmlu subcategories from https://github.com/hendrycks/test/blob/master/categories.py
 subcategories = {
@@ -87,76 +86,44 @@ subcategories = {
 }
 
 
-def read_csv_files_from_tar(tar_file_path, split):
-    result = {}
-
-    # Define the column names
-    column_names = ["question", "A", "B", "C", "D", "expected_answer"]
-
-    with tarfile.open(tar_file_path, "r") as tar:
-        # List all members of the tar file
-        members = tar.getmembers()
-
-        # Filter for CSV files in the 'data/test' directory
-        csv_files = [
-            member for member in members if member.name.startswith(f"data/{split}/") and member.name.endswith(".csv")
-        ]
-
-        for csv_file in csv_files:
-            # Extract the file name without the path
-            file_name = os.path.basename(csv_file.name)
-
-            # Read the CSV file content
-            file_content = tar.extractfile(csv_file)
-            if file_content is not None:
-                # Decode bytes to string
-                content_str = io.TextIOWrapper(file_content, encoding="utf-8")
-
-                # Use csv to read the CSV content without a header
-                csv_reader = csv.reader(content_str)
-
-                # Convert CSV data to list of dictionaries with specified column names
-                csv_data = []
-                for row in csv_reader:
-                    if len(row) == len(column_names):
-                        csv_data.append(dict(zip(column_names, row)))
-                    else:
-                        print(f"Warning: Skipping row in {file_name} due to incorrect number of columns")
-
-                # Add to result dictionary
-                result[file_name.rsplit("_", 1)[0]] = csv_data
-
-    return result
+def format_entry(entry):
+    subject = entry["subject"]
+    answer_index = int(entry["answer"])
+    if answer_index not in range(4):
+        raise ValueError(f"Invalid MMLU answer index: {answer_index}")
+    return {
+        "expected_answer": chr(ord("A") + answer_index),
+        "subtopic": subject,
+        "subset_for_metrics": subcategories[subject][0],
+        "examples_type": f"mmlu_few_shot_{subject}",
+        "extra_fields": {
+            "source_repo": DATASET_REPO_ID,
+            "source_revision": DATASET_REVISION,
+        },
+        **get_mcq_fields(entry["question"], entry["choices"]),
+    }
 
 
 def save_data(split):
     data_dir = Path(__file__).absolute().parent
-    data_file = str(data_dir / "data.tar")
     data_dir.mkdir(exist_ok=True)
     output_file = str(data_dir / f"{split}.jsonl")
 
-    urllib.request.urlretrieve(URL, data_file)
-
-    original_data = read_csv_files_from_tar(data_file, split)
-    data = []
-    for subject, questions in original_data.items():
-        for question in questions:
-            new_entry = question
-            new_entry["subtopic"] = subject
-            new_entry.update(
-                get_mcq_fields(new_entry.pop("question"), [new_entry[chr(ord("A") + i)] for i in range(4)])
-            )
-
-            new_entry["subset_for_metrics"] = subcategories[subject][0]
-            new_entry["examples_type"] = f"mmlu_few_shot_{new_entry['subtopic']}"
-            data.append(new_entry)
+    dataset_split = "validation" if split == "val" else split
+    data = load_dataset(
+        DATASET_REPO_ID,
+        "all",
+        split=dataset_split,
+        revision=DATASET_REVISION,
+    )
+    if len(data) != EXPECTED_ROWS[split]:
+        raise ValueError(
+            f"Expected {EXPECTED_ROWS[split]} {split} rows from "
+            f"{DATASET_REPO_ID}@{DATASET_REVISION}, found {len(data)}"
+        )
 
     with open(output_file, "wt", encoding="utf-8") as fout:
-        for entry in data:
-            fout.write(json.dumps(entry) + "\n")
-
-    # cleaning up the data file to avoid accidental upload on clusters
-    os.remove(data_file)
+        fout.writelines(json.dumps(format_entry(entry)) + "\n" for entry in data)
 
 
 if __name__ == "__main__":
