@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import sys
 
 from nemo_skills.dataset import musan
-from nemo_skills.dataset.musan import prepare
+from nemo_skills.dataset.musan import paper, prepare
 
 
 def test_musan_is_regular_four_generation_audio_benchmark():
@@ -54,10 +55,123 @@ def test_musan_prepare_defaults_to_complete_openslr(monkeypatch, tmp_path):
         return tmp_path, source
 
     monkeypatch.setattr(prepare, "load_dataset_from_source", fake_load)
-    monkeypatch.setattr(prepare, "process_category", lambda **kwargs: (0, []))
+
+    def fake_process(*, category, **kwargs):
+        row = prepare.create_manifest_entry(
+            audio_filename=f"musan_{category}_000000.wav",
+            duration=1.0,
+            category=category,
+            sample_id=0,
+            label=f"source-{category}",
+        )
+        return 1, [row]
+
+    monkeypatch.setattr(prepare, "process_category", fake_process)
     monkeypatch.setattr(sys, "argv", ["prepare", "--output-dir", str(tmp_path)])
     prepare.main()
 
     assert observed["source"] == "openslr"
     assert prepare.DEFAULT_SOURCE == "openslr"
     assert prepare.ALL_CATEGORIES == ("noise", "music", "speech")
+
+
+def test_canary_paper_profile_is_one_greedy_generation_and_not_gym():
+    assert paper.NUM_SAMPLES == 1
+    assert paper.METRICS_TYPE == "audio"
+    assert prepare.CANARY_PAPER_CATEGORIES == ("music", "noise")
+    assert prepare.CANARY_PAPER_PROTOCOL == "canary-table6-reconstruction-v1"
+    assert prepare.OPENSLR_MD5 == "0c472d4fc0c5141eca47ad1ffeb2a7df"
+
+
+def test_canary_paper_manifest_excludes_speech_and_records_limit(monkeypatch, tmp_path):
+    def fake_load(source, output_dir):
+        assert source == "openslr"
+        return tmp_path, source
+
+    def fake_process(*, category, **kwargs):
+        row = prepare.create_manifest_entry(
+            audio_filename=f"musan_{category}_000000.wav",
+            duration=60.0,
+            category=category,
+            sample_id=0,
+            label=f"source-{category}",
+        )
+        return 1, [row]
+
+    monkeypatch.setattr(prepare, "load_dataset_from_source", fake_load)
+    monkeypatch.setattr(prepare, "process_category", fake_process)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prepare", "--output-dir", str(tmp_path)],
+    )
+    prepare.main()
+
+    paper_rows = [json.loads(line) for line in (tmp_path / "paper" / "test.jsonl").read_text().splitlines()]
+    assert [row["category"] for row in paper_rows] == ["noise", "music"]
+    assert all(row["category"] != "speech" for row in paper_rows)
+    assert all(row["messages"][0]["content"] == "" for row in paper_rows)
+    assert all(row["messages"][1]["content"] == prepare.CANARY_PAPER_USER_PROMPT for row in paper_rows)
+    assert all(row["protocol_profile"] == prepare.CANARY_PAPER_PROTOCOL for row in paper_rows)
+    assert all(row["protocol_revision"] == "arxiv:2406.19674v1" for row in paper_rows)
+    assert all(row["num_repeated_generations"] == 1 for row in paper_rows)
+    assert all("does not publish" in row["comparability_limit"] for row in paper_rows)
+
+
+def test_musan_prepare_fails_closed_on_partial_category(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        prepare,
+        "load_dataset_from_source",
+        lambda source, output_dir: (tmp_path, source),
+    )
+
+    def fake_process(*, category, **kwargs):
+        if category == "music":
+            raise RuntimeError("corrupt source")
+        return 0, []
+
+    monkeypatch.setattr(prepare, "process_category", fake_process)
+    monkeypatch.setattr(sys, "argv", ["prepare", "--output-dir", str(tmp_path)])
+
+    try:
+        prepare.main()
+    except RuntimeError as error:
+        assert "music: corrupt source" in str(error)
+    else:
+        raise AssertionError("partial MUSAN preparation must fail")
+
+
+def test_musan_prepare_fails_closed_when_source_load_fails(monkeypatch, tmp_path):
+    def fail_load(source, output_dir):
+        raise ValueError("checksum mismatch")
+
+    monkeypatch.setattr(prepare, "load_dataset_from_source", fail_load)
+    monkeypatch.setattr(sys, "argv", ["prepare", "--output-dir", str(tmp_path)])
+
+    try:
+        prepare.main()
+    except RuntimeError as error:
+        assert "Failed to load MUSAN dataset from openslr" in str(error)
+        assert "checksum mismatch" in str(error)
+    else:
+        raise AssertionError("MUSAN source failures must propagate")
+
+
+def test_musan_file_processing_rejects_partial_corpus(monkeypatch, tmp_path):
+    category_dir = tmp_path / "source" / "music" / "album"
+    category_dir.mkdir(parents=True)
+    (category_dir / "broken.wav").write_bytes(b"not audio")
+
+    def fail_read(path):
+        raise RuntimeError("invalid WAV")
+
+    monkeypatch.setattr(prepare.sf, "read", fail_read)
+
+    try:
+        prepare.process_category_from_files(
+            category="music", dataset_path=tmp_path / "source", output_dir=tmp_path / "out"
+        )
+    except RuntimeError as error:
+        assert "Failed to process 1 of 1 music files" in str(error)
+    else:
+        raise AssertionError("partial source processing must fail")

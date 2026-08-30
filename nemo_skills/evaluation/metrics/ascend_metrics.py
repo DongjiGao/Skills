@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Corpus-level official ASCEND MER (primary) and CER (secondary)."""
+"""Corpus-level ASCEND ASR-adapted and literal-upstream MER/CER.
+
+The legacy ``mer`` and ``cer`` result keys retain their historical
+symmetric-normalized meaning. Explicitly named fields distinguish that
+audio-LLM adaptation from the official code's raw-hypothesis behavior.
+"""
 
 from nemo_skills.evaluation.metrics.base import BaseMetrics, as_int, as_percentage
 
@@ -27,6 +32,10 @@ class ASCENDMetrics(BaseMetrics):
         self.mer_ref_units = 0
         self.cer_errors = 0
         self.cer_ref_chars = 0
+        self.upstream_mer_errors = 0
+        self.upstream_mer_ref_units = 0
+        self.upstream_cer_errors = 0
+        self.upstream_cer_ref_chars = 0
 
     def _get_score_dict(self, prediction):
         return {"correct": bool(prediction["is_correct"])}
@@ -46,6 +55,10 @@ class ASCENDMetrics(BaseMetrics):
         self.cer_errors += int(prediction["cer_errors"])
         self.cer_ref_chars += int(prediction["cer_ref_chars"])
         answer = (prediction.get("generation") or "").strip() or None
+        self.upstream_mer_errors += int(prediction["mer_upstream_literal_errors"])
+        self.upstream_mer_ref_units += int(prediction["mer_upstream_literal_ref_units"])
+        self.upstream_cer_errors += int(prediction["cer_upstream_literal_errors"])
+        self.upstream_cer_ref_chars += int(prediction["cer_upstream_literal_ref_chars"])
         self._compute_pass_at_k(predictions, [answer])
         self._compute_majority_at_k(predictions, [answer])
 
@@ -55,10 +68,22 @@ class ASCENDMetrics(BaseMetrics):
             values["success_rate"] = values.pop("correct", 0.0)
             values["mer"] = round(100.0 * self.mer_errors / self.mer_ref_units, 2)
             values["cer"] = round(100.0 * self.cer_errors / self.cer_ref_chars, 2)
+            values["mer_asr_adapted"] = values["mer"]
+            values["cer_asr_adapted"] = values["cer"]
             values["mer_errors"] = self.mer_errors
             values["mer_ref_units"] = self.mer_ref_units
             values["cer_errors"] = self.cer_errors
             values["cer_ref_chars"] = self.cer_ref_chars
+            values["mer_asr_adapted_errors"] = self.mer_errors
+            values["mer_asr_adapted_ref_units"] = self.mer_ref_units
+            values["cer_asr_adapted_errors"] = self.cer_errors
+            values["cer_asr_adapted_ref_chars"] = self.cer_ref_chars
+            values["mer_upstream_literal"] = round(100.0 * self.upstream_mer_errors / self.upstream_mer_ref_units, 2)
+            values["cer_upstream_literal"] = round(100.0 * self.upstream_cer_errors / self.upstream_cer_ref_chars, 2)
+            values["mer_upstream_literal_errors"] = self.upstream_mer_errors
+            values["mer_upstream_literal_ref_units"] = self.upstream_mer_ref_units
+            values["cer_upstream_literal_errors"] = self.upstream_cer_errors
+            values["cer_upstream_literal_ref_chars"] = self.upstream_cer_ref_chars
         return metrics
 
     def evaluations_to_print(self):
@@ -66,12 +91,18 @@ class ASCENDMetrics(BaseMetrics):
 
     def metrics_to_print(self):
         return {
-            "mer": as_percentage,
-            "cer": as_percentage,
+            "mer_asr_adapted": as_percentage,
+            "cer_asr_adapted": as_percentage,
+            "mer_upstream_literal": as_percentage,
+            "cer_upstream_literal": as_percentage,
             "success_rate": as_percentage,
-            "mer_errors": as_int,
-            "mer_ref_units": as_int,
-            "cer_errors": as_int,
-            "cer_ref_chars": as_int,
+            "mer_asr_adapted_errors": as_int,
+            "mer_asr_adapted_ref_units": as_int,
+            "cer_asr_adapted_errors": as_int,
+            "cer_asr_adapted_ref_chars": as_int,
+            "mer_upstream_literal_errors": as_int,
+            "mer_upstream_literal_ref_units": as_int,
+            "cer_upstream_literal_errors": as_int,
+            "cer_upstream_literal_ref_chars": as_int,
             "num_entries": as_int,
         }

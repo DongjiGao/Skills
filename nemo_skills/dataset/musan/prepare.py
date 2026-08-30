@@ -27,6 +27,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -40,11 +41,17 @@ import soundfile as sf
 from tqdm import tqdm
 
 OPENSLR_URL = "https://www.openslr.org/resources/17/musan.tar.gz"
+OPENSLR_MD5 = "0c472d4fc0c5141eca47ad1ffeb2a7df"
 NEMO_GYM_PROTOCOL_REVISION = "68cb9969d656d259846c45e7369acfe6529f0e97"
 ALL_CATEGORIES = ("noise", "music", "speech")
 DEFAULT_SOURCE = "openslr"
 SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
 USER_PROMPT = "Transcribe the speech in this audio. If there is no speech, do not output anything."
+CANARY_PAPER_CATEGORIES = ("music", "noise")
+CANARY_PAPER_PROTOCOL = "canary-table6-reconstruction-v1"
+CANARY_PAPER_REVISION = "arxiv:2406.19674v1"
+CANARY_PAPER_SYSTEM_PROMPT = ""
+CANARY_PAPER_USER_PROMPT = "Transcribe the following:"
 EXPECTED_ANSWER = ""
 HALLUCINATION_CHAR_RATE_THRESHOLD = 1500.0
 NUM_REPEATED_GENERATIONS = 4
@@ -78,6 +85,14 @@ def download_from_kaggle(output_dir: Path) -> Path:
         raise Exception(f"Kaggle download failed: {e}")
 
 
+def _md5(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def download_from_openslr(output_dir: Path) -> Path:
     """Download MUSAN dataset from OpenSLR (11 GB)."""
     url = OPENSLR_URL
@@ -100,6 +115,10 @@ def download_from_openslr(output_dir: Path) -> Path:
         print("\nDownload complete")
     else:
         print(f"Using cached archive: {download_path}")
+
+    archive_md5 = _md5(download_path)
+    if archive_md5 != OPENSLR_MD5:
+        raise RuntimeError(f"OpenSLR-17 archive MD5 mismatch: expected {OPENSLR_MD5}, got {archive_md5}")
 
     if not extract_path.exists():
         print(f"Extracting to {extract_path}...")
@@ -175,6 +194,11 @@ def create_manifest_entry(
     category: str,
     sample_id: int,
     label: str,
+    *,
+    system_prompt: str = SYSTEM_PROMPT,
+    user_prompt: str = USER_PROMPT,
+    protocol_revision: str = NEMO_GYM_PROTOCOL_REVISION,
+    num_repeated_generations: int = NUM_REPEATED_GENERATIONS,
 ) -> Dict:
     """Create nemo-skills manifest entry."""
     audio_root = os.getenv("NEMO_SKILLS_AUDIO_ROOT", "/data")
@@ -184,10 +208,10 @@ def create_manifest_entry(
     entry = {
         "audio_path": [audio_rel_path],
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": USER_PROMPT,
+                "content": user_prompt,
                 "audio": audio_metadata,
                 "audios": [audio_metadata],
             },
@@ -200,12 +224,12 @@ def create_manifest_entry(
         "original_label": label,
         "task_type": "Hallucination",
         "audio_duration": duration,
-        "question": USER_PROMPT,
+        "question": user_prompt,
         "source_url": OPENSLR_URL,
-        "protocol_revision": NEMO_GYM_PROTOCOL_REVISION,
+        "protocol_revision": protocol_revision,
         "hallucination_char_rate_threshold": HALLUCINATION_CHAR_RATE_THRESHOLD,
         "hallucination_threshold_operator": ">",
-        "num_repeated_generations": NUM_REPEATED_GENERATIONS,
+        "num_repeated_generations": num_repeated_generations,
     }
 
     return entry
@@ -273,6 +297,9 @@ def process_category_from_files(
             print(f"Error processing {wav_path}: {e}")
             failed += 1
             continue
+
+    if failed:
+        raise RuntimeError(f"Failed to process {failed} of {len(wav_files)} {category} files")
 
     manifest_path = dataset_dir / "test.jsonl"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -393,6 +420,9 @@ def process_category(
             failed += 1
             continue
 
+    if failed:
+        raise RuntimeError(f"Failed to process {failed} of {len(filtered_samples)} {category} samples")
+
     manifest_path = dataset_dir / "test.jsonl"
     with open(manifest_path, "w", encoding="utf-8") as f:
         for entry in manifest_entries:
@@ -445,8 +475,7 @@ def main():
     try:
         dataset, source_type = load_dataset_from_source(args.source, output_dir)
     except Exception as e:
-        print(f"Failed to load dataset: {e}")
-        return
+        raise RuntimeError(f"Failed to load MUSAN dataset from {args.source}: {e}") from e
 
     total_samples = 0
     successful_categories = []
@@ -464,6 +493,8 @@ def main():
                 split=args.split,
                 max_samples=args.max_samples,
             )
+            if num_samples <= 0 or num_samples != len(entries):
+                raise RuntimeError(f"invalid category closure: samples={num_samples}, entries={len(entries)}")
             total_samples += num_samples
             successful_categories.append(category)
             all_entries.extend(entries)
@@ -472,6 +503,10 @@ def main():
             print(f"\nFailed: {category} - {e}\n")
             failed_categories.append((category, str(e)))
 
+    if failed_categories:
+        failed = "; ".join(f"{name}: {error}" for name, error in failed_categories)
+        raise RuntimeError(f"MUSAN preparation was incomplete: {failed}")
+
     if all_entries:
         combined_manifest_path = output_dir / "test.jsonl"
         with open(combined_manifest_path, "w", encoding="utf-8") as f:
@@ -479,6 +514,39 @@ def main():
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         print(f"\nCombined manifest: {combined_manifest_path}")
         print(f"Total samples: {len(all_entries)}")
+
+    requested_categories = set(args.categories)
+    if (
+        args.source == "openslr"
+        and args.max_samples == -1
+        and args.save_audio
+        and set(CANARY_PAPER_CATEGORIES).issubset(requested_categories)
+    ):
+        paper_entries = []
+        for entry in all_entries:
+            if entry["category"] not in CANARY_PAPER_CATEGORIES:
+                continue
+            paper_entry = dict(entry)
+            paper_entry["messages"] = [dict(message) for message in entry["messages"]]
+            paper_entry["messages"][0]["content"] = CANARY_PAPER_SYSTEM_PROMPT
+            paper_entry["messages"][1]["content"] = CANARY_PAPER_USER_PROMPT
+            paper_entry["question"] = CANARY_PAPER_USER_PROMPT
+            paper_entry["subset_for_metrics"] = f"musan_paper_{entry['category']}"
+            paper_entry["protocol_revision"] = CANARY_PAPER_REVISION
+            paper_entry["protocol_profile"] = CANARY_PAPER_PROTOCOL
+            paper_entry["num_repeated_generations"] = 1
+            paper_entry["comparability_limit"] = (
+                "The paper does not publish its exact prompt, decoder, manifest, or character preprocessing."
+            )
+            paper_entries.append(paper_entry)
+        paper_dir = output_dir / "paper"
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        paper_manifest_path = paper_dir / "test.jsonl"
+        with paper_manifest_path.open("w", encoding="utf-8") as f:
+            for entry in paper_entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        print(f"Paper-profile manifest: {paper_manifest_path}")
+        print(f"Paper-profile samples: {len(paper_entries)}")
 
     print("\n" + "=" * 60)
     print("SUMMARY")

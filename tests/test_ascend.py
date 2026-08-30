@@ -50,12 +50,20 @@ def test_ascend_evaluator_and_corpus_metrics_report_mer_then_cer():
     assert evaluated["mer_ref_units"] == 3
     assert evaluated["cer_errors"] == 1
     assert evaluated["cer_ref_chars"] == 7
+    assert evaluated["mer_asr_adapted_errors"] == 1
+    assert evaluated["mer_upstream_literal_errors"] == 1
+    assert evaluated["cer_asr_adapted_errors"] == 1
+    assert evaluated["cer_upstream_literal_errors"] == 1
 
     metrics = ASCENDMetrics(max_k=1)
     metrics.update([{**sample, **evaluated}])
     output = metrics.get_metrics()["pass@1"]
     assert output["mer"] == 33.33
     assert output["cer"] == 14.29
+    assert output["mer_asr_adapted"] == 33.33
+    assert output["cer_asr_adapted"] == 14.29
+    assert output["mer_upstream_literal"] == 33.33
+    assert output["cer_upstream_literal"] == 14.29
 
 
 def test_ascend_empty_reference_after_official_normalization_uses_corpus_counts():
@@ -64,6 +72,8 @@ def test_ascend_empty_reference_after_official_normalization_uses_corpus_counts(
     assert empty_reference["mer"] is None
     assert empty_reference["mer_errors"] == 1
     assert empty_reference["mer_ref_units"] == 0
+    assert empty_reference["mer_upstream_literal_errors"] == 1
+    assert empty_reference["mer_upstream_literal_ref_units"] == 0
     assert empty_reference["cer"] is None
     assert empty_reference["cer_errors"] == 2
     assert empty_reference["cer_ref_chars"] == 0
@@ -75,6 +85,8 @@ def test_ascend_empty_reference_after_official_normalization_uses_corpus_counts(
     output = metrics.get_metrics()["pass@1"]
     assert output["mer"] == 66.67
     assert output["cer"] == 42.86
+    assert output["mer_upstream_literal"] == 66.67
+    assert output["cer_upstream_literal"] == 42.86
 
 
 def test_ascend_manifest_is_plain_transcript_and_pinned():
@@ -101,3 +113,39 @@ def test_ascend_official_brackets_do_not_delete_ascii_letters():
     exact = evaluate_ascend_sample({"expected_answer": "nice time", "generation": "nice time"})
     assert exact["mer_errors"] == 0
     assert exact["cer_errors"] == 0
+
+
+def test_ascend_protocols_diverge_on_unconstrained_case_and_punctuation():
+    evaluated = evaluate_ascend_sample({"expected_answer": "hello", "generation": "HELLO!"})
+    assert evaluated["mer"] == evaluated["mer_asr_adapted"] == 0
+    assert evaluated["cer"] == evaluated["cer_asr_adapted"] == 0
+    assert evaluated["mer_upstream_literal_errors"] == 2
+    assert evaluated["mer_upstream_literal_ref_units"] == 1
+    assert evaluated["cer_upstream_literal_errors"] == 6
+    assert evaluated["cer_upstream_literal_ref_chars"] == 5
+
+    metrics = ASCENDMetrics(max_k=1)
+    metrics.update([evaluated])
+    output = metrics.get_metrics()["pass@1"]
+    assert output["mer"] == output["mer_asr_adapted"] == 0
+    assert output["cer"] == output["cer_asr_adapted"] == 0
+    assert output["mer_upstream_literal"] == 200.0
+    assert output["cer_upstream_literal"] == 120.0
+    assert (output["mer_upstream_literal_errors"], output["mer_upstream_literal_ref_units"]) == (2, 1)
+    assert (output["cer_upstream_literal_errors"], output["cer_upstream_literal_ref_chars"]) == (6, 5)
+
+
+def test_ascend_protocols_match_for_constrained_ctc_style_output():
+    evaluated = evaluate_ascend_sample({"expected_answer": "hello 世界", "generation": "hello 世"})
+    assert evaluated["mer_asr_adapted_errors"] == evaluated["mer_upstream_literal_errors"] == 1
+    assert evaluated["cer_asr_adapted_errors"] == evaluated["cer_upstream_literal_errors"] == 1
+    assert evaluated["mer_asr_adapted_ref_units"] == evaluated["mer_upstream_literal_ref_units"] == 3
+    assert evaluated["cer_asr_adapted_ref_chars"] == evaluated["cer_upstream_literal_ref_chars"] == 7
+
+    printable = ASCENDMetrics(max_k=1).metrics_to_print()
+    assert "mer" not in printable
+    assert "cer" not in printable
+    assert "mer_asr_adapted" in printable
+    assert "cer_asr_adapted" in printable
+    assert "mer_upstream_literal" in printable
+    assert "cer_upstream_literal" in printable

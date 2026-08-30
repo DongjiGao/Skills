@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Protocol-faithful ASCEND MER/CER evaluator."""
+"""ASCEND MER/CER evaluator with explicit cross-architecture protocols.
+
+The official ASCEND code normalizes references before constructing the CTC
+label vocabulary, then tokenizes decoded predictions without another
+normalization pass. CTC predictions are therefore already constrained to the
+normalized alphabet. Free-form audio-LLM generations are not. We retain the
+historical NeMo Skills behavior (symmetric reference/hypothesis normalization)
+as the ASR-adapted score and additionally expose the literal upstream behavior
+that tokenizes the raw hypothesis.
+"""
 
 from __future__ import annotations
 
@@ -170,26 +179,54 @@ def edit_distance(reference: list[str], hypothesis: list[str]) -> int:
 
 
 def evaluate_ascend_sample(data_point: dict[str, Any]) -> dict[str, Any]:
+    """Score one sample under both ASCEND interpretations.
+
+    ``mer``/``cer`` and their count fields remain backward-compatible aliases
+    for the symmetric-normalized ASR-adapted protocol.
+    """
     reference = normalize_ascend(str(data_point["expected_answer"]))
-    generation = (data_point.get("generation") or "").strip()
+    raw_generation = str(data_point.get("generation") or "")
+    generation = raw_generation.strip()
     hypothesis = normalize_ascend(generation)
     reference_mer = mer_tokens(reference)
-    hypothesis_mer = mer_tokens(hypothesis)
     reference_cer = cer_tokens(reference)
-    hypothesis_cer = cer_tokens(hypothesis)
-    mer_errors = edit_distance(reference_mer, hypothesis_mer)
-    cer_errors = edit_distance(reference_cer, hypothesis_cer)
+
+    adapted_mer_errors = edit_distance(reference_mer, mer_tokens(hypothesis))
+    adapted_cer_errors = edit_distance(reference_cer, cer_tokens(hypothesis))
+    upstream_mer_errors = edit_distance(reference_mer, mer_tokens(raw_generation))
+    upstream_cer_errors = edit_distance(reference_cer, cer_tokens(raw_generation))
+    mer_ref_units = len(reference_mer)
+    cer_ref_chars = len(reference_cer)
     return {
         "generation": generation,
         "text": reference,
         "pred_text": hypothesis,
-        "mer": mer_errors / len(reference_mer) if reference_mer else None,
-        "mer_errors": mer_errors,
-        "mer_ref_units": len(reference_mer),
-        "cer": cer_errors / len(reference_cer) if reference_cer else None,
-        "cer_errors": cer_errors,
-        "cer_ref_chars": len(reference_cer),
-        "is_correct": mer_errors == 0,
+        # Backward-compatible aliases: these retain the pre-existing symmetric
+        # normalization used for unconstrained audio-LLM generations.
+        "mer": adapted_mer_errors / mer_ref_units if mer_ref_units else None,
+        "mer_errors": adapted_mer_errors,
+        "mer_ref_units": mer_ref_units,
+        "cer": adapted_cer_errors / cer_ref_chars if cer_ref_chars else None,
+        "cer_errors": adapted_cer_errors,
+        "cer_ref_chars": cer_ref_chars,
+        "is_correct": adapted_mer_errors == 0,
+        # Explicit ASR-adapted names remove ambiguity for new consumers.
+        "mer_asr_adapted": adapted_mer_errors / mer_ref_units if mer_ref_units else None,
+        "mer_asr_adapted_errors": adapted_mer_errors,
+        "mer_asr_adapted_ref_units": mer_ref_units,
+        "cer_asr_adapted": adapted_cer_errors / cer_ref_chars if cer_ref_chars else None,
+        "cer_asr_adapted_errors": adapted_cer_errors,
+        "cer_asr_adapted_ref_chars": cer_ref_chars,
+        "is_correct_asr_adapted": adapted_mer_errors == 0,
+        # Literal official-code behavior: labels were preprocessed, while the
+        # decoded prediction is passed directly to tokenization.
+        "mer_upstream_literal": upstream_mer_errors / mer_ref_units if mer_ref_units else None,
+        "mer_upstream_literal_errors": upstream_mer_errors,
+        "mer_upstream_literal_ref_units": mer_ref_units,
+        "cer_upstream_literal": upstream_cer_errors / cer_ref_chars if cer_ref_chars else None,
+        "cer_upstream_literal_errors": upstream_cer_errors,
+        "cer_upstream_literal_ref_chars": cer_ref_chars,
+        "is_correct_upstream_literal": upstream_mer_errors == 0,
     }
 
 
