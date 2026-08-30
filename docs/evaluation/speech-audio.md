@@ -28,6 +28,42 @@ For the public multilingual leaderboard, use `asr-leaderboard-multilingual`. It 
 - Benchmark is defined in [`nemo_skills/dataset/asr-leaderboard/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/asr-leaderboard/__init__.py)
 - Original datasets are hosted on HuggingFace (downloaded automatically during preparation)
 
+### Multilingual LibriSpeech (MLS)
+
+`mls` is the standalone public MLS ASR benchmark, distinct from the four MLS
+configs embedded in `asr-leaderboard-multilingual`. It evaluates the official
+MLS `test` split for all eight languages in the primary paper's Table 6:
+English (`en`), German (`de`), Dutch (`nl`), French (`fr`), Spanish (`es`),
+Italian (`it`), Portuguese (`pt`), and Polish (`pl`).
+
+The source contract is immutable and fail-closed. Preparation downloads only
+the eight test Parquets, verifies their pinned repository revisions, byte sizes,
+SHA-256 hashes, and exact row counts, and then writes a manifest and a hashed
+`provenance.json` receipt. The seven non-English languages come from Meta's
+streamable [`facebook/multilingual_librispeech`](https://huggingface.co/datasets/facebook/multilingual_librispeech)
+release. English comes from the public [`parler-tts/mls_eng`](https://huggingface.co/datasets/parler-tts/mls_eng)
+streamable mirror of the OpenSLR English archive; this avoids downloading the
+651-GiB full compressed archive merely to extract its test split.
+
+Scoring uses language-aware normalization, preserves diacritics, and does not
+forgive compound-boundary differences. Every language receives its own corpus
+WER. The headline `mls` WER is the unweighted mean of the eight language WERs;
+the sample/word-weighted combined statistic is retained only as the explicitly
+named `wer_corpus`, not used as the headline. The MLS paper does not define a
+SpeechLM chat prompt, so the stored transcription prompt is a disclosed
+generative-ASR adapter rather than part of the paper protocol.
+
+Prepare the complete benchmark:
+
+```bash
+ns prepare_data mls --data_dir=/path/to/data --cluster=<cluster>
+```
+
+The prepared inventory contains 17,702 utterances: `en=3769`, `de=3394`,
+`nl=3075`, `fr=2426`, `es=2385`, `it=1262`, `pt=871`, and `pl=520`.
+The benchmark definition and pins live in
+[`nemo_skills/dataset/mls/`](https://github.com/NVIDIA-NeMo/Skills/tree/main/nemo_skills/dataset/mls).
+
 ### AppTek Call-Center Dialogues
 
 AppTek Call-Center Dialogues is a long-form English ASR benchmark of role-played agent-customer calls across 14 accent groups and 16 service domains. It contains 1,746 split-channel WAV files, totaling 128.6 hours. Many calls run several minutes long (the longest exceeds 20 minutes), so a model's generation budget and long-audio settings often need tuning before evaluation.

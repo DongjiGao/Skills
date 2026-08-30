@@ -144,6 +144,49 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
             metrics.setdefault(language, {})[eval_mode] = language_metrics
 
 
+MLS_LANGUAGE_CODES = ("en", "de", "nl", "fr", "es", "it", "pt", "pl")
+
+
+def _set_mls_language_macro_wer(metrics: dict):
+    """Make the unweighted language macro the MLS headline WER.
+
+    AudioMetrics naturally computes a corpus/micro WER for ``_all_``.  MLS has
+    strongly unequal language-set sizes, so that number must not masquerade as
+    the benchmark headline.  Preserve it under the explicit ``wer_corpus``
+    name, preserve the per-utterance mean separately, and expose the mean of
+    the eight per-language corpus WERs as both ``wer`` and ``wer_macro`` for
+    generic reporting compatibility.
+    """
+    if "_all_" not in metrics:
+        return
+
+    observed_languages = {name for name in metrics if name != "_all_"}
+    expected_languages = set(MLS_LANGUAGE_CODES)
+    if observed_languages != expected_languages:
+        raise ValueError(
+            "MLS language-macro WER requires the complete official eight-language test set: "
+            f"expected={sorted(expected_languages)}, observed={sorted(observed_languages)}"
+        )
+
+    for eval_mode, overall_metrics in metrics["_all_"].items():
+        language_wers = []
+        for language in MLS_LANGUAGE_CODES:
+            language_metrics = metrics[language].get(eval_mode)
+            if language_metrics is None or language_metrics.get("wer") is None:
+                raise ValueError(f"MLS {language} is missing corpus WER for evaluation mode {eval_mode!r}")
+            language_wers.append(language_metrics["wer"])
+
+        language_macro = round(sum(language_wers) / len(language_wers), 2)
+        if "wer" in overall_metrics:
+            overall_metrics["wer_corpus"] = overall_metrics["wer"]
+        if "wer_macro" in overall_metrics:
+            overall_metrics["wer_utterance_macro"] = overall_metrics["wer_macro"]
+        overall_metrics["wer_language_macro"] = language_macro
+        overall_metrics["wer_macro"] = language_macro
+        overall_metrics["wer"] = language_macro
+        overall_metrics["languages_scored"] = len(language_wers)
+
+
 def add_benchmark_groups(results, metrics_to_print, evaluations_to_print):
     # Average results for benchmarks with dot notation (e.g., ruler.niah_single_1, ruler.niah_single_2)
     benchmark_groups = defaultdict(list)
@@ -472,6 +515,8 @@ def summarize_results(
             _set_asr_leaderboard_macro_wer(metrics)
         if benchmark == "asr-leaderboard-multilingual" and len(metrics) > 1:
             _set_asr_leaderboard_multilingual_macro_wer(metrics)
+        if benchmark == "mls" and len(metrics) > 1:
+            _set_mls_language_macro_wer(metrics)
         if len(metrics) > 1:  # has subsets
             for subset, subset_metrics in metrics.items():
                 results[get_subset_name(benchmark, subset)].update(subset_metrics)
