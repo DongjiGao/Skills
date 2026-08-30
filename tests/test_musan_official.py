@@ -75,6 +75,15 @@ def test_musan_prepare_defaults_to_complete_openslr(monkeypatch, tmp_path):
     assert prepare.ALL_CATEGORIES == ("noise", "music", "speech")
 
 
+def test_musan_official_inventory_counts_are_pinned():
+    assert prepare.OFFICIAL_CATEGORY_FILE_COUNTS == {
+        "noise": 930,
+        "music": 660,
+        "speech": 426,
+    }
+    assert prepare.OFFICIAL_TOTAL_FILES == 2016
+
+
 def test_canary_paper_profile_is_one_greedy_generation_and_not_gym():
     assert paper.NUM_SAMPLES == 1
     assert paper.METRICS_TYPE == "audio"
@@ -175,3 +184,48 @@ def test_musan_file_processing_rejects_partial_corpus(monkeypatch, tmp_path):
         assert "Failed to process 1 of 1 music files" in str(error)
     else:
         raise AssertionError("partial source processing must fail")
+
+
+def test_musan_file_processing_rejects_official_inventory_drift(tmp_path):
+    category_dir = tmp_path / "source" / "music" / "album"
+    category_dir.mkdir(parents=True)
+    (category_dir / "only-one.wav").write_bytes(b"not read when inventory is wrong")
+
+    try:
+        prepare.process_category_from_files(
+            category="music",
+            dataset_path=tmp_path / "source",
+            output_dir=tmp_path / "out",
+            expected_count=prepare.OFFICIAL_CATEGORY_FILE_COUNTS["music"],
+        )
+    except RuntimeError as error:
+        assert "Official OpenSLR-17 music inventory drift" in str(error)
+        assert "expected 660 WAV files, got 1" in str(error)
+    else:
+        raise AssertionError("official inventory drift must fail")
+
+
+def test_musan_openslr_processing_forwards_official_inventory(monkeypatch, tmp_path):
+    observed = {}
+
+    def fake_process_category_from_files(**kwargs):
+        observed.update(kwargs)
+        return 1, [{}]
+
+    monkeypatch.setattr(prepare, "process_category_from_files", fake_process_category_from_files)
+    prepare.process_category(
+        category="noise",
+        output_dir=tmp_path / "out",
+        dataset=tmp_path / "source",
+        source_type="openslr",
+    )
+    assert observed["expected_count"] == 930
+
+    prepare.process_category(
+        category="noise",
+        output_dir=tmp_path / "out",
+        dataset=tmp_path / "source",
+        source_type="openslr",
+        max_samples=1,
+    )
+    assert observed["expected_count"] is None

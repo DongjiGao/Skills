@@ -45,6 +45,16 @@ OPENSLR_MD5 = "0c472d4fc0c5141eca47ad1ffeb2a7df"
 NEMO_GYM_PROTOCOL_REVISION = "68cb9969d656d259846c45e7369acfe6529f0e97"
 ALL_CATEGORIES = ("noise", "music", "speech")
 DEFAULT_SOURCE = "openslr"
+# The complete MD5-pinned OpenSLR-17 archive contains exactly these WAV
+# inventories. Rejecting cardinality drift prevents a truncated extraction or
+# changed mirror from being reported as the full Gym/Canary reconstruction.
+OFFICIAL_CATEGORY_FILE_COUNTS = {
+    "noise": 930,
+    "music": 660,
+    "speech": 426,
+}
+OFFICIAL_TOTAL_FILES = sum(OFFICIAL_CATEGORY_FILE_COUNTS.values())
+
 SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
 USER_PROMPT = "Transcribe the speech in this audio. If there is no speech, do not output anything."
 CANARY_PAPER_CATEGORIES = ("music", "noise")
@@ -242,6 +252,7 @@ def process_category_from_files(
     save_audio: bool = True,
     split: str = "train",
     max_samples: int = -1,
+    expected_count: int | None = None,
 ) -> tuple[int, List[Dict]]:
     """Process MUSAN category from WAV files (Kaggle/OpenSLR format)."""
     category_path = dataset_path / category
@@ -250,6 +261,11 @@ def process_category_from_files(
 
     wav_files = sorted(list(category_path.glob("**/*.wav")))
     print(f"Found {len(wav_files)} WAV files")
+    if expected_count is not None and len(wav_files) != expected_count:
+        raise RuntimeError(
+            f"Official OpenSLR-17 {category} inventory drift: "
+            f"expected {expected_count} WAV files, got {len(wav_files)}"
+        )
 
     if len(wav_files) == 0:
         return 0, []
@@ -335,6 +351,9 @@ def process_category(
             save_audio=save_audio,
             split=split,
             max_samples=max_samples,
+            expected_count=(
+                OFFICIAL_CATEGORY_FILE_COUNTS[category] if source_type == "openslr" and max_samples == -1 else None
+            ),
         )
 
     elif source_type != "huggingface":
