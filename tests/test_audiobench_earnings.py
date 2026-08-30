@@ -51,13 +51,36 @@ def test_earnings_leaf_preserves_audio_only_prompt_and_provenance():
         entry["source_provenance"]["dataset_revision"]
         == prepare.EARNINGS_LONGFORM_DATASETS["earnings21_test"]["revision"]
     )
-    assert entry["source_provenance"]["normalization"] == "audiobench"
+    assert entry["source_provenance"]["normalization"] == "audiobench_earnings"
     assert entry["source_provenance"]["prompt_seed"] == 42
     leaf = prepare.make_earnings_manifest_entry(entry)
     expected_path = "../nonjudge/audio/earnings21_test/earnings21_test_000000.wav"
     assert leaf["audio_path"] == [expected_path]
     assert leaf["messages"][1]["audio"]["path"] == expected_path
     assert leaf["messages"][1]["audios"][0]["path"] == expected_path
+
+
+@pytest.mark.parametrize("dataset_name", ["earnings21_test", "earnings22_test"])
+def test_earnings_source_shaped_rows_without_task_type_are_asr(dataset_name):
+    # Exact pinned HF schema: context, instruction, answer. It has no task_type.
+    source_row = {
+        "context": {"bytes": b"RIFF", "path": "recording.wav"},
+        "instruction": "Transcribe the audio into text.",
+        "answer": "Revenue increased by twenty percent.",
+    }
+    assert "task_type" not in source_row
+
+    entry = prepare.create_manifest_entry(
+        sample=source_row,
+        audio_filename=f"{dataset_name}_000000.wav",
+        duration=3600.0,
+        dataset_name=dataset_name,
+        sample_id=0,
+        category="nonjudge",
+    )
+
+    assert entry["task_type"] == "ASR"
+    assert entry["expected_answer"] == source_row["answer"]
 
 
 def test_earnings_group_and_leaf_configs_match_audiobench_protocol():
@@ -69,7 +92,7 @@ def test_earnings_group_and_leaf_configs_match_audiobench_protocol():
     for name in group.BENCHMARKS:
         module = importlib.import_module(f"nemo_skills.dataset.{name}")
         assert module.METRICS_TYPE == "audio"
-        assert "normalization_mode=audiobench" in module.EVAL_ARGS
+        assert "normalization_mode=audiobench_earnings" in module.EVAL_ARGS
         assert module.EVAL_SPLIT == "test"
 
 
@@ -80,5 +103,6 @@ def test_earnings_provenance_discloses_protocol_boundary(tmp_path):
     assert provenance["leaves"] == prepare.EARNINGS_LONGFORM_DATASETS
     assert provenance["prompt_list"] == list(prepare.AUDIOBENCH_ASR_INSTRUCTIONS)
     assert provenance["prompt_seed"] == 42
+    assert provenance["normalization"] == "audiobench_earnings"
     assert "Earnings-21 and Earnings-22" in provenance["comparability_note"]
     assert "FSTAlign" in provenance["comparability_note"]

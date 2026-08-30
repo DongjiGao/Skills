@@ -504,6 +504,7 @@ def _remove_non_speech_elements(text: str) -> str:
 VALID_NORMALIZATION_MODES = (
     "standard",
     "audiobench",
+    "audiobench_earnings",
     "hf_leaderboard",
     "none",
     "no_tn_itn",
@@ -707,18 +708,35 @@ def _get_open_asr_english_normalizer():
 
 
 @lru_cache(maxsize=1)
-def _get_audiobench_english_normalizer():
+def _get_audiobench_earnings_english_normalizer():
     """Reproduce AudioBench 85dcdb8's vendored Whisper normalizer exactly.
 
     whisper-normalizer 0.1.12 added four slang expansions after the Whisper
-    snapshot vendored by AudioBench. All other executable English normalizer
-    code and the spelling map are identical, so remove only those additions.
+    snapshot vendored by AudioBench. Its remaining executable normalizer code
+    and spelling map are identical to that snapshot, so remove only those
+    additions. requirements/audio.txt pins 0.1.12.
+
+    This compatibility normalizer is intentionally used only by the standalone
+    Earnings-21/22 leaves. Existing AudioBench judge/nonjudge tasks retain their
+    historical ``audiobench`` behavior.
     """
     from whisper_normalizer.english import EnglishTextNormalizer
 
     normalizer = EnglishTextNormalizer()
-    for pattern in (r"\bkinda\b", r"\bsorta\b", r"\bdunno\b", r"\bcause\b"):
-        normalizer.replacers.pop(pattern, None)
+    post_snapshot_replacers = {
+        r"\bkinda\b": "kind of",
+        r"\bsorta\b": "sort of",
+        r"\bdunno\b": "do not know",
+        r"\bcause\b": "because",
+    }
+    for pattern, expected_replacement in post_snapshot_replacers.items():
+        actual_replacement = normalizer.replacers.get(pattern)
+        if actual_replacement != expected_replacement:
+            raise RuntimeError(
+                "whisper-normalizer no longer matches the pinned 0.1.12 compatibility contract: "
+                f"expected replacer {pattern!r} -> {expected_replacement!r}, found {actual_replacement!r}"
+            )
+        del normalizer.replacers[pattern]
     return normalizer
 
 
@@ -729,7 +747,8 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         text: Raw text.
         mode: Normalization mode:
             - "standard": Whisper normalization (default) - converts number words to digits
-            - "audiobench": Full AudioBench normalization (whisper + digits to words + more)
+            - "audiobench": Historical AudioBench normalization (whisper + digits to words + more)
+            - "audiobench_earnings": Exact AudioBench 85dcdb8 Earnings-21/22 normalization
             - "hf_leaderboard": HuggingFace leaderboard style (whisper normalization)
             - "none": No normalization (whitespace only)
             - "no_tn_itn": Lowercase + remove punctuation, no number word conversion (for TN/ITN eval)
@@ -778,12 +797,17 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         text = _get_open_asr_english_normalizer()(text)
         return normalize_whitespace(text)
 
-    # "audiobench" uses additional (audiobench-specific) normalization
-    if mode == "audiobench":
+    # AudioBench uses additional benchmark-specific normalization. The
+    # Earnings-only mode removes four slang rules added after upstream's pinned
+    # Whisper snapshot; the historical broad mode remains unchanged.
+    if mode in {"audiobench", "audiobench_earnings"}:
         import jiwer
 
         text = text.lower()
-        text = _get_audiobench_english_normalizer()(text)
+        if mode == "audiobench_earnings":
+            text = _get_audiobench_earnings_english_normalizer()(text)
+        else:
+            text = EnglishTextNormalizer()(text)
         text = _normalize_digits_to_words(text)
         text = _expand_contractions(text)
         text = re.sub(r"(\[|\(|\{|\<)[^\(\)\\n\[\]]*(\]|\)|\}|\>)", "", text)
@@ -888,8 +912,8 @@ def evaluate_asr(
     Args:
         reference: Ground truth transcription.
         hypothesis: Model output transcription.
-        normalization_mode: "standard", "audiobench", "hf_leaderboard", "none", "no_tn_itn", or
-            "apptek_callcenter".
+        normalization_mode: "standard", "audiobench", "audiobench_earnings", "hf_leaderboard",
+            "none", "no_tn_itn", or "apptek_callcenter".
         normalize_compound: Whether to normalize compound pairs.
         **kwargs: Additional keyword arguments.
     """

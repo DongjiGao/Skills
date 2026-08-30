@@ -341,7 +341,7 @@ def create_manifest_entry(
             "split": "test",
             "paper": earnings_spec["paper"],
             "metric": "wer",
-            "normalization": "audiobench",
+            "normalization": "audiobench_earnings",
             "prompt_contract": "official_prompt_list_deterministic_seed",
             "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
         }
@@ -458,7 +458,7 @@ def write_earnings_provenance(output_dir: Path) -> None:
         "benchmark": "AudioBench",
         "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
         "metric": "wer",
-        "normalization": "audiobench",
+        "normalization": "audiobench_earnings",
         "prompt_contract": "official_prompt_list_deterministic_seed",
         "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
         "prompt_list": AUDIOBENCH_ASR_INSTRUCTIONS,

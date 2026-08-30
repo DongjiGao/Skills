@@ -25,6 +25,12 @@ from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorCo
 from nemo_skills.utils import nested_dataclass
 
 OFFICIAL_SCORER_REVISION = "8c50c2e2c65f8555eb1d7655310dd585dc1f6710"
+JIEBA_VERSION = "0.42.1"
+
+if getattr(jieba, "__version__", None) != JIEBA_VERSION:
+    raise RuntimeError(
+        f"ASCEND scoring requires jieba=={JIEBA_VERSION}; found {getattr(jieba, '__version__', None)!r}"
+    )
 
 
 # Copied from the official ASCEND utils.py scorer. Upstream uses a character
@@ -98,8 +104,8 @@ CHARS_TO_IGNORE = [
     "）",
     "［",
     "］",
-    "cite",
-    " ",
+    "【",
+    "】",
     "‥",
     "〽",
     "『",

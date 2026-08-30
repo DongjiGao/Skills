@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -29,7 +30,40 @@ HF_REPO_ID = "CAiRE/ASCEND"
 HF_REVISION = "737e9800ae31be9932ba8464c80366559bd28424"
 OFFICIAL_SPLIT = "test"
 OFFICIAL_TEST_SIZE = 1315
+OFFICIAL_TEST_PARQUET = "main/test-00000-of-00001.parquet"
+OFFICIAL_TEST_PARQUET_SHA256 = "a4c81d2b5ed6124f052089a695972808c16e0ce0c365ec9773c5d1a8fcf043a7"
+OFFICIAL_TEST_PARQUET_BYTES = 105756434
 PROMPT = "Transcribe the following audio."
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_source_snapshot() -> None:
+    """Download and authenticate the exact official test parquet."""
+    from huggingface_hub import hf_hub_download
+
+    parquet = Path(
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            repo_type="dataset",
+            revision=HF_REVISION,
+            filename=OFFICIAL_TEST_PARQUET,
+        )
+    )
+    size = parquet.stat().st_size
+    if size != OFFICIAL_TEST_PARQUET_BYTES:
+        raise ValueError(f"ASCEND test parquet size mismatch: expected {OFFICIAL_TEST_PARQUET_BYTES}, found {size}")
+    checksum = _sha256(parquet)
+    if checksum != OFFICIAL_TEST_PARQUET_SHA256:
+        raise ValueError(
+            f"ASCEND test parquet SHA-256 mismatch: expected {OFFICIAL_TEST_PARQUET_SHA256}, found {checksum}"
+        )
 
 
 def _container_audio_path(sample_id: str) -> str:
@@ -76,6 +110,8 @@ def _format_entry(row: dict, index: int) -> dict:
             "source_repo": HF_REPO_ID,
             "source_revision": HF_REVISION,
             "source_split": OFFICIAL_SPLIT,
+            "source_parquet": OFFICIAL_TEST_PARQUET,
+            "source_parquet_sha256": OFFICIAL_TEST_PARQUET_SHA256,
         },
     }
 
@@ -87,6 +123,8 @@ def prepare_ascend(data_dir: Path, no_audio: bool = False, max_samples: int | No
     checked against the official 1,315-row test-set cardinality.
     """
     from datasets import Audio, load_dataset
+
+    _validate_source_snapshot()
 
     dataset = load_dataset(HF_REPO_ID, split=OFFICIAL_SPLIT, revision=HF_REVISION)
     if max_samples is None and len(dataset) != OFFICIAL_TEST_SIZE:
