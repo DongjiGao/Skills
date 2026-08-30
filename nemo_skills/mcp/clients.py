@@ -21,7 +21,13 @@ from typing import Any, Callable, Dict, List
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+
+try:
+    # MCP 2.0 renamed the transport and changed its context result from three
+    # streams to two. Call sites below intentionally consume only the first two.
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+except ImportError:  # MCP <2.0
+    from mcp.client.streamable_http import streamablehttp_client
 
 from nemo_skills.utils import get_logger_name
 
@@ -380,7 +386,8 @@ class MCPStreamableHttpClient(MCPClient):
         self.tools: List[Dict[str, Any]] = []
 
     async def list_tools(self):
-        async with streamablehttp_client(self.base_url) as (read_stream, write_stream, _):
+        async with streamablehttp_client(self.base_url) as streams:
+            read_stream, write_stream = streams[:2]
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 tools_resp = await session.list_tools()
@@ -403,7 +410,8 @@ class MCPStreamableHttpClient(MCPClient):
 
     async def call_tool(self, tool: str, args: dict) -> Any:
         self._assert_tool_allowed(tool)
-        async with streamablehttp_client(self.base_url) as (read_stream, write_stream, _):
+        async with streamablehttp_client(self.base_url) as streams:
+            read_stream, write_stream = streams[:2]
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 result = await session.call_tool(tool, arguments=args)
