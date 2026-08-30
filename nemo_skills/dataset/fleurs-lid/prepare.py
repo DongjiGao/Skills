@@ -12,35 +12,228 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prepare the official merged FLEURS-LID test set (all 102 locales)."""
+"""Prepare the pinned merged FLEURS-LID test set (all 102 locales)."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import soundfile as sf
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
 from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES, LANGUAGE_SETS, get_lang_group, get_lang_name
-from nemo_skills.dataset.fleurs.prepare import parse_tsv
 
 HF_REPO_ID = "google/fleurs"
 HF_REVISION = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
 OFFICIAL_SPLIT = "test"
 CANONICAL_LABELS = LANGUAGE_SETS["all"]
+EXPECTED_TOTAL_ROWS = 77810
+EXPECTED_LOCALE_COUNTS = {
+    "af_za": 264,
+    "am_et": 516,
+    "ar_eg": 428,
+    "as_in": 984,
+    "ast_es": 946,
+    "az_az": 923,
+    "be_by": 967,
+    "bg_bg": 658,
+    "bn_in": 920,
+    "bs_ba": 925,
+    "ca_es": 940,
+    "ceb_ph": 541,
+    "ckb_iq": 922,
+    "cmn_hans_cn": 945,
+    "cs_cz": 723,
+    "cy_gb": 1021,
+    "da_dk": 930,
+    "de_de": 862,
+    "el_gr": 650,
+    "en_us": 647,
+    "es_419": 908,
+    "et_ee": 893,
+    "fa_ir": 871,
+    "ff_sn": 660,
+    "fi_fi": 918,
+    "fil_ph": 964,
+    "fr_fr": 676,
+    "ga_ie": 842,
+    "gl_es": 927,
+    "gu_in": 1000,
+    "ha_ng": 621,
+    "he_il": 792,
+    "hi_in": 418,
+    "hr_hr": 914,
+    "hu_hu": 905,
+    "hy_am": 932,
+    "id_id": 687,
+    "ig_ng": 969,
+    "is_is": 46,
+    "it_it": 865,
+    "ja_jp": 650,
+    "jv_id": 728,
+    "ka_ge": 979,
+    "kam_ke": 827,
+    "kea_cv": 864,
+    "kk_kz": 856,
+    "km_kh": 771,
+    "kn_in": 838,
+    "ko_kr": 382,
+    "ky_kg": 977,
+    "lb_lu": 934,
+    "lg_ug": 723,
+    "ln_cd": 478,
+    "lo_la": 405,
+    "lt_lt": 986,
+    "luo_ke": 256,
+    "lv_lv": 851,
+    "mi_nz": 1008,
+    "mk_mk": 973,
+    "ml_in": 958,
+    "mn_mn": 949,
+    "mr_in": 1015,
+    "ms_my": 749,
+    "mt_mt": 926,
+    "my_mm": 880,
+    "nb_no": 357,
+    "ne_np": 726,
+    "nl_nl": 364,
+    "nso_za": 790,
+    "ny_mw": 761,
+    "oc_fr": 998,
+    "om_et": 41,
+    "or_in": 883,
+    "pa_in": 574,
+    "pl_pl": 758,
+    "ps_af": 512,
+    "pt_br": 919,
+    "ro_ro": 883,
+    "ru_ru": 775,
+    "sd_in": 980,
+    "sk_sk": 792,
+    "sl_si": 834,
+    "sn_zw": 925,
+    "so_so": 1019,
+    "sr_rs": 700,
+    "sv_se": 759,
+    "sw_ke": 487,
+    "ta_in": 591,
+    "te_in": 472,
+    "tg_tj": 600,
+    "th_th": 1021,
+    "tr_tr": 743,
+    "uk_ua": 750,
+    "umb_ao": 379,
+    "ur_pk": 299,
+    "uz_uz": 862,
+    "vi_vn": 857,
+    "wo_sn": 371,
+    "xh_za": 1041,
+    "yo_ng": 831,
+    "yue_hant_hk": 819,
+    "zu_za": 854,
+}
+# SHA-256 of canonical JSON {locale: sorted(test TSV wav_filename values)} at
+# HF_REVISION. This authenticates the exact 102-locale merged test inventory,
+# not merely its aggregate row count.
+EXPECTED_WAV_INVENTORY_SHA256 = "58ed6f8d74f07dc401a4844b24587576a2aced7fd00fbf741fe89eb278e8d27d"
+EXPECTED_SAMPLE_RATE = 16000
+EXPECTED_CHANNELS = 1
+PROVENANCE_FILENAME = "provenance.json"
 PROMPT = (
     "Identify the language spoken in this audio. Respond with exactly one of the following locale labels and "
     "nothing else: " + ", ".join(CANONICAL_LABELS) + "."
 )
 
 
-def _load_locale(locale: str, cache_dir: Path) -> list[dict]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _inventory_sha256(inventory: dict[str, list[str] | set[str]]) -> str:
+    canonical = {locale: sorted(filenames) for locale, filenames in inventory.items()}
+    payload = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _parse_tsv_strict(tsv_path: Path, locale: str) -> list[dict]:
+    """Parse one pinned TSV without silently overwriting duplicate WAVs."""
+    rows = []
+    seen_wavs: set[str] = set()
+    with tsv_path.open(encoding="utf-8") as source:
+        for line_number, line in enumerate(source, start=1):
+            line = line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            fields = line.split("\t")
+            if len(fields) != 7:
+                raise ValueError(f"FLEURS-LID {locale} TSV row {line_number} has {len(fields)} fields; expected 7")
+            row_id, wav_filename, raw_transcription, transcription, _phonemes, _samples, _gender = fields
+            if (
+                not wav_filename
+                or PurePosixPath(wav_filename).name != wav_filename
+                or not wav_filename.endswith(".wav")
+            ):
+                raise ValueError(f"FLEURS-LID {locale} TSV row {line_number} has unsafe WAV filename {wav_filename!r}")
+            if wav_filename in seen_wavs:
+                raise ValueError(f"FLEURS-LID {locale} TSV has duplicate WAV filename {wav_filename!r}")
+            seen_wavs.add(wav_filename)
+            try:
+                parsed_row_id = int(row_id)
+            except ValueError as error:
+                raise ValueError(
+                    f"FLEURS-LID {locale} TSV row {line_number} has non-integer source id {row_id!r}"
+                ) from error
+            rows.append(
+                {
+                    "id": parsed_row_id,
+                    "raw_transcription": raw_transcription,
+                    "transcription": transcription,
+                    "wav_filename": wav_filename,
+                }
+            )
+    return rows
+
+
+def _read_source_audio(archive: tarfile.TarFile, member: tarfile.TarInfo, locale: str, filename: str):
+    fileobj = archive.extractfile(member)
+    if fileobj is None:
+        raise ValueError(f"FLEURS-LID {locale} tar member {member.name!r} is unreadable")
+    payload = fileobj.read()
+    try:
+        with sf.SoundFile(io.BytesIO(payload)) as stream:
+            sampling_rate = int(stream.samplerate)
+            channels = int(stream.channels)
+            frames = int(stream.frames)
+            samples = stream.read(dtype="float32", always_2d=False)
+    except Exception as error:
+        raise ValueError(f"FLEURS-LID {locale} source audio {filename!r} has an unreadable header") from error
+    if sampling_rate != EXPECTED_SAMPLE_RATE or channels != EXPECTED_CHANNELS or frames <= 0:
+        raise ValueError(
+            f"FLEURS-LID {locale} source audio {filename!r} must be nonempty "
+            f"{EXPECTED_SAMPLE_RATE}-Hz mono; got rate={sampling_rate}, channels={channels}, frames={frames}"
+        )
+    if getattr(samples, "ndim", None) != 1 or len(samples) != frames:
+        raise ValueError(f"FLEURS-LID {locale} source audio {filename!r} decoded inconsistently")
+    return samples, sampling_rate
+
+
+def _load_locale(locale: str, cache_dir: Path) -> tuple[list[dict], dict]:
     tsv_path = hf_hub_download(
         repo_id=HF_REPO_ID,
         filename=f"data/{locale}/{OFFICIAL_SPLIT}.tsv",
@@ -55,21 +248,47 @@ def _load_locale(locale: str, cache_dir: Path) -> list[dict]:
         revision=HF_REVISION,
         local_dir=cache_dir,
     )
-    metadata = parse_tsv(tsv_path)
-    rows = []
+    tsv_path = Path(tsv_path)
+    tar_path = Path(tar_path)
+    metadata = _parse_tsv_strict(tsv_path, locale)
+    expected_count = EXPECTED_LOCALE_COUNTS.get(locale)
+    if expected_count is None:
+        raise ValueError(f"FLEURS-LID has no pinned inventory contract for locale {locale!r}")
+    if len(metadata) != expected_count:
+        raise ValueError(f"FLEURS-LID {locale} TSV row-count drift: expected {expected_count}, got {len(metadata)}")
+
+    metadata_wavs = {row["wav_filename"] for row in metadata}
+    rows: list[dict] = []
     with tarfile.open(tar_path, "r:gz") as archive:
+        members: dict[str, tarfile.TarInfo] = {}
         for member in archive:
             if not member.isfile():
                 continue
-            filename = Path(member.name).name
-            if filename not in metadata:
-                continue
-            fileobj = archive.extractfile(member)
-            if fileobj is None:
-                continue
-            samples, sampling_rate = sf.read(io.BytesIO(fileobj.read()), dtype="float32")
-            rows.append({**metadata[filename], "samples": samples, "sampling_rate": int(sampling_rate)})
-    return rows
+            filename = PurePosixPath(member.name).name
+            if filename in members:
+                raise ValueError(f"FLEURS-LID {locale} tar has duplicate WAV basename {filename!r}")
+            members[filename] = member
+        tar_wavs = set(members)
+        if tar_wavs != metadata_wavs:
+            missing = sorted(metadata_wavs - tar_wavs)
+            unexpected = sorted(tar_wavs - metadata_wavs)
+            raise ValueError(
+                f"FLEURS-LID {locale} TSV/tar inventory mismatch: missing={missing[:10]}, unexpected={unexpected[:10]}"
+            )
+        for row in metadata:
+            filename = row["wav_filename"]
+            samples, sampling_rate = _read_source_audio(archive, members[filename], locale, filename)
+            rows.append({**row, "samples": samples, "sampling_rate": sampling_rate})
+
+    artifact = {
+        "rows": len(rows),
+        "tsv_sha256": _sha256_file(tsv_path),
+        "audio_tar_sha256": _sha256_file(tar_path),
+        "wav_inventory_sha256": hashlib.sha256(
+            json.dumps(sorted(metadata_wavs), separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+    return rows, artifact
 
 
 def _container_audio_path(locale: str, filename: str) -> str:
@@ -82,7 +301,9 @@ def _build_record(locale: str, row: dict) -> dict:
     duration = len(row["samples"]) / row["sampling_rate"]
     audio = {"path": audio_path, "duration": duration}
     return {
-        "id": f"{locale}-{row['id']}",
+        # Source sentence ids intentionally repeat across speakers. Locale+WAV
+        # is the unique public test-example identity.
+        "id": f"{locale}:{row['wav_filename']}",
         "expected_answer": locale,
         "audio_path": audio_path,
         "duration": duration,
@@ -93,6 +314,9 @@ def _build_record(locale: str, row: dict) -> dict:
             "locale": locale,
             "locale_name": get_lang_name(locale),
             "lang_group": get_lang_group(locale),
+            "source_id": row["id"],
+            "source_wav_filename": row["wav_filename"],
+            "source_wav_inventory_sha256": EXPECTED_WAV_INVENTORY_SHA256,
             "source_repo": HF_REPO_ID,
             "source_revision": HF_REVISION,
             "source_split": OFFICIAL_SPLIT,
@@ -100,37 +324,161 @@ def _build_record(locale: str, row: dict) -> dict:
     }
 
 
-def prepare_fleurs_lid(data_dir: Path, no_audio: bool = False) -> Path:
-    if len(CANONICAL_LABELS) != 102 or set(CANONICAL_LABELS) != set(FLEURS_LANGUAGES):
+def _validate_materialized_audio(path: Path, locale: str, filename: str) -> None:
+    if not path.is_file():
+        raise ValueError(f"FLEURS-LID --no-audio requires existing audio file for {locale}/{filename}: {path}")
+    try:
+        info = sf.info(str(path))
+    except Exception as error:
+        raise ValueError(f"FLEURS-LID materialized audio has an unreadable header: {path}") from error
+    if (
+        int(info.samplerate) != EXPECTED_SAMPLE_RATE
+        or int(info.channels) != EXPECTED_CHANNELS
+        or int(info.frames) <= 0
+    ):
+        raise ValueError(
+            f"FLEURS-LID materialized audio must be nonempty {EXPECTED_SAMPLE_RATE}-Hz mono: "
+            f"{path} (rate={info.samplerate}, channels={info.channels}, frames={info.frames})"
+        )
+
+
+def _write_audio_atomic(path: Path, samples, sampling_rate: int, locale: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp.wav")
+    try:
+        sf.write(str(temporary), samples, sampling_rate, format="WAV")
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    _validate_materialized_audio(path, locale, path.name)
+
+
+def _write_json_atomic(path: Path, value: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as output:
+            json.dump(value, output, ensure_ascii=False, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_static_contract() -> None:
+    labels = set(CANONICAL_LABELS)
+    if labels != set(FLEURS_LANGUAGES):
         raise ValueError("FLEURS-LID requires the exact 102 canonical FLEURS locales")
+    if labels != set(EXPECTED_LOCALE_COUNTS):
+        raise ValueError("FLEURS-LID pinned locale-count contract does not match the canonical labels")
+    if sum(EXPECTED_LOCALE_COUNTS.values()) != EXPECTED_TOTAL_ROWS:
+        raise ValueError("FLEURS-LID pinned locale counts do not sum to the expected total")
+
+
+def prepare_fleurs_lid(data_dir: Path, no_audio: bool = False) -> Path:
+    _validate_static_contract()
 
     data_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = data_dir / "hf-fleurs"
     cache_dir.mkdir(parents=True, exist_ok=True)
     output_path = data_dir / "test.jsonl"
+    provenance_path = data_dir / PROVENANCE_FILENAME
+    temporary_output = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
     locale_counts: dict[str, int] = {}
-    with open(output_path, "w", encoding="utf-8") as output:
-        for locale in tqdm(CANONICAL_LABELS, desc="FLEURS-LID locales"):
-            rows = _load_locale(locale, cache_dir)
-            locale_counts[locale] = len(rows)
-            audio_dir = data_dir / "audio" / locale
-            if not no_audio:
-                audio_dir.mkdir(parents=True, exist_ok=True)
-            for row in rows:
-                if not no_audio:
-                    sf.write(audio_dir / row["wav_filename"], row["samples"], row["sampling_rate"])
-                output.write(json.dumps(_build_record(locale, row), ensure_ascii=False) + "\n")
+    source_artifacts: dict[str, dict] = {}
+    inventory: dict[str, list[str]] = {}
+    record_ids: set[str] = set()
+    locale_wavs: set[tuple[str, str]] = set()
+    total_rows = 0
+    try:
+        with temporary_output.open("w", encoding="utf-8") as output:
+            for locale in tqdm(CANONICAL_LABELS, desc="FLEURS-LID locales"):
+                rows, artifact = _load_locale(locale, cache_dir)
+                locale_counts[locale] = len(rows)
+                source_artifacts[locale] = artifact
+                inventory[locale] = []
+                audio_dir = data_dir / "audio" / locale
+                for row in rows:
+                    filename = row["wav_filename"]
+                    locale_wav = (locale, filename)
+                    if locale_wav in locale_wavs:
+                        raise ValueError(f"FLEURS-LID has duplicate locale+WAV identity {locale_wav!r}")
+                    locale_wavs.add(locale_wav)
+                    inventory[locale].append(filename)
 
-    missing = set(CANONICAL_LABELS) - {locale for locale, count in locale_counts.items() if count > 0}
-    if missing:
-        raise ValueError(f"Official FLEURS-LID preparation has empty locales: {sorted(missing)}")
+                    record = _build_record(locale, row)
+                    if record["id"] in record_ids:
+                        raise ValueError(f"FLEURS-LID has duplicate record id {record['id']!r}")
+                    record_ids.add(record["id"])
+
+                    audio_path = audio_dir / filename
+                    if no_audio:
+                        _validate_materialized_audio(audio_path, locale, filename)
+                    else:
+                        _write_audio_atomic(audio_path, row["samples"], row["sampling_rate"], locale)
+                    output.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    total_rows += 1
+            output.flush()
+            os.fsync(output.fileno())
+
+        if locale_counts != EXPECTED_LOCALE_COUNTS:
+            raise ValueError(
+                "FLEURS-LID observed locale counts do not match the pinned contract: "
+                f"expected={EXPECTED_LOCALE_COUNTS}, observed={locale_counts}"
+            )
+        if total_rows != EXPECTED_TOTAL_ROWS or len(record_ids) != EXPECTED_TOTAL_ROWS:
+            raise ValueError(
+                f"FLEURS-LID total-row drift: expected {EXPECTED_TOTAL_ROWS}, "
+                f"got rows={total_rows}, unique_ids={len(record_ids)}"
+            )
+        inventory_digest = _inventory_sha256(inventory)
+        if inventory_digest != EXPECTED_WAV_INVENTORY_SHA256:
+            raise ValueError(
+                "FLEURS-LID merged WAV inventory drift: "
+                f"expected {EXPECTED_WAV_INVENTORY_SHA256}, got {inventory_digest}"
+            )
+
+        manifest_sha256 = _sha256_file(temporary_output)
+        receipt = {
+            "schema_version": 1,
+            "dataset": "fleurs-lid",
+            "manifest": output_path.name,
+            "manifest_sha256": manifest_sha256,
+            "source_repo": HF_REPO_ID,
+            "source_revision": HF_REVISION,
+            "source_split": OFFICIAL_SPLIT,
+            "total_rows": total_rows,
+            "locale_counts": locale_counts,
+            "wav_inventory_sha256": inventory_digest,
+            "audio_mode": "validated-existing" if no_audio else "materialized",
+            "audio_contract": {
+                "sample_rate": EXPECTED_SAMPLE_RATE,
+                "channels": EXPECTED_CHANNELS,
+                "nonempty": True,
+            },
+            "source_artifacts": source_artifacts,
+        }
+        os.replace(temporary_output, output_path)
+        _write_json_atomic(provenance_path, receipt)
+    finally:
+        temporary_output.unlink(missing_ok=True)
     return output_path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare official FLEURS-LID test data for all 102 locales")
     parser.add_argument("--data_dir", default=os.getenv("NEMO_SKILLS_DATA_DIR"))
-    parser.add_argument("--no-audio", action="store_true")
+    parser.add_argument(
+        "--no-audio",
+        action="store_true",
+        help=(
+            "Do not materialize WAVs. Every referenced file must already exist under "
+            "<data_dir>/fleurs-lid/audio and pass the 16-kHz mono header contract."
+        ),
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) / "fleurs-lid" if args.data_dir else Path(__file__).parent

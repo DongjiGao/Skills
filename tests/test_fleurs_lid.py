@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import importlib
+import io
+import json
+import tarfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
 
 from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES
 from nemo_skills.evaluation.evaluator import is_evaluator_registered
@@ -33,7 +42,162 @@ def test_fleurs_lid_has_exact_official_label_space_and_pin():
     assert tuple(sorted(FLEURS_LANGUAGES)) == prepare.CANONICAL_LABELS
     assert len({metadata["group"] for metadata in FLEURS_LANGUAGES.values()}) == 7
     assert prepare.HF_REVISION == "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
+    assert set(prepare.EXPECTED_LOCALE_COUNTS) == set(prepare.CANONICAL_LABELS)
+    assert sum(prepare.EXPECTED_LOCALE_COUNTS.values()) == prepare.EXPECTED_TOTAL_ROWS == 77810
+    assert prepare.EXPECTED_LOCALE_COUNTS["en_us"] == 647
+    assert prepare.EXPECTED_LOCALE_COUNTS["xh_za"] == 1041
+    assert prepare.EXPECTED_WAV_INVENTORY_SHA256 == (
+        "58ed6f8d74f07dc401a4844b24587576a2aced7fd00fbf741fe89eb278e8d27d"
+    )
     assert "en_us" in prepare.PROMPT and "yue_hant_hk" in prepare.PROMPT
+
+
+def _tsv_row(row_id: int, filename: str) -> str:
+    return f"{row_id}\t{filename}\tRaw text\tnormalized text\tphones\t320\tFEMALE\n"
+
+
+def _wav_bytes(*, sampling_rate: int = 16000, channels: int = 1, frames: int = 320) -> bytes:
+    samples = np.zeros((frames, channels), dtype=np.float32) if channels > 1 else np.zeros(frames, dtype=np.float32)
+    output = io.BytesIO()
+    sf.write(output, samples, sampling_rate, format="WAV", subtype="PCM_16")
+    return output.getvalue()
+
+
+def _write_tar(path: Path, members: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        for filename, payload in members.items():
+            info = tarfile.TarInfo(filename)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+
+
+def _patch_downloads(monkeypatch, tsv_path: Path, tar_path: Path) -> None:
+    def fake_download(*, filename, **_kwargs):
+        return str(tar_path if filename.endswith(".tar.gz") else tsv_path)
+
+    monkeypatch.setattr(prepare, "hf_hub_download", fake_download)
+
+
+def _source_row(filename: str = "123.wav") -> dict:
+    return {
+        "id": 7,
+        "raw_transcription": "Raw text",
+        "transcription": "normalized text",
+        "wav_filename": filename,
+        "samples": np.zeros(320, dtype=np.float32),
+        "sampling_rate": 16000,
+    }
+
+
+def _source_artifact(rows: int = 1) -> dict:
+    return {
+        "rows": rows,
+        "tsv_sha256": "1" * 64,
+        "audio_tar_sha256": "2" * 64,
+        "wav_inventory_sha256": "3" * 64,
+    }
+
+
+def _patch_mini_contract(monkeypatch, *, inventory_sha256: str | None = None) -> None:
+    filenames = ["123.wav"]
+    monkeypatch.setattr(prepare, "CANONICAL_LABELS", ("en_us",))
+    monkeypatch.setattr(prepare, "FLEURS_LANGUAGES", {"en_us": FLEURS_LANGUAGES["en_us"]})
+    monkeypatch.setattr(prepare, "EXPECTED_LOCALE_COUNTS", {"en_us": 1})
+    monkeypatch.setattr(prepare, "EXPECTED_TOTAL_ROWS", 1)
+    monkeypatch.setattr(
+        prepare,
+        "EXPECTED_WAV_INVENTORY_SHA256",
+        inventory_sha256 or prepare._inventory_sha256({"en_us": filenames}),
+    )
+    monkeypatch.setattr(prepare, "_load_locale", lambda _locale, _cache: ([_source_row()], _source_artifact()))
+
+
+def test_fleurs_lid_record_ids_use_unique_locale_and_wav_identity():
+    first = prepare._build_record("en_us", _source_row("111.wav"))
+    second = prepare._build_record("en_us", _source_row("222.wav"))
+    assert first["extra_fields"]["source_id"] == second["extra_fields"]["source_id"] == 7
+    assert first["id"] == "en_us:111.wav"
+    assert second["id"] == "en_us:222.wav"
+    assert first["id"] != second["id"]
+
+
+def test_fleurs_lid_strict_tsv_rejects_duplicate_wavs(tmp_path):
+    tsv_path = tmp_path / "test.tsv"
+    tsv_path.write_text(_tsv_row(1, "same.wav") + _tsv_row(1, "same.wav"), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate WAV"):
+        prepare._parse_tsv_strict(tsv_path, "en_us")
+
+
+def test_fleurs_lid_load_requires_tsv_tar_equality_and_16khz_mono(tmp_path, monkeypatch):
+    tsv_path = tmp_path / "test.tsv"
+    tar_path = tmp_path / "test.tar.gz"
+    tsv_path.write_text(_tsv_row(1, "one.wav"), encoding="utf-8")
+    monkeypatch.setitem(prepare.EXPECTED_LOCALE_COUNTS, "en_us", 1)
+    _patch_downloads(monkeypatch, tsv_path, tar_path)
+
+    _write_tar(tar_path, {"one.wav": _wav_bytes()})
+    rows, artifact = prepare._load_locale("en_us", tmp_path / "cache")
+    assert len(rows) == artifact["rows"] == 1
+    assert rows[0]["sampling_rate"] == 16000
+    assert len(artifact["tsv_sha256"]) == len(artifact["audio_tar_sha256"]) == 64
+
+    _write_tar(tar_path, {"other.wav": _wav_bytes()})
+    with pytest.raises(ValueError, match="TSV/tar inventory mismatch"):
+        prepare._load_locale("en_us", tmp_path / "cache")
+
+    _write_tar(tar_path, {"one.wav": _wav_bytes(sampling_rate=8000)})
+    with pytest.raises(ValueError, match="16000-Hz mono"):
+        prepare._load_locale("en_us", tmp_path / "cache")
+
+    _write_tar(tar_path, {"one.wav": _wav_bytes(channels=2)})
+    with pytest.raises(ValueError, match="16000-Hz mono"):
+        prepare._load_locale("en_us", tmp_path / "cache")
+
+
+def test_fleurs_lid_prepare_publishes_atomic_manifest_and_provenance(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    output_path = prepare.prepare_fleurs_lid(tmp_path)
+    receipt_path = tmp_path / prepare.PROVENANCE_FILENAME
+
+    records = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [record["id"] for record in records] == ["en_us:123.wav"]
+    assert receipt["total_rows"] == 1
+    assert receipt["audio_mode"] == "materialized"
+    assert receipt["manifest_sha256"] == hashlib.sha256(output_path.read_bytes()).hexdigest()
+    assert receipt["source_artifacts"]["en_us"] == _source_artifact()
+    info = sf.info(str(tmp_path / "audio" / "en_us" / "123.wav"))
+    assert (info.samplerate, info.channels, info.frames) == (16000, 1, 320)
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_fleurs_lid_failed_contract_does_not_replace_published_files(tmp_path, monkeypatch):
+    output_path = tmp_path / "test.jsonl"
+    receipt_path = tmp_path / prepare.PROVENANCE_FILENAME
+    output_path.write_text("old manifest\n", encoding="utf-8")
+    receipt_path.write_text("old receipt\n", encoding="utf-8")
+    _patch_mini_contract(monkeypatch, inventory_sha256="0" * 64)
+
+    with pytest.raises(ValueError, match="merged WAV inventory drift"):
+        prepare.prepare_fleurs_lid(tmp_path)
+    assert output_path.read_text(encoding="utf-8") == "old manifest\n"
+    assert receipt_path.read_text(encoding="utf-8") == "old receipt\n"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_fleurs_lid_no_audio_requires_and_validates_existing_files(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    with pytest.raises(ValueError, match="--no-audio requires existing audio"):
+        prepare.prepare_fleurs_lid(tmp_path, no_audio=True)
+    assert not (tmp_path / "test.jsonl").exists()
+
+    audio_path = tmp_path / "audio" / "en_us" / "123.wav"
+    audio_path.parent.mkdir(parents=True)
+    sf.write(str(audio_path), np.zeros(320, dtype=np.float32), 16000)
+    output_path = prepare.prepare_fleurs_lid(tmp_path, no_audio=True)
+    receipt = json.loads((tmp_path / prepare.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+    assert output_path.is_file()
+    assert receipt["audio_mode"] == "validated-existing"
 
 
 def test_fleurs_lid_evaluator_requires_exact_canonical_output():
