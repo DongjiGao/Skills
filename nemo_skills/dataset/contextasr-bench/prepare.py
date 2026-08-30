@@ -35,12 +35,16 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import tarfile
 from pathlib import Path
 
 HF_REPO_ID = "MrSupW/ContextASR-Bench"
+HF_REVISION = "7906fd98d1d093bf244df80e726e07fc8afed6a6"
 JSONL_FILENAME = "ContextASR-Speech_English.jsonl"
+JSONL_SHA256 = "b6bcb3de39aebe36328ab03d7d4d865899712c2dc375b6cd2b9ce156b6a952e4"
+EXPECTED_ROWS = 15326
 AUDIO_TAR_PREFIX = "audio/ContextASR-Speech/English/ContextASR-Speech_English"
 NUM_AUDIO_TARS = 8
 
@@ -54,6 +58,33 @@ PROMPT_FINE = (
     "words or phrases: {entity_list}. "
     "Transcribe the English audio into text, ensuring all punctuation marks are included."
 )
+
+
+def _validate_metadata(jsonl_path: Path) -> list[dict]:
+    payload = jsonl_path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != JSONL_SHA256:
+        raise ValueError(f"ContextASR metadata hash drift: expected {JSONL_SHA256}, found {digest}")
+
+    rows = [json.loads(line) for line in payload.decode("utf-8").splitlines() if line.strip()]
+    if len(rows) != EXPECTED_ROWS:
+        raise ValueError(f"ContextASR row-count drift: expected {EXPECTED_ROWS}, found {len(rows)}")
+    if len({row["uniq_id"] for row in rows}) != len(rows):
+        raise ValueError("ContextASR metadata contains duplicate uniq_id values")
+    if len({row["audio"] for row in rows}) != len(rows):
+        raise ValueError("ContextASR metadata contains duplicate audio paths")
+    return rows
+
+
+def _missing_audio(download_dir: Path, rows: list[dict]) -> list[str]:
+    return [row["audio"] for row in rows if not (download_dir / row["audio"]).is_file()]
+
+
+def _assert_audio_complete(download_dir: Path, rows: list[dict]) -> None:
+    missing = _missing_audio(download_dir, rows)
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise FileNotFoundError(f"ContextASR download is incomplete: {len(missing)} files missing ({preview})")
 
 
 def download_dataset(download_dir):
@@ -73,17 +104,19 @@ def download_dataset(download_dir):
 
     # Check if data already exists
     if jsonl_path.exists() and audio_dir.exists():
-        wav_count = len(list(audio_dir.glob("*.wav")))
-        if wav_count > 15000:
-            print(f"Dataset already exists at {download_dir} ({wav_count} audio files found). Skipping download.")
+        rows = _validate_metadata(jsonl_path)
+        missing = _missing_audio(download_dir, rows)
+        if not missing:
+            print(f"Dataset already exists at {download_dir} ({len(rows)} pinned audio files). Skipping download.")
             return download_dir
+        print(f"Dataset is incomplete at {download_dir}: {len(missing)} referenced audio files are missing.")
 
     print("=" * 70)
     print("DOWNLOADING ContextASR-Bench English Speech data from HuggingFace")
     print(f"Repository: {HF_REPO_ID}")
     print(f"Destination: {download_dir}")
     print("Total download size: ~22 GB (JSONL + 8 audio tar files)")
-    print("")
+    print()
     print("WARNING: This download may take 30-60 minutes depending on your")
     print("network speed. You can skip this by pre-downloading the data and")
     print("passing --data_dir=/path/to/ContextASR-Bench.")
@@ -96,8 +129,10 @@ def download_dataset(download_dir):
         filename=JSONL_FILENAME,
         repo_type="dataset",
         local_dir=str(download_dir),
+        revision=HF_REVISION,
     )
     print(f"  Saved to {jsonl_path}")
+    rows = _validate_metadata(jsonl_path)
 
     # Download and extract audio tars
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +147,7 @@ def download_dataset(download_dir):
                 filename=tar_filename,
                 repo_type="dataset",
                 local_dir=str(download_dir),
+                revision=HF_REVISION,
             )
         )
 
@@ -122,8 +158,8 @@ def download_dataset(download_dir):
         print("  Extracted. Removing tar file to save space...")
         local_tar.unlink()
 
-    wav_count = len(list(audio_dir.glob("*.wav")))
-    print(f"\nDownload complete! {wav_count} audio files extracted to {audio_dir}")
+    _assert_audio_complete(download_dir, rows)
+    print(f"\nDownload complete! {len(rows)} pinned audio files verified under {audio_dir}")
 
     return download_dir
 
@@ -167,6 +203,12 @@ def format_entry(sample, mode, audio_prefix):
         "uniq_id": sample["uniq_id"],
         "duration": float(sample["duration"]),
         "audio_filepath": audio_path,
+        "source_provenance": {
+            "dataset": HF_REPO_ID,
+            "dataset_revision": HF_REVISION,
+            "metadata_sha256": JSONL_SHA256,
+            "expected_rows": EXPECTED_ROWS,
+        },
     }
 
 
@@ -209,6 +251,9 @@ def main():
 
     if jsonl_path.exists():
         print(f"Using pre-downloaded data from {data_dir}")
+        _validate_metadata(jsonl_path)
+        if not args.no_audio:
+            download_dataset(data_dir)
     elif args.no_audio:
         raise FileNotFoundError(
             f"Dataset file not found: {jsonl_path}\n"
@@ -226,24 +271,13 @@ def main():
     jsonl_path = data_dir / JSONL_FILENAME
 
     print(f"\nReading dataset from {jsonl_path}")
-    samples = []
-    with open(jsonl_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                samples.append(json.loads(line))
+    samples = _validate_metadata(jsonl_path)
 
     print(f"Loaded {len(samples)} samples")
 
     if not args.no_audio:
-        sample_audio = Path(audio_prefix) / samples[0]["audio"]
-        if not sample_audio.exists():
-            print(
-                f"WARNING: Sample audio file not found at {sample_audio}. "
-                f"Audio paths may need adjustment via --audio-prefix."
-            )
-        else:
-            print(f"Audio files verified (sample check: {sample_audio})")
+        _assert_audio_complete(data_dir, samples)
+        print(f"All {len(samples)} referenced audio files verified under {data_dir}")
 
     modes = {
         "contextless": output_dir / "contextless" / "test.jsonl",
@@ -256,8 +290,7 @@ def main():
         entries = [format_entry(sample, mode_name, audio_prefix) for sample in samples]
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as fout:
-            for entry in entries:
-                fout.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            fout.writelines(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries)
         print(f"  {mode_name}: wrote {len(entries)} samples to {output_path}")
 
     print(f"\nDone. Total: {len(samples)} samples x 3 modes = {len(samples) * 3} records")

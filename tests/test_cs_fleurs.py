@@ -20,12 +20,15 @@ HuggingFace download and is exercised separately by the GPU eval suite, where
 ``cs-fleurs`` is intentionally excluded from auto-prepare.
 """
 
+import hashlib
+import json
 from importlib import import_module
 
 import pytest
 
 languages = import_module("nemo_skills.dataset.cs-fleurs.languages")
 audio_score = import_module("nemo_skills.dataset.cs-fleurs.audio_score")
+prepare = import_module("nemo_skills.dataset.cs-fleurs.prepare")
 
 
 class TestSplitPair:
@@ -130,3 +133,48 @@ class TestComputeScore:
         result = audio_score.compute_score(combined)
         assert result["greedy"]["read"]["substitutions"] == 0
         assert result["greedy"]["overall"]["substitutions"] == 0
+
+
+def test_cs_fleurs_source_revision_and_metadata_contracts_are_pinned():
+    assert prepare.HF_REVISION == "0cdbf166c5517ae4b6eb1c54248522eedec53017"
+    assert {key: value["rows"] for key, value in prepare.SOURCE_CONTRACTS.items()} == {
+        "read": 5818,
+        "mms": 14932,
+        "xtts-test1": 11321,
+        "xtts-test2": 17226,
+    }
+    assert all(len(value["sha256"]) == 64 for value in prepare.SOURCE_CONTRACTS.values())
+
+
+def test_cs_fleurs_metadata_validator_rejects_hash_and_row_drift(tmp_path, monkeypatch):
+    path = tmp_path / "metadata.jsonl"
+    rows = [
+        {"id": "one", "file_name": "audio/one.wav"},
+        {"id": "two", "file_name": "audio/two.wav"},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 2, "sha256": digest})
+    assert prepare._validate_metadata(path, "read") == rows
+
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 3, "sha256": digest})
+    with pytest.raises(ValueError, match="row-count drift"):
+        prepare._validate_metadata(path, "read")
+
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 2, "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="metadata hash drift"):
+        prepare._validate_metadata(path, "read")
+
+
+def test_cs_fleurs_record_carries_immutable_source_provenance():
+    row = {
+        "id": "ara_1_BT",
+        "file_name": "audio/ara/ara_1_BT.wav",
+        "text": "hello",
+        "duration": 1.0,
+        "language": "ara-eng",
+        "speaker": "BT",
+    }
+    record = prepare._build_record(row, "read/test", "read")
+    assert record["source_provenance"]["dataset_revision"] == prepare.HF_REVISION
+    assert record["source_provenance"]["expected_rows"] == 5818
