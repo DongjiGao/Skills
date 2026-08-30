@@ -15,16 +15,16 @@
 """Prepare HALAS for NeMo Skills evaluation.
 
 The HALAS metadata is small, but its source audio lives in the Earnings22
-``chunked`` split. This script writes NeMo-Skills JSONL manifests for the HALAS
-train/test splits and optionally extracts only the referenced Earnings22 clips
-to ``<data_dir>/audio``.
+``chunked`` split. This script writes the official HALAS test manifest and
+optionally extracts only its referenced Earnings22 clips to
+``<data_dir>/audio``.
 """
 
 import argparse
 import json
 import os
-import re
 import wave
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,10 +32,15 @@ import numpy as np
 
 HF_REPO_ID = "MatBar99/HALAS"
 HF_REVISION = "317cef3a10d1097edc37e8eb1c007f415e3d0c55"
+HALAS_SPLIT = "test"
+EXPECTED_ROWS = 745
+EXPECTED_UNIQUE_AUDIO = 744
+EXPECTED_DUPLICATE_AUDIO_COUNTS = {"23_4484146.wav": 2}
 EARNINGS22_REPO_ID = "distil-whisper/earnings22"
 EARNINGS22_REVISION = "0a034f9ed86d33a3859d9025d3e621cf243773ab"
 EARNINGS22_CONFIG = "chunked"
 EARNINGS22_SPLIT = "test"
+MINIMUM_AUDIO_SAMPLES = 320
 BENCHMARK_NAME = "halas"
 PROMPT = (
     "Transcribe the English audio into text. Return only the words spoken in the audio; "
@@ -92,6 +97,34 @@ def _reference_text(row: dict) -> str:
     return _as_str(row.get("e22_reference_text")).strip()
 
 
+def _validate_halas_rows(rows: list[dict]) -> None:
+    if len(rows) != EXPECTED_ROWS:
+        raise ValueError(f"HALAS test row-count drift: expected {EXPECTED_ROWS}, found {len(rows)}")
+    audio_counts: Counter[str] = Counter()
+    for index, row in enumerate(rows):
+        split = _as_str(row.get("split")).strip().lower()
+        if split != HALAS_SPLIT:
+            raise ValueError(f"HALAS row {index} has unexpected split: {split!r}")
+        audio_id = _canonical_audio_id(row.get("audio_id"))
+        if not audio_id:
+            raise ValueError(f"HALAS row {index} has a missing audio identity")
+        audio_counts[audio_id] += 1
+        row["_halas_source_row_index"] = index
+        duration = float(row.get("audio_duration") or 0.0)
+        if duration <= 0:
+            raise ValueError(f"HALAS row {index} has invalid audio duration")
+        if not _reference_text(row):
+            raise ValueError(f"HALAS row {index} has no usable reference transcript")
+
+    duplicates = {audio_id: count for audio_id, count in audio_counts.items() if count > 1}
+    if len(audio_counts) != EXPECTED_UNIQUE_AUDIO or duplicates != EXPECTED_DUPLICATE_AUDIO_COUNTS:
+        raise ValueError(
+            "HALAS audio census drift: "
+            f"expected {EXPECTED_UNIQUE_AUDIO} unique IDs and "
+            f"{EXPECTED_DUPLICATE_AUDIO_COUNTS}, found {len(audio_counts)} and {duplicates}"
+        )
+
+
 def _load_halas_rows(max_samples: int | None = None) -> list[dict]:
     from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 
@@ -104,7 +137,8 @@ def _load_halas_rows(max_samples: int | None = None) -> list[dict]:
     else:
         ds = load_dataset(HF_REPO_ID, split="train", revision=HF_REVISION)
 
-    rows = [dict(row) for row in ds]
+    rows = [dict(row) for row in ds if _as_str(row.get("split")).strip().lower() == HALAS_SPLIT]
+    _validate_halas_rows(rows)
     if max_samples is not None and max_samples > 0:
         rows = rows[:max_samples]
     return rows
@@ -148,8 +182,29 @@ def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
     print(f"Wrote {written} new audio files; {len(missing_ids)} referenced clips were not found in Earnings22.")
     if missing_ids:
         preview = ", ".join(sorted(missing_ids)[:10])
-        print(f"Missing HALAS audio IDs (first 10): {preview}")
+        raise FileNotFoundError(
+            f"Missing {len(missing_ids)} pinned HALAS audio IDs in Earnings22; first 10: {preview}"
+        )
     return missing_ids
+
+
+def _validate_audio_closure(rows: Iterable[dict], data_dir: Path) -> None:
+    for row in rows:
+        audio_path = data_dir / "audio" / _canonical_audio_id(row["audio_id"])
+        if not audio_path.is_file() or audio_path.stat().st_size <= 44:
+            raise FileNotFoundError(f"HALAS audio is missing or empty: {audio_path}")
+        try:
+            with wave.open(str(audio_path), "rb") as stream:
+                header = (
+                    stream.getnchannels(),
+                    stream.getsampwidth(),
+                    stream.getframerate(),
+                    stream.getnframes(),
+                )
+        except (EOFError, wave.Error) as exc:
+            raise ValueError(f"HALAS audio has an invalid WAV header: {audio_path}") from exc
+        if header[:3] != (1, 2, 16000) or header[3] < MINIMUM_AUDIO_SAMPLES:
+            raise ValueError(f"HALAS audio contract failed for {audio_path}: {header}")
 
 
 def _model_label_counts(row: dict) -> dict[str, int]:
@@ -184,33 +239,29 @@ def _format_entry(row: dict, audio_prefix: str) -> dict:
     audio_path = f"{audio_prefix.rstrip('/')}/audio/{audio_id}"
     reference = _reference_text(row)
     label_counts = _model_label_counts(row)
+    source_row_index = int(row["_halas_source_row_index"])
     return {
+        "id": f"{BENCHMARK_NAME}-{HALAS_SPLIT}-{source_row_index:04d}-{audio_id}",
         "messages": _build_messages(audio_path, float(row.get("audio_duration") or 0.0)),
         "expected_answer": reference,
         "expected_answer_cased": _as_str(row.get("e22_reference_text")).strip(),
         "audio_id": audio_id,
         "audio_duration": float(row.get("audio_duration") or 0.0),
         "audio_filepath": audio_path,
-        "subset_for_metrics": _as_str(row.get("split") or "test"),
+        "source_row_index": source_row_index,
+        "subset_for_metrics": HALAS_SPLIT,
         "halas_released_system_hallucination_count": label_counts["hallucination_or_looping"],
         "halas_released_system_no_hallucination_count": label_counts["no_hallucination"],
         "extra_fields": {
             "source_repo": HF_REPO_ID,
             "source_revision": HF_REVISION,
+            "source_split": HALAS_SPLIT,
+            "expected_rows": EXPECTED_ROWS,
             "audio_source_repo": EARNINGS22_REPO_ID,
             "audio_source_revision": EARNINGS22_REVISION,
         },
         "task_type": "HALAS-ASR",
     }
-
-
-def _split_rows(rows: Iterable[dict]) -> dict[str, list[dict]]:
-    splits: dict[str, list[dict]] = {"train": [], "test": []}
-    for row in rows:
-        split = _as_str(row.get("split")).strip().lower() or "test"
-        split = re.sub(r"[^a-z0-9_]+", "_", split)
-        splits.setdefault(split, []).append(row)
-    return {split: split_rows for split, split_rows in splits.items() if split_rows}
 
 
 def main() -> None:
@@ -231,16 +282,12 @@ def main() -> None:
 
     if not args.no_audio:
         _extract_audio_for_rows(rows, data_dir)
+        _validate_audio_closure(rows, data_dir)
 
-    split_rows = _split_rows(rows)
-    print("\nWriting HALAS JSONL manifests...")
-    for split, rows_for_split in split_rows.items():
-        output_path = output_dir / f"{split}.jsonl"
-        with open(output_path, "w", encoding="utf-8") as fout:
-            fout.writelines(
-                json.dumps(_format_entry(row, audio_prefix), ensure_ascii=False) + "\n" for row in rows_for_split
-            )
-        print(f"  {split}: wrote {len(rows_for_split)} rows to {output_path}")
+    output_path = output_dir / "test.jsonl"
+    with open(output_path, "w", encoding="utf-8") as fout:
+        fout.writelines(json.dumps(_format_entry(row, audio_prefix), ensure_ascii=False) + "\n" for row in rows)
+    print(f"Wrote {len(rows)} official HALAS test rows to {output_path}")
 
 
 if __name__ == "__main__":
