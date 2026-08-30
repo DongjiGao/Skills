@@ -152,6 +152,9 @@ class AudioMetrics(BaseMetrics):
         self.structured_wer_scores: dict[str, list[float]] = {}
         self.structured_wer_totals: dict[str, dict[str, int]] = {}
 
+        # Spoken-MQA's official metric name is accuracy (``acc`` upstream).
+        self.has_spoken_mqa = False
+
     def _extract_judge_result(self, judgement_text: str) -> tuple[bool, float]:
         """Extract judge result from judgement text.
 
@@ -263,6 +266,8 @@ class AudioMetrics(BaseMetrics):
 
         # Collect existing metrics: WER, PnC, and BLEU scores
         for pred in predictions:
+            if pred.get("task_type") == "MathQA":
+                self.has_spoken_mqa = True
             if "wer_errors" in pred and "wer_ref_words" in pred:
                 self.wer_total_errors += pred["wer_errors"]
                 self.wer_total_ref_words += pred["wer_ref_words"]
@@ -410,6 +415,8 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["success_rate"] = agg_metrics["correct"]
             elif "judge_correct" in agg_metrics:
                 agg_metrics["success_rate"] = agg_metrics["judge_correct"]
+            if self.has_spoken_mqa and "success_rate" in agg_metrics:
+                agg_metrics["accuracy"] = agg_metrics["success_rate"]
 
             # Add AudioBench-style judge_score if rating outputs were used.
             # Formula: judge_score = mean(ratings) * 20 (converts 0-5 scale to 0-100)
@@ -524,6 +531,8 @@ class AudioMetrics(BaseMetrics):
             "success_rate": as_percentage,
         }
 
+        if self.has_spoken_mqa:
+            base_metrics["accuracy"] = as_percentage
         if self.compute_no_answer:
             base_metrics["no_answer"] = as_percentage
 

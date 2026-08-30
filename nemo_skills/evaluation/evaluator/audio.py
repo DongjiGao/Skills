@@ -560,8 +560,7 @@ def _parse_sot_segments(
         raise ValueError(f"Unsupported SOT parse mode: {mode}")
     if strict_tag_style not in SOT_STRICT_TAG_RES:
         raise ValueError(
-            f"Unsupported SOT strict tag style: {strict_tag_style}. "
-            f"Expected one of {sorted(SOT_STRICT_TAG_RES)}"
+            f"Unsupported SOT strict tag style: {strict_tag_style}. Expected one of {sorted(SOT_STRICT_TAG_RES)}"
         )
 
     cleaned = normalize_whitespace(text or "")
@@ -619,18 +618,14 @@ def resolve_speaker_tag_style(speaker_token: str) -> str:
         return "s_bracket"
     if token in {"both", "all"}:
         return "both"
-    raise ValueError(
-        f"Unsupported speaker_token '{speaker_token}'. "
-        "Expected '<spk:*>' (default), '[s*]', or 'both'."
-    )
+    raise ValueError(f"Unsupported speaker_token '{speaker_token}'. Expected '<spk:*>' (default), '[s*]', or 'both'.")
 
 
 def normalize_cpwer_stream(text: str, mode: str = "chime8") -> str:
     """Normalize one speaker stream for cpWER scoring."""
     if mode not in VALID_CPWER_NORMALIZATION_MODES:
         raise ValueError(
-            f"Invalid cpwer_normalization '{mode}'. "
-            f"Available options: {', '.join(VALID_CPWER_NORMALIZATION_MODES)}"
+            f"Invalid cpwer_normalization '{mode}'. Available options: {', '.join(VALID_CPWER_NORMALIZATION_MODES)}"
         )
     if mode == "none":
         return normalize_whitespace(text or "")
@@ -1169,12 +1164,105 @@ def coerce_text_field(value: Any) -> str:
     return str(value).strip()
 
 
+SPOKEN_MQA_ANSWER_TRIGGERS = (
+    "The answer is:",
+    "The answer is",
+    "the answer is",
+    "####",
+)
+
+
+def _spoken_mqa_delete_extra_zero(value: str) -> str:
+    """Match AudioBench's numeric canonicalization without using ``eval``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        fraction = re.fullmatch(r"(-?\d+)/(\d+)", str(value))
+        if fraction is None or int(fraction.group(2)) == 0:
+            return str(value)
+        number = int(fraction.group(1)) / int(fraction.group(2))
+
+    if number.is_integer():
+        return str(int(number))
+    return str(number)
+
+
+def clean_spoken_mqa_prediction(prediction: Any) -> str:
+    """Extract a numeric answer using AudioBench's pinned GSM8K routine."""
+    prediction = coerce_text_field(prediction).strip("\n")
+    if any(prediction.count(trigger) > 1 for trigger in SPOKEN_MQA_ANSWER_TRIGGERS):
+        prediction = prediction.split("\n\n")[0]
+
+    parts = re.split("|".join(SPOKEN_MQA_ANSWER_TRIGGERS), prediction)
+    answer_flag = len(parts) > 1
+    if answer_flag:
+        prediction = parts[-1]
+    prediction = prediction.strip("\n").rstrip(".").rstrip("/").strip(" ")
+    candidates = [
+        _spoken_mqa_delete_extra_zero(value.replace(",", ""))
+        for value in re.findall(r"-?\d+/?\.?\d*", prediction.replace(",", ""))
+    ]
+    if not candidates:
+        return ""
+    answer = candidates[0] if answer_flag else candidates[-1]
+    return answer.rstrip(".").rstrip("/")
+
+
+def _spoken_mqa_reference_list(reference: Any, protocol: str) -> list[str]:
+    if isinstance(reference, dict):
+        reference = reference.get("text", reference)
+    if isinstance(reference, (list, tuple)):
+        references = [coerce_text_field(value) for value in reference]
+    else:
+        references = [coerce_text_field(reference)]
+
+    if protocol == "reasoning":
+        normalized = []
+        for answer in references:
+            if "####" in answer:
+                answer = answer.split("#### ")[-1].replace(",", "")
+            normalized.append(_spoken_mqa_delete_extra_zero(answer))
+        references = normalized
+    elif protocol != "arithmetic":
+        raise ValueError(f"Unknown Spoken-MQA protocol: {protocol}")
+
+    return references or ["empty"]
+
+
+def _spoken_mqa_answers_match(prediction: str, reference: str) -> bool:
+    if "\\text{" in prediction:
+        prediction = prediction.replace("\\text{", "").rstrip("}")
+    if "\\text{" in reference:
+        reference = reference.replace("\\text{", "").rstrip("}")
+    if reference.lower() in {"(a)", "(b)", "(c)", "(d)", "(e)", "(f)"}:
+        return reference.lower() in prediction.lower()
+    return prediction.lower() == reference.lower()
+
+
+def evaluate_spoken_mqa(reference: Any, hypothesis: Any, protocol: str) -> dict[str, Any]:
+    """Score one Spoken-MQA row with the official AudioBench ``acc`` protocol."""
+    prediction = clean_spoken_mqa_prediction(hypothesis) or "empty"
+    prediction = prediction[:100]
+    references = _spoken_mqa_reference_list(reference, protocol)
+    if not references or not any(references):
+        references = ["empty"]
+    is_correct = any(_spoken_mqa_answers_match(prediction, answer) for answer in references)
+    return {
+        "is_correct": is_correct,
+        "predicted_answer": prediction,
+        "spoken_mqa_prediction": prediction,
+        "spoken_mqa_references": references,
+        "requires_judge": False,
+    }
+
+
 def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dict[str, Any]:
     """Evaluate single sample based on task_type. Returns dict of updates to merge."""
     updates = {}
     task_type = sample.get("task_type", "unknown")
     generation = coerce_text_field(sample.get("generation", ""))
-    expected_answer = coerce_text_field(sample.get("expected_answer", ""))
+    raw_expected_answer = sample.get("expected_answer", "")
+    expected_answer = coerce_text_field(raw_expected_answer)
 
     # Extract ASR text from generation
     # E.g Qwen ASR uses <asr_text> tags to indicate the ASR text
@@ -1321,6 +1409,14 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
 
     elif task_type == "CER":
         metrics = evaluate_cer(expected_answer, generation, normalization_mode="none", key_prefix="cer")
+        updates.update(metrics)
+
+    elif task_type == "MathQA":
+        metrics = evaluate_spoken_mqa(
+            raw_expected_answer,
+            generation,
+            sample.get("spoken_mqa_protocol", "arithmetic"),
+        )
         updates.update(metrics)
 
     elif task_type == "Hallucination":

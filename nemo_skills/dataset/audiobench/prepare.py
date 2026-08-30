@@ -106,6 +106,42 @@ NONJUDGE_DATASETS = [
     "tedlium3_long_form_test",
 ]
 
+AUDIOBENCH_OFFICIAL_REVISION = "85dcdb88c41e6ebb2bcb3ce19b15d061dfef9dba"
+SPOKEN_MQA_SOURCE_REVISION = "a1f9ec6143c6ce12966d7c6b3283905d679645c9"
+SPOKEN_MQA_DATASETS = {
+    "spoken-mqa_short_digit": {
+        "leaf": "short_digit",
+        "split": "short_digit",
+        "protocol": "arithmetic",
+        "rows": 100,
+    },
+    "spoken-mqa_long_digit": {
+        "leaf": "long_digit",
+        "split": "long_digit",
+        "protocol": "arithmetic",
+        "rows": 173,
+    },
+    "spoken-mqa_single_step_reasoning": {
+        "leaf": "single_step_reasoning",
+        "split": "single_step_reasoning",
+        "protocol": "reasoning",
+        "rows": 594,
+    },
+    "spoken-mqa_multi_step_reasoning": {
+        "leaf": "multi_step_reasoning",
+        "split": "multi_step_reasoning",
+        "protocol": "reasoning",
+        "rows": 1402,
+    },
+}
+
+
+def _spoken_mqa_reference(sample: Dict, dataset_name: str, sample_id: int) -> list[str]:
+    answer = sample.get("answer")
+    if not isinstance(answer, dict) or not isinstance(answer.get("text"), list):
+        raise ValueError(f"Spoken-MQA answer.text must be a list for {dataset_name} sample {sample_id}: {answer!r}")
+    return [str(value) for value in answer["text"]]
+
 
 def get_audio_duration(audio_array: np.ndarray, sampling_rate: int) -> float:
     """Compute audio duration in seconds from array and sampling rate."""
@@ -165,8 +201,13 @@ def create_manifest_entry(
             ) from exc
     if not isinstance(instruction, str):
         raise ValueError(f"Instruction must be a string for {dataset_name} sample {sample_id}: {instruction!r}")
-    reference = sample.get("reference", sample.get("answer", ""))
-    task_type = sample.get("task_type", "unknown")
+    spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
+    if spoken_mqa_spec is not None:
+        reference = _spoken_mqa_reference(sample, dataset_name, sample_id)
+        task_type = "MathQA"
+    else:
+        reference = sample.get("reference", sample.get("answer", ""))
+        task_type = sample.get("task_type", "unknown")
 
     # Paths are resolved relative to the manifest directory by the inference code.
     # The combined category manifest lives at audiobench/{category}/test.jsonl.
@@ -196,6 +237,16 @@ def create_manifest_entry(
         "task_type": task_type,
         "question": instruction,
     }
+
+    if spoken_mqa_spec is not None:
+        entry["spoken_mqa_protocol"] = spoken_mqa_spec["protocol"]
+        entry["source_provenance"] = {
+            "benchmark": "AudioBench",
+            "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+            "dataset": "amao0o0/spoken-mqa",
+            "dataset_revision": SPOKEN_MQA_SOURCE_REVISION,
+            "split": spoken_mqa_spec["split"],
+        }
 
     for key in [
         "choices",
@@ -235,6 +286,47 @@ def make_dataset_manifest_entry(entry: Dict) -> Dict:
                 audio["path"] = rewrite(audio["path"])
 
     return entry
+
+
+def make_spoken_mqa_manifest_entry(entry: Dict) -> Dict:
+    """Rewrite legacy nonjudge-relative audio paths for a Spoken-MQA leaf."""
+    entry = copy.deepcopy(entry)
+
+    def rewrite(path: str) -> str:
+        if path.startswith("audio/"):
+            return f"../../nonjudge/{path}"
+        return path
+
+    if isinstance(entry.get("audio_path"), list):
+        entry["audio_path"] = [rewrite(path) for path in entry["audio_path"]]
+    elif isinstance(entry.get("audio_path"), str):
+        entry["audio_path"] = rewrite(entry["audio_path"])
+
+    for message in entry.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        if "audio" in message and isinstance(message["audio"], dict) and "path" in message["audio"]:
+            message["audio"]["path"] = rewrite(message["audio"]["path"])
+        for audio in message.get("audios", []):
+            if isinstance(audio, dict) and "path" in audio:
+                audio["path"] = rewrite(audio["path"])
+
+    return entry
+
+
+def write_spoken_mqa_provenance(output_dir: Path) -> None:
+    provenance_path = output_dir / "spoken-mqa" / "provenance.json"
+    provenance_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "benchmark": "AudioBench",
+        "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+        "dataset": "amao0o0/spoken-mqa",
+        "dataset_revision": SPOKEN_MQA_SOURCE_REVISION,
+        "leaves": SPOKEN_MQA_DATASETS,
+    }
+    with open(provenance_path, "w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2, sort_keys=True)
+        f.write("\n")
 
 
 def process_dataset(
@@ -286,10 +378,26 @@ def process_dataset(
             "gigaspeech2_thai": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "th-test"},
             "gigaspeech2_indo": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "id-test"},
             "gigaspeech2_viet": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "vi-test"},
-            "spoken-mqa_short_digit": {"repo": "amao0o0/spoken-mqa", "split": "short_digit"},
-            "spoken-mqa_long_digit": {"repo": "amao0o0/spoken-mqa", "split": "long_digit"},
-            "spoken-mqa_single_step_reasoning": {"repo": "amao0o0/spoken-mqa", "split": "single_step_reasoning"},
-            "spoken-mqa_multi_step_reasoning": {"repo": "amao0o0/spoken-mqa", "split": "multi_step_reasoning"},
+            "spoken-mqa_short_digit": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "short_digit",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_long_digit": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "long_digit",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_single_step_reasoning": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "single_step_reasoning",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_multi_step_reasoning": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "multi_step_reasoning",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
             "imda_part1_asr_test": {
                 "repo": "MERaLiON/Multitask-National-Speech-Corpus-v1",
                 "split": "train",
@@ -390,11 +498,23 @@ def process_dataset(
         else:
             hf_repo = spec["repo"]
             hf_split = spec.get("split", split)
+            revision = spec.get("revision")
             data_dir = spec.get("data_dir")
+            load_kwargs = {"split": hf_split}
+            if revision:
+                load_kwargs["revision"] = revision
             if data_dir:
-                hf_ds = load_dataset(hf_repo, data_dir=data_dir, split=hf_split)
-            else:
-                hf_ds = load_dataset(hf_repo, split=hf_split)
+                load_kwargs["data_dir"] = data_dir
+            hf_ds = load_dataset(hf_repo, **load_kwargs)
+
+            spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
+            if spoken_mqa_spec is not None and not (max_samples is not None and int(max_samples) > 0):
+                expected_rows = spoken_mqa_spec["rows"]
+                if len(hf_ds) != expected_rows:
+                    raise ValueError(
+                        f"Spoken-MQA row contract failed for {dataset_name}: expected {expected_rows}, "
+                        f"found {len(hf_ds)} at revision {revision}"
+                    )
 
             fallback_repo = spec.get("fallback_repo")
             if fallback_repo:
@@ -503,6 +623,15 @@ def process_dataset(
             failed += 1
             continue
 
+    spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
+    if spoken_mqa_spec is not None and not (max_samples is not None and int(max_samples) > 0):
+        expected_rows = spoken_mqa_spec["rows"]
+        if successful != expected_rows or failed:
+            raise RuntimeError(
+                f"Spoken-MQA preparation contract failed for {dataset_name}: "
+                f"expected {expected_rows} successful rows and no failures; got {successful} successful, {failed} failed"
+            )
+
     # Save dataset-specific manifest to dataset directory
     manifest_path = dataset_dir / f"{split}.jsonl"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -510,6 +639,15 @@ def process_dataset(
             f.write(json.dumps(make_dataset_manifest_entry(entry), ensure_ascii=False) + "\n")
 
     print(f"✓ Saved {successful} samples to {manifest_path}")
+    if spoken_mqa_spec is not None:
+        leaf_dir = output_dir / "spoken-mqa" / spoken_mqa_spec["leaf"]
+        leaf_dir.mkdir(parents=True, exist_ok=True)
+        leaf_manifest_path = leaf_dir / f"{split}.jsonl"
+        with open(leaf_manifest_path, "w", encoding="utf-8") as f:
+            for entry in manifest_entries:
+                leaf_entry = make_spoken_mqa_manifest_entry(entry)
+                f.write(json.dumps(leaf_entry, ensure_ascii=False) + "\n")
+        print(f"✓ Saved official Spoken-MQA leaf with {successful} samples to {leaf_manifest_path}")
     if failed > 0:
         print(f"✗ Failed to process {failed} samples")
 
@@ -586,6 +724,9 @@ def main():
             target_datasets = NONJUDGE_DATASETS
         else:  # all
             target_datasets = all_datasets
+
+    if any(name in SPOKEN_MQA_DATASETS for name in target_datasets):
+        write_spoken_mqa_provenance(output_dir)
 
     # Initialize category folders with __init__.py for nemo-skills to find dataset defaults
     for category in ["judge", "nonjudge"]:
