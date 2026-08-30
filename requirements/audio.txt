@@ -35,3 +35,7 @@ absl-py
 immutabledict
 langdetect
 nltk
+
+# Official lattice-aware Hindi scorer for VoiceArena Monsoon public ASR
+voi-oiwer==0.1.4
+indic-nlp-library==0.92
