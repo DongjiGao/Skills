@@ -120,6 +120,24 @@ class AudioMetrics(BaseMetrics):
         self.wer_c_scores = []
         self.wer_pc_scores = []
         self.per_scores = []
+        self.asr_pc_wer_totals = {
+            metric_name: {
+                "errors": 0,
+                "ref_words": 0,
+                "substitutions": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }
+            for metric_name in ("wer_c", "wer_pc")
+        }
+        self.per_totals = {
+            "correct": 0,
+            "substitutions": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "errors": 0,
+            "operations": 0,
+        }
         self.bleu_hyps: list[str] = []
         self.bleu_refs: list[str] = []
         self.bleu_tokenizes: list[str] = []
@@ -336,6 +354,21 @@ class AudioMetrics(BaseMetrics):
                 self.wer_pc_scores.append(pred["wer_pc"])
             if "per" in pred and pred["per"] is not None:
                 self.per_scores.append(pred["per"])
+            for metric_name in ("wer_c", "wer_pc"):
+                if f"{metric_name}_errors" in pred and f"{metric_name}_ref_words" in pred:
+                    totals = self.asr_pc_wer_totals[metric_name]
+                    totals["errors"] += pred[f"{metric_name}_errors"]
+                    totals["ref_words"] += pred[f"{metric_name}_ref_words"]
+                    totals["substitutions"] += pred[f"{metric_name}_substitutions"]
+                    totals["insertions"] += pred[f"{metric_name}_insertions"]
+                    totals["deletions"] += pred[f"{metric_name}_deletions"]
+            if "per_operations" in pred:
+                self.per_totals["correct"] += pred["per_correct"]
+                self.per_totals["substitutions"] += pred["per_substitutions"]
+                self.per_totals["insertions"] += pred["per_insertions"]
+                self.per_totals["deletions"] += pred["per_deletions"]
+                self.per_totals["errors"] += pred["per_errors"]
+                self.per_totals["operations"] += pred["per_operations"]
             if "bleu" in pred and pred["bleu"] is not None:
                 self.bleu_hyps.append(pred["pred_text"])
                 self.bleu_refs.append(pred["text"])
@@ -382,6 +415,16 @@ class AudioMetrics(BaseMetrics):
                 "wer_substitutions",
                 "wer_insertions",
                 "wer_deletions",
+                "wer_c_errors",
+                "wer_c_ref_words",
+                "wer_c_substitutions",
+                "wer_c_insertions",
+                "wer_c_deletions",
+                "wer_pc_errors",
+                "wer_pc_ref_words",
+                "wer_pc_substitutions",
+                "wer_pc_insertions",
+                "wer_pc_deletions",
             }
             for metric_name, metric_value in pred.items():
                 if (
@@ -460,12 +503,27 @@ class AudioMetrics(BaseMetrics):
             for wer_name, values in self.structured_wer_scores.items():
                 if values:
                     agg_metrics[f"{wer_name}_macro"] = round(100.0 * sum(values) / len(values), 2)
-            if self.wer_c_scores:
-                agg_metrics["wer_c"] = round(100.0 * sum(self.wer_c_scores) / len(self.wer_c_scores), 2)
-            if self.wer_pc_scores:
-                agg_metrics["wer_pc"] = round(100.0 * sum(self.wer_pc_scores) / len(self.wer_pc_scores), 2)
-            if self.per_scores:
+            for metric_name, scores in (("wer_c", self.wer_c_scores), ("wer_pc", self.wer_pc_scores)):
+                totals = self.asr_pc_wer_totals[metric_name]
+                if totals["ref_words"] > 0:
+                    agg_metrics[metric_name] = round(100.0 * totals["errors"] / totals["ref_words"], 2)
+                    agg_metrics[f"{metric_name}_errors"] = totals["errors"]
+                    agg_metrics[f"{metric_name}_substitutions"] = totals["substitutions"]
+                    agg_metrics[f"{metric_name}_insertions"] = totals["insertions"]
+                    agg_metrics[f"{metric_name}_deletions"] = totals["deletions"]
+                    agg_metrics[f"{metric_name}_ref_words"] = totals["ref_words"]
+                elif scores:
+                    agg_metrics[metric_name] = round(100.0 * sum(scores) / len(scores), 2)
+                if scores:
+                    agg_metrics[f"{metric_name}_macro"] = round(100.0 * sum(scores) / len(scores), 2)
+            if self.per_totals["operations"] > 0:
+                agg_metrics["per"] = round(100.0 * self.per_totals["errors"] / self.per_totals["operations"], 2)
+                for count_name, value in self.per_totals.items():
+                    agg_metrics[f"per_{count_name}"] = value
+            elif self.per_scores:
                 agg_metrics["per"] = round(100.0 * sum(self.per_scores) / len(self.per_scores), 2)
+            if self.per_scores:
+                agg_metrics["per_macro"] = round(100.0 * sum(self.per_scores) / len(self.per_scores), 2)
             if self.bleu_refs:
                 agg_metrics["bleu"] = round(
                     compute_corpus_bleu(self.bleu_hyps, self.bleu_refs, self.bleu_tokenizes), 2
@@ -581,10 +639,27 @@ class AudioMetrics(BaseMetrics):
                 base_metrics[f"{wer_name}_deletions"] = as_int
                 base_metrics[f"{wer_name}_ref_words"] = as_int
         if self.wer_c_scores:
-            base_metrics["wer_c"] = as_percentage
+            base_metrics["wer_c_macro"] = as_percentage
         if self.wer_pc_scores:
-            base_metrics["wer_pc"] = as_percentage
+            base_metrics["wer_pc_macro"] = as_percentage
         if self.per_scores:
+            base_metrics["per_macro"] = as_percentage
+        for metric_name in ("wer_c", "wer_pc"):
+            totals = self.asr_pc_wer_totals[metric_name]
+            if totals["ref_words"] > 0:
+                base_metrics[metric_name] = as_percentage
+                base_metrics[f"{metric_name}_errors"] = as_int
+                base_metrics[f"{metric_name}_substitutions"] = as_int
+                base_metrics[f"{metric_name}_insertions"] = as_int
+                base_metrics[f"{metric_name}_deletions"] = as_int
+                base_metrics[f"{metric_name}_ref_words"] = as_int
+            elif (metric_name == "wer_c" and self.wer_c_scores) or (metric_name == "wer_pc" and self.wer_pc_scores):
+                base_metrics[metric_name] = as_percentage
+        if self.per_totals["operations"] > 0:
+            base_metrics["per"] = as_percentage
+            for count_name in self.per_totals:
+                base_metrics[f"per_{count_name}"] = as_int
+        elif self.per_scores:
             base_metrics["per"] = as_percentage
         if self.bleu_refs:
             base_metrics["bleu"] = as_percentage

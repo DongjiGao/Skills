@@ -22,8 +22,6 @@ from collections import OrderedDict
 from functools import lru_cache
 from typing import Any
 
-import numpy as np
-
 from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorConfig
 from nemo_skills.utils import get_logger_name, nested_dataclass
 
@@ -343,85 +341,139 @@ def mixed_segment(text: str, grapheme: bool = False) -> list[str]:
     return tokens
 
 
-def extract_punctuation(text: str) -> list[str]:
-    """Extract only punctuation characters from text."""
-    return [c for c in text if not c.isalnum() and not c.isspace()]
+ASR_PC_PUNCTUATION = (".", ",", "?")
+_ASR_PC_TOKEN_RE = re.compile(r"[\w']+|[.,?]")
+
+
+def _asr_pc_tokens(text: str, *, punctuation: bool, lowercase: bool) -> list[str]:
+    """Tokenize the frozen LibriSpeech-PC protocol without text/number normalization."""
+    tokens = _ASR_PC_TOKEN_RE.findall(normalize_whitespace(text))
+    if not punctuation:
+        tokens = [token for token in tokens if token not in ASR_PC_PUNCTUATION]
+    if lowercase:
+        tokens = [token.lower() for token in tokens]
+    return tokens
+
+
+def punctuation_error_counts(reference: str, hypothesis: str) -> dict[str, int | float]:
+    """Return NeMo's official masked-position PER counts for ``[.,?]``."""
+    ref_tokens = _asr_pc_tokens(reference, punctuation=True, lowercase=False)
+    hyp_tokens = _asr_pc_tokens(hypothesis, punctuation=True, lowercase=False)
+    punctuation = set(ASR_PC_PUNCTUATION)
+    mask = "[PUNCT]"
+    ref_masked = [mask if token in punctuation else token for token in ref_tokens]
+    hyp_masked = [mask if token in punctuation else token for token in hyp_tokens]
+
+    ref_len = len(ref_masked)
+    hyp_len = len(hyp_masked)
+    costs = [[0] * (hyp_len + 1) for _ in range(ref_len + 1)]
+    backtrace = [[""] * (hyp_len + 1) for _ in range(ref_len + 1)]
+    for ref_index in range(1, ref_len + 1):
+        costs[ref_index][0] = ref_index
+        backtrace[ref_index][0] = "D"
+    for hyp_index in range(1, hyp_len + 1):
+        costs[0][hyp_index] = hyp_index
+        backtrace[0][hyp_index] = "I"
+
+    for ref_index in range(1, ref_len + 1):
+        for hyp_index in range(1, hyp_len + 1):
+            if ref_masked[ref_index - 1] == hyp_masked[hyp_index - 1]:
+                costs[ref_index][hyp_index] = costs[ref_index - 1][hyp_index - 1]
+                backtrace[ref_index][hyp_index] = "C"
+                continue
+            substitution = costs[ref_index - 1][hyp_index - 1] + 1
+            insertion = costs[ref_index][hyp_index - 1] + 1
+            deletion = costs[ref_index - 1][hyp_index] + 1
+            costs[ref_index][hyp_index] = min(substitution, insertion, deletion)
+            if costs[ref_index][hyp_index] == substitution:
+                backtrace[ref_index][hyp_index] = "S"
+            elif costs[ref_index][hyp_index] == insertion:
+                backtrace[ref_index][hyp_index] = "I"
+            else:
+                backtrace[ref_index][hyp_index] = "D"
+
+    correct = 0
+    substitutions = 0
+    ref_index = ref_len
+    hyp_index = hyp_len
+    while ref_index > 0 or hyp_index > 0:
+        operation = backtrace[ref_index][hyp_index]
+        if operation == "C":
+            ref_token = ref_tokens[ref_index - 1]
+            hyp_token = hyp_tokens[hyp_index - 1]
+            if ref_token in punctuation or hyp_token in punctuation:
+                if ref_token == hyp_token:
+                    correct += 1
+                else:
+                    substitutions += 1
+            ref_index -= 1
+            hyp_index -= 1
+        elif operation == "S":
+            ref_index -= 1
+            hyp_index -= 1
+        elif operation == "I":
+            hyp_index -= 1
+        elif operation == "D":
+            ref_index -= 1
+        else:
+            raise AssertionError(f"Missing PER backtrace at ({ref_index}, {hyp_index})")
+
+    ref_punctuation = sum(token in punctuation for token in ref_tokens)
+    hyp_punctuation = sum(token in punctuation for token in hyp_tokens)
+    deletions = ref_punctuation - correct - substitutions
+    insertions = hyp_punctuation - correct - substitutions
+    operations = correct + substitutions + deletions + insertions
+    errors = substitutions + deletions + insertions
+    return {
+        "per": errors / operations if operations else 0.0,
+        "per_correct": correct,
+        "per_substitutions": substitutions,
+        "per_deletions": deletions,
+        "per_insertions": insertions,
+        "per_errors": errors,
+        "per_operations": operations,
+    }
 
 
 def calculate_per(reference: str, hypothesis: str) -> float:
-    """Calculate Punctuation Error Rate (PER): (I+D+S) / (I+D+S+C)"""
-    ref_punct = extract_punctuation(reference)
-    hyp_punct = extract_punctuation(hypothesis)
+    """Calculate official LibriSpeech-PC PER: ``(I+D+S)/(I+D+S+C)``."""
+    return float(punctuation_error_counts(reference, hypothesis)["per"])
 
-    len_r, len_h = len(ref_punct), len(hyp_punct)
 
-    if len_r == 0 and len_h == 0:
-        return 0.0
-
-    dp = np.zeros((len_r + 1, len_h + 1, 4), dtype=int)
-
-    for i in range(1, len_r + 1):
-        dp[i, 0][2] = i
-    for j in range(1, len_h + 1):
-        dp[0, j][3] = j
-
-    for i in range(1, len_r + 1):
-        for j in range(1, len_h + 1):
-            if ref_punct[i - 1] == hyp_punct[j - 1]:
-                dp[i, j] = dp[i - 1, j - 1].copy()
-                dp[i, j][0] += 1
-            else:
-                sub = dp[i - 1, j - 1].copy()
-                sub[1] += 1
-                delete = dp[i - 1, j].copy()
-                delete[2] += 1
-                insert = dp[i, j - 1].copy()
-                insert[3] += 1
-                dp[i, j] = min([sub, delete, insert], key=lambda x: x[1] + x[2] + x[3])
-
-    correct, substitution, deletion, insertion = dp[len_r, len_h]
-    total = correct + substitution + deletion + insertion
-    per = (substitution + deletion + insertion) / total if total > 0 else 0.0
-    return per
+def _prefixed_wer_counts(reference: str, hypothesis: str, prefix: str) -> dict[str, int | float]:
+    counts = _wer_with_counts(reference, hypothesis)
+    return {
+        prefix: counts["wer"],
+        f"{prefix}_errors": counts["wer_errors"],
+        f"{prefix}_ref_words": counts["wer_ref_words"],
+        f"{prefix}_substitutions": counts["wer_substitutions"],
+        f"{prefix}_insertions": counts["wer_insertions"],
+        f"{prefix}_deletions": counts["wer_deletions"],
+    }
 
 
 def evaluate_asr_pc(
     reference: str, hypothesis: str, normalize_standard_wer: bool = True, normalization_mode: str = "standard"
 ) -> dict[str, Any]:
-    """Evaluate ASR-PC: computes WER, WER_C, WER_PC, PER.
+    """Evaluate the frozen LibriSpeech-PC WER/WER-C/WER-PC/PER protocol.
 
-    Args:
-        reference: Ground truth transcription.
-        hypothesis: Model output transcription.
-        normalize_standard_wer: Whether to apply normalization to standard WER.
-        normalization_mode: Normalization mode for standard WER ("standard", "audiobench", "hf_leaderboard", "none", "no_tn_itn").
+    The compatibility arguments remain accepted, but ASR-PC intentionally
+    never uses Whisper TN/ITN.  It applies only whitespace normalization,
+    case folding for WER, and the target punctuation set ``[.,?]``.
     """
-    import jiwer
-
-    ref_pc = normalize_whitespace(reference)
-    hyp_pc = normalize_whitespace(hypothesis)
-
-    ref_tokens = split_tokens(ref_pc)
-    hyp_tokens = split_tokens(hyp_pc)
-    wer_pc = jiwer.wer(" ".join(ref_tokens), " ".join(hyp_tokens))
-
-    ref_c = normalize_whitespace(re.sub(r"[^\w\s]", "", reference))
-    hyp_c = normalize_whitespace(re.sub(r"[^\w\s]", "", hypothesis))
-    wer_c = jiwer.wer(ref_c, hyp_c)
-
-    if normalize_standard_wer:
-        ref_std = preprocess_asr_text(reference, mode=normalization_mode)
-        hyp_std = preprocess_asr_text(hypothesis, mode=normalization_mode)
-    else:
-        ref_std = normalize_whitespace(re.sub(r"[^\w\s]", "", reference.lower()))
-        hyp_std = normalize_whitespace(re.sub(r"[^\w\s]", "", hypothesis.lower()))
+    del normalize_standard_wer, normalization_mode
+    ref_std = " ".join(_asr_pc_tokens(reference, punctuation=False, lowercase=True))
+    hyp_std = " ".join(_asr_pc_tokens(hypothesis, punctuation=False, lowercase=True))
+    ref_c = " ".join(_asr_pc_tokens(reference, punctuation=False, lowercase=False))
+    hyp_c = " ".join(_asr_pc_tokens(hypothesis, punctuation=False, lowercase=False))
+    ref_pc = " ".join(_asr_pc_tokens(reference, punctuation=True, lowercase=False))
+    hyp_pc = " ".join(_asr_pc_tokens(hypothesis, punctuation=True, lowercase=False))
 
     result = _wer_with_counts(ref_std, hyp_std)
-    per = calculate_per(reference, hypothesis)
-    result["wer_c"] = wer_c
-    result["wer_pc"] = wer_pc
-    result["per"] = per
-    result["is_correct"] = wer_pc < 0.5
+    result.update(_prefixed_wer_counts(ref_c, hyp_c, "wer_c"))
+    result.update(_prefixed_wer_counts(ref_pc, hyp_pc, "wer_pc"))
+    result.update(punctuation_error_counts(reference, hypothesis))
+    result["is_correct"] = result["wer_pc_errors"] == 0
     result["text"] = ref_std
     result["pred_text"] = hyp_std
     return result

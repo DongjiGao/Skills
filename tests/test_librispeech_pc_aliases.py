@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import importlib
 import json
 
 import pytest
 
-process_split = importlib.import_module(
-    "nemo_skills.dataset.librispeech-pc.prepare"
-).process_split
+prepare = importlib.import_module("nemo_skills.dataset.librispeech-pc.prepare")
+process_split = prepare.process_split
 
 
 @pytest.mark.parametrize("split", ["test-clean", "test-other"])
@@ -34,13 +34,27 @@ def test_librispeech_pc_split_benchmarks_are_independently_runnable(split):
 
 
 @pytest.mark.parametrize("split", ["test-clean", "test-other"])
-def test_librispeech_pc_prepare_writes_leaf_and_legacy_manifests(tmp_path, split):
+def test_librispeech_pc_prepare_writes_leaf_and_legacy_manifests(tmp_path, monkeypatch, split):
+    relative_audio = f"{split}/1/2/1-2-3.flac"
     source = {
-        "audio_filepath": f"LibriSpeech/{split.replace('-', '_')}/1/2/1-2-3.flac",
+        "audio_filepath": relative_audio,
+        "duration": 1.25,
         "text": "Hello, World!",
+        "text_raw": "HELLO WORLD",
     }
     manifest = tmp_path / f"{split}.json"
     manifest.write_text(json.dumps(source) + "\n", encoding="utf-8")
+    monkeypatch.setitem(
+        prepare.MANIFEST_CONTRACTS,
+        split,
+        {
+            "rows": 1,
+            "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        },
+    )
+    audio = tmp_path / "LibriSpeech" / relative_audio
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(prepare.FLAC_MAGIC + b"test fixture")
 
     assert process_split(split, tmp_path, tmp_path, with_audio=False) == 1
 
@@ -48,8 +62,9 @@ def test_librispeech_pc_prepare_writes_leaf_and_legacy_manifests(tmp_path, split
     legacy = tmp_path / f"{split}.jsonl"
     assert leaf.read_text(encoding="utf-8") == legacy.read_text(encoding="utf-8")
     row = json.loads(leaf.read_text(encoding="utf-8"))
+    assert row["id"] == "1-2-3"
     assert row["expected_answer"] == "Hello, World!"
+    assert row["duration"] == 1.25
     assert row["split"] == split
-    assert row["messages"][1]["content"] == (
-        "Transcribe the audio with proper punctuation and capitalization."
-    )
+    assert row["messages"][1]["audio"]["duration"] == 1.25
+    assert row["messages"][1]["content"] == ("Transcribe the audio with proper punctuation and capitalization.")
