@@ -706,6 +706,22 @@ def _get_open_asr_english_normalizer():
     return OpenASREnglishTextNormalizer()
 
 
+@lru_cache(maxsize=1)
+def _get_audiobench_english_normalizer():
+    """Reproduce AudioBench 85dcdb8's vendored Whisper normalizer exactly.
+
+    whisper-normalizer 0.1.12 added four slang expansions after the Whisper
+    snapshot vendored by AudioBench. All other executable English normalizer
+    code and the spelling map are identical, so remove only those additions.
+    """
+    from whisper_normalizer.english import EnglishTextNormalizer
+
+    normalizer = EnglishTextNormalizer()
+    for pattern in (r"\bkinda\b", r"\bsorta\b", r"\bdunno\b", r"\bcause\b"):
+        normalizer.replacers.pop(pattern, None)
+    return normalizer
+
+
 def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
     """Normalize ASR text for WER calculation.
 
@@ -767,7 +783,7 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         import jiwer
 
         text = text.lower()
-        text = EnglishTextNormalizer()(text)
+        text = _get_audiobench_english_normalizer()(text)
         text = _normalize_digits_to_words(text)
         text = _expand_contractions(text)
         text = re.sub(r"(\[|\(|\{|\<)[^\(\)\\n\[\]]*(\]|\)|\}|\>)", "", text)

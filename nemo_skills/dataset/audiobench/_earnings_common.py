@@ -6,5 +6,8 @@
 REQUIRES_DATA_DIR = True
 METRICS_TYPE = "audio"
 EVAL_ARGS = "++eval_type=audio ++eval_config.normalization_mode=audiobench"
-GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true ++server.enable_soft_fail=true"
+GENERATION_ARGS = (
+    "++prompt_format=openai ++enable_audio=true ++server.enable_soft_fail=true "
+    "++server.context_limit_retry_strategy=reduce_generation"
+)
 EVAL_SPLIT = "test"

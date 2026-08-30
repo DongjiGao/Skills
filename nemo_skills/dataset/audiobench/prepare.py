@@ -29,6 +29,7 @@ import copy
 import io
 import json
 import os
+import random
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -151,6 +152,26 @@ EARNINGS_LONGFORM_DATASETS = {
         "paper": "arxiv:2203.15591",
     },
 }
+AUDIOBENCH_ASR_INSTRUCTIONS = (
+    "Please help me transcribe the speech into text.",
+    "Transcribe the spoken words into written form.",
+    "Listen to the speech and provide the text version.",
+    "Transform the speech into a text document as transcriptions.",
+    "Please give me the written transcription of the speech content.",
+    "Recognize the verbal content in the speech and transcribe it into text.",
+    "Turn the speech input into a text transcription.",
+    "Process the speech and provide the text output.",
+    "Transcribe the spoken conversation into written text.",
+)
+AUDIOBENCH_EARNINGS_PROMPT_SEED = 42
+
+
+def _earnings_instruction(sample_id: int) -> str:
+    """Choose from the pinned official prompt list with a reproducible seed."""
+    rng = random.Random(AUDIOBENCH_EARNINGS_PROMPT_SEED)
+    for _ in range(sample_id + 1):
+        instruction = rng.choice(AUDIOBENCH_ASR_INSTRUCTIONS)
+    return instruction
 
 
 def _spoken_mqa_reference(sample: Dict, dataset_name: str, sample_id: int) -> list[str]:
@@ -246,7 +267,12 @@ def create_manifest_entry(
     Returns:
         Manifest entry dict with proper format for nemo-skills
     """
-    instruction = sample.get("instruction", sample.get("text", "Process the audio"))
+    earnings_spec = EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    instruction = (
+        _earnings_instruction(sample_id)
+        if earnings_spec is not None
+        else sample.get("instruction", sample.get("text", "Process the audio"))
+    )
     if isinstance(instruction, dict):
         try:
             instruction = instruction["text"]
@@ -260,6 +286,9 @@ def create_manifest_entry(
     if spoken_mqa_spec is not None:
         reference = _spoken_mqa_reference(sample, dataset_name, sample_id)
         task_type = "MathQA"
+    elif dataset_name in EARNINGS_LONGFORM_DATASETS:
+        reference = sample.get("reference", sample.get("answer", ""))
+        task_type = "ASR"
     else:
         reference = sample.get("reference", sample.get("answer", ""))
         task_type = sample.get("task_type", "unknown")
@@ -303,7 +332,7 @@ def create_manifest_entry(
             "split": spoken_mqa_spec["split"],
         }
 
-    elif (earnings_spec := EARNINGS_LONGFORM_DATASETS.get(dataset_name)) is not None:
+    elif earnings_spec is not None:
         entry["source_provenance"] = {
             "benchmark": "AudioBench",
             "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
@@ -313,6 +342,8 @@ def create_manifest_entry(
             "paper": earnings_spec["paper"],
             "metric": "wer",
             "normalization": "audiobench",
+            "prompt_contract": "official_prompt_list_deterministic_seed",
+            "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
         }
     for key in [
         "choices",
@@ -428,10 +459,15 @@ def write_earnings_provenance(output_dir: Path) -> None:
         "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
         "metric": "wer",
         "normalization": "audiobench",
+        "prompt_contract": "official_prompt_list_deterministic_seed",
+        "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
+        "prompt_list": AUDIOBENCH_ASR_INSTRUCTIONS,
         "leaves": EARNINGS_LONGFORM_DATASETS,
         "comparability_note": (
-            "These leaves match the AudioBench leaderboard protocol. Earnings-21 paper numbers use "
-            "Rev FSTAlign and must not be treated as numerically interchangeable."
+            "These leaves use AudioBench's pinned ASR prompt list, exact pinned normalization, and overall corpus WER; "
+            "the upstream adapter chooses prompts without a seed, so this reproduction pins seed 42. Both canonical "
+            "Rev Earnings-21 and Earnings-22 papers use FSTAlign and are not numerically interchangeable; Earnings-22 "
+            "paper region breakdowns additionally require metadata absent from the AudioBench HF schema."
         ),
     }
     with open(provenance_path, "w", encoding="utf-8") as f:

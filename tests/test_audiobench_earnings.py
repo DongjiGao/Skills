@@ -36,7 +36,6 @@ def test_earnings_leaf_preserves_audio_only_prompt_and_provenance():
         sample={
             "instruction": "Transcribe the audio into text.",
             "answer": "Revenue increased by twenty percent.",
-            "task_type": "ASR",
         },
         audio_filename="earnings21_test_000000.wav",
         duration=3600.0,
@@ -44,13 +43,16 @@ def test_earnings_leaf_preserves_audio_only_prompt_and_provenance():
         sample_id=0,
         category="nonjudge",
     )
-    assert entry["messages"][1]["content"] == "Transcribe the audio into text."
+    assert entry["task_type"] == "ASR"
+    assert entry["messages"][1]["content"] == "Transcribe the spoken words into written form."
+    assert entry["messages"][1]["content"] in prepare.AUDIOBENCH_ASR_INSTRUCTIONS
     assert "Revenue" not in entry["messages"][1]["content"]
     assert (
         entry["source_provenance"]["dataset_revision"]
         == prepare.EARNINGS_LONGFORM_DATASETS["earnings21_test"]["revision"]
     )
     assert entry["source_provenance"]["normalization"] == "audiobench"
+    assert entry["source_provenance"]["prompt_seed"] == 42
     leaf = prepare.make_earnings_manifest_entry(entry)
     expected_path = "../nonjudge/audio/earnings21_test/earnings21_test_000000.wav"
     assert leaf["audio_path"] == [expected_path]
@@ -76,4 +78,7 @@ def test_earnings_provenance_discloses_protocol_boundary(tmp_path):
     provenance = json.loads((tmp_path / "earnings" / "provenance.json").read_text())
     assert provenance["benchmark_revision"] == prepare.AUDIOBENCH_OFFICIAL_REVISION
     assert provenance["leaves"] == prepare.EARNINGS_LONGFORM_DATASETS
+    assert provenance["prompt_list"] == list(prepare.AUDIOBENCH_ASR_INSTRUCTIONS)
+    assert provenance["prompt_seed"] == 42
+    assert "Earnings-21 and Earnings-22" in provenance["comparability_note"]
     assert "FSTAlign" in provenance["comparability_note"]

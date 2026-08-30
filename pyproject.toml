@@ -53,6 +53,7 @@ include-package-data = true
 nemo_skills = [
     "evaluation/metrics/utils/chime8_normalizer_data/*.json",
     "evaluation/evaluator/resources/voicebench_pedant/*",
+    "dataset/mucs2021/assets/*",
 ]
 
 [tool.setuptools.packages.find]
@@ -97,6 +98,7 @@ addopts = "--ignore=tests/slurm-tests -W ignore::DeprecationWarning -W ignore::P
 [tool.ruff]
 target-version = "py310"
 line-length = 119
+extend-exclude = ["nemo_skills/dataset/mucs2021/assets/official_compute_wer.py"]
 
 [tool.ruff.lint]
 ## See https://docs.astral.sh/ruff/formatter/#sorting-imports.

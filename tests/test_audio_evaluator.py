@@ -20,6 +20,14 @@ pytest.importorskip("whisper_normalizer")
 from nemo_skills.evaluation.evaluator.audio import evaluate_asr, preprocess_asr_text
 
 
+def test_audiobench_normalizer_matches_pinned_upstream_slang_behavior():
+    text = "I kinda sorta dunno 'cause EBITDA's up."
+
+    normalized = preprocess_asr_text(text, mode="audiobench")
+
+    assert normalized == "i kinda sorta dunno cause ebitda is up"
+
+
 def test_apptek_callcenter_normalization_matches_dataset_specific_mappings():
     """End-to-end: prediction-only ``oh`` removal, reference-only ``~`` half-word
     cleanup, Whisper number normalization, and the AppTek word_mappings all line
