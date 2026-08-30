@@ -1,7 +1,9 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 
 import copy
+import hashlib
 import importlib
+import json
 
 import pytest
 
@@ -55,6 +57,17 @@ def test_public_protocol_is_pinned_and_exposes_only_reproducible_tasks():
     assert "emotion" in prepare.UNSUPPORTED_TASKS
     assert "Joyful" in prepare.UNSUPPORTED_TASKS["emotion"]
 
+    assert {task: contract["rows"] for task, contract in prepare.SOURCE_CONTRACTS.items()} == {
+        "asr": 15274,
+        "translation": 6309,
+        "summary": 937,
+        "content-separation": 1263,
+        "speaker-count": 1263,
+        "language-detection": 3170,
+    }
+    assert sum(contract["rows"] for contract in prepare.SOURCE_CONTRACTS.values()) == 28216
+    assert all(len(contract["sha256"]) == 64 for contract in prepare.SOURCE_CONTRACTS.values())
+
 
 @pytest.mark.parametrize("task", ["temporal-qa", "emotion"])
 def test_incompletely_specified_tasks_fail_explicitly(task):
@@ -99,6 +112,37 @@ def test_prepare_preserves_exact_stored_messages_but_sends_audio_only_user_turn(
     assert row["expected_answer"] == "The exact stored reference."
     assert row["source_revision"] == EXPECTED_REVISION
     assert "text" not in row
+
+
+@pytest.mark.parametrize("audio", ["/absolute.wav", "../escape.wav", "dir/../../escape.wav", r"dir\\audio.wav"])
+def test_prepare_rejects_nonportable_or_escaping_audio_paths(audio):
+    source = {
+        "messages": [
+            {"role": "user", "audio": audio, "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+    }
+    with pytest.raises(ValueError, match="audio path"):
+        prepare._validate_source_row(source, "summary")
+
+
+def test_source_contract_rejects_hash_and_row_drift(tmp_path, monkeypatch):
+    path = tmp_path / "test.jsonl"
+    rows = [{"messages": []}]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setitem(
+        prepare.SOURCE_CONTRACTS,
+        "summary",
+        {"rows": 1, "unique_audio": 0, "sha256": digest},
+    )
+    assert prepare._validate_source_contract("summary", path, rows) == digest
+    prepare.SOURCE_CONTRACTS["summary"]["rows"] = 2
+    with pytest.raises(ValueError, match="row-count drift"):
+        prepare._validate_source_contract("summary", path, rows)
+    prepare.SOURCE_CONTRACTS["summary"].update(rows=1, sha256="0" * 64)
+    with pytest.raises(ValueError, match="source hash drift"):
+        prepare._validate_source_contract("summary", path, rows)
 
 
 @pytest.mark.parametrize(
