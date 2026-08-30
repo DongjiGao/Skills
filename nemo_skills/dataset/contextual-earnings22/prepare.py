@@ -44,9 +44,12 @@ from pathlib import Path
 import numpy as np
 
 HF_REPO_ID = "argmaxinc/contextual-earnings22"
+HF_REVISION = "59d7f94771cc197984d8038e494c83abeff87282"
 BENCHMARK_NAME = "contextual-earnings22"
 SPLIT = "test"
 SAMPLING_RATE = 16000
+EXPECTED_ROWS = 772
+MINIMUM_AUDIO_SAMPLES = 320
 
 PROMPT_CONTEXTLESS = "Transcribe the English audio into text, ensuring all punctuation marks are included."
 PROMPT_LOCAL = (
@@ -122,7 +125,9 @@ def download_and_extract_audio(data_dir: Path) -> int:
     print("Total download size: ~404 MB (parquet with 16 kHz embedded audio)")
     print("=" * 70)
 
-    ds = load_dataset(HF_REPO_ID, split=SPLIT)
+    ds = load_dataset(HF_REPO_ID, split=SPLIT, revision=HF_REVISION)
+    if len(ds) != EXPECTED_ROWS:
+        raise ValueError(f"Contextual Earnings22 row-count drift: expected {EXPECTED_ROWS}, found {len(ds)}")
 
     print(f"Loaded {len(ds)} samples. Extracting audio to {audio_dir} ...")
 
@@ -158,6 +163,11 @@ def download_and_extract_audio(data_dir: Path) -> int:
                 "local_keywords": list(row["dictionary"]),
                 "global_keywords": list(row["keywords"]),
                 "is_flagged": bool(row["is_flagged"]),
+                "source_row_id": f"{file_id}:{audio_start:.2f}:{idx}",
+                "source_repo": HF_REPO_ID,
+                "source_revision": HF_REVISION,
+                "source_split": SPLIT,
+                "expected_rows": EXPECTED_ROWS,
             }
         )
 
@@ -165,8 +175,7 @@ def download_and_extract_audio(data_dir: Path) -> int:
 
     metadata_path = data_dir / "samples.jsonl"
     with open(metadata_path, "w", encoding="utf-8") as f:
-        for s in samples:
-            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+        f.writelines(json.dumps(s, ensure_ascii=False) + "\n" for s in samples)
     print(f"Wrote sample metadata: {metadata_path}")
 
     return len(samples)
@@ -182,6 +191,62 @@ def load_samples(data_dir: Path) -> list[dict]:
             if line:
                 samples.append(json.loads(line))
     return samples
+
+
+def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: bool) -> None:
+    if len(samples) != EXPECTED_ROWS:
+        raise ValueError(
+            f"Contextual Earnings22 metadata row-count drift: expected {EXPECTED_ROWS}, found {len(samples)}"
+        )
+
+    required = {
+        "audio_filename",
+        "duration",
+        "expected_rows",
+        "source_repo",
+        "source_revision",
+        "source_row_id",
+        "source_split",
+    }
+    seen_audio: set[str] = set()
+    seen_ids: set[str] = set()
+    for index, sample in enumerate(samples):
+        missing = required - sample.keys()
+        if missing:
+            raise ValueError(f"Contextual Earnings22 row {index} is missing fields: {sorted(missing)}")
+        if (
+            sample["source_repo"] != HF_REPO_ID
+            or sample["source_revision"] != HF_REVISION
+            or sample["source_split"] != SPLIT
+            or sample["expected_rows"] != EXPECTED_ROWS
+        ):
+            raise ValueError(f"Contextual Earnings22 row {index} does not match the pinned source contract")
+        audio_filename = str(sample["audio_filename"])
+        source_row_id = str(sample["source_row_id"])
+        if audio_filename in seen_audio or source_row_id in seen_ids:
+            raise ValueError(f"Contextual Earnings22 duplicate row/audio identity at row {index}")
+        seen_audio.add(audio_filename)
+        seen_ids.add(source_row_id)
+        if float(sample["duration"]) <= 0:
+            raise ValueError(f"Contextual Earnings22 row {index} has invalid duration")
+
+        if not require_audio:
+            continue
+        audio_path = data_dir / "audio" / audio_filename
+        if not audio_path.is_file() or audio_path.stat().st_size <= 44:
+            raise FileNotFoundError(f"Contextual Earnings22 audio is missing or empty: {audio_path}")
+        try:
+            with wave.open(str(audio_path), "rb") as stream:
+                header = (
+                    stream.getnchannels(),
+                    stream.getsampwidth(),
+                    stream.getframerate(),
+                    stream.getnframes(),
+                )
+        except (EOFError, wave.Error) as exc:
+            raise ValueError(f"Contextual Earnings22 audio has an invalid WAV header: {audio_path}") from exc
+        if header[:3] != (1, 2, SAMPLING_RATE) or header[3] < MINIMUM_AUDIO_SAMPLES:
+            raise ValueError(f"Contextual Earnings22 audio contract failed for {audio_path}: {header}")
 
 
 def build_messages(prompt_text: str, audio_path: str, duration: float) -> list[dict]:
@@ -217,6 +282,7 @@ def format_entry(sample: dict, mode: str, audio_prefix: str) -> dict:
         raise ValueError(f"Unknown mode: {mode}")
 
     return {
+        "id": f"{BENCHMARK_NAME}-{mode}-{sample['source_row_id']}",
         "messages": build_messages(prompt, audio_path, sample["duration"]),
         "expected_answer": sample["norm_text"],
         "expected_answer_cased": sample["text"],
@@ -228,6 +294,12 @@ def format_entry(sample: dict, mode: str, audio_prefix: str) -> dict:
         "audio_start": sample["audio_start"],
         "duration": float(sample["duration"]),
         "audio_filepath": audio_path,
+        "source_provenance": {
+            "repo_id": HF_REPO_ID,
+            "revision": HF_REVISION,
+            "split": SPLIT,
+            "expected_rows": EXPECTED_ROWS,
+        },
     }
 
 
@@ -286,20 +358,14 @@ def main() -> None:
     print(f"\nReading sample metadata from {metadata_path}")
     samples = load_samples(data_dir)
     print(f"Loaded {len(samples)} samples")
+    _validate_samples(samples, data_dir, require_audio=not args.no_audio)
     if not samples:
         raise ValueError(
             f"No samples found in {metadata_path}. Re-run without --no-audio to regenerate dataset metadata."
         )
 
     if not args.no_audio:
-        sample_audio = Path(audio_prefix) / "audio" / samples[0]["audio_filename"]
-        if not sample_audio.exists():
-            print(
-                f"WARNING: Sample audio file not found at {sample_audio}. "
-                f"Audio paths may need adjustment via --audio-prefix."
-            )
-        else:
-            print(f"Audio files verified (sample check: {sample_audio})")
+        print(f"Verified {len(samples)} pinned 16 kHz mono WAV files")
 
     modes = {
         "contextless": output_dir / "contextless" / "test.jsonl",
@@ -312,8 +378,7 @@ def main() -> None:
         lines = [json.dumps(format_entry(s, mode_name, audio_prefix), ensure_ascii=False) for s in samples]
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as fout:
-            for line in lines:
-                fout.write(line + "\n")
+            fout.writelines(line + "\n" for line in lines)
         print(f"  {mode_name}: wrote {len(lines)} samples to {output_path}")
 
     print(f"\nDone. Total: {len(samples)} samples x 3 modes = {len(samples) * 3} records")
