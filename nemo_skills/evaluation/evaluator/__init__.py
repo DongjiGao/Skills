@@ -45,6 +45,7 @@ _EVALUATOR_MAP_PATHS = {
     "mmau-pro": "nemo_skills.evaluation.evaluator.mmau_pro:eval_mmau_pro",
     "specdec": "nemo_skills.evaluation.evaluator.specdec:eval_specdec",
     "set-token-mcq": "nemo_skills.evaluation.evaluator.set_token_mcq:eval_set_token_mcq",
+    "air-bench-foundation": "nemo_skills.evaluation.evaluator.air_bench_foundation:eval_air_bench_foundation",
     "voicebench-ifeval": "nemo_skills.evaluation.evaluator.voicebench_ifeval:eval_voicebench_ifeval",
 }
 
