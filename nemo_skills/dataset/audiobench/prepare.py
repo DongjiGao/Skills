@@ -135,6 +135,22 @@ SPOKEN_MQA_DATASETS = {
         "rows": 1402,
     },
 }
+EARNINGS_LONGFORM_DATASETS = {
+    "earnings21_test": {
+        "leaf": "earnings21",
+        "repo": "AudioLLMs/earnings21_test",
+        "revision": "1edcc0d56dc6cdb6d21420f3155936e48485928d",
+        "rows": 44,
+        "paper": "arxiv:2104.11348",
+    },
+    "earnings22_test": {
+        "leaf": "earnings22",
+        "repo": "AudioLLMs/earnings22_test",
+        "revision": "19da542f94ac74d603b9cb5eed0e13792517ccf4",
+        "rows": 125,
+        "paper": "arxiv:2203.15591",
+    },
+}
 
 
 def _spoken_mqa_reference(sample: Dict, dataset_name: str, sample_id: int) -> list[str]:
@@ -142,6 +158,13 @@ def _spoken_mqa_reference(sample: Dict, dataset_name: str, sample_id: int) -> li
     if not isinstance(answer, dict) or not isinstance(answer.get("text"), list):
         raise ValueError(f"Spoken-MQA answer.text must be a list for {dataset_name} sample {sample_id}: {answer!r}")
     return [str(value) for value in answer["text"]]
+
+
+def _validate_pinned_row_contract(dataset_name: str, rows: int) -> None:
+    """Fail closed when a pinned benchmark source changes its full-test row count."""
+    spec = SPOKEN_MQA_DATASETS.get(dataset_name) or EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    if spec is not None and rows != spec["rows"]:
+        raise ValueError(f"Pinned row contract failed for {dataset_name}: expected {spec['rows']}, found {rows}")
 
 
 def get_audio_duration(audio_array: np.ndarray, sampling_rate: int) -> float:
@@ -280,6 +303,17 @@ def create_manifest_entry(
             "split": spoken_mqa_spec["split"],
         }
 
+    elif (earnings_spec := EARNINGS_LONGFORM_DATASETS.get(dataset_name)) is not None:
+        entry["source_provenance"] = {
+            "benchmark": "AudioBench",
+            "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+            "dataset": earnings_spec["repo"],
+            "dataset_revision": earnings_spec["revision"],
+            "split": "test",
+            "paper": earnings_spec["paper"],
+            "metric": "wer",
+            "normalization": "audiobench",
+        }
     for key in [
         "choices",
         "options",
@@ -346,6 +380,30 @@ def make_spoken_mqa_manifest_entry(entry: Dict) -> Dict:
     return entry
 
 
+def make_earnings_manifest_entry(entry: Dict) -> Dict:
+    """Rewrite category-relative paths for a standalone AudioBench Earnings leaf."""
+    entry = copy.deepcopy(entry)
+
+    def rewrite(path: str) -> str:
+        return f"../nonjudge/{path}" if path.startswith("audio/") else path
+
+    if isinstance(entry.get("audio_path"), list):
+        entry["audio_path"] = [rewrite(path) for path in entry["audio_path"]]
+    elif isinstance(entry.get("audio_path"), str):
+        entry["audio_path"] = rewrite(entry["audio_path"])
+
+    for message in entry.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        if "audio" in message and isinstance(message["audio"], dict) and "path" in message["audio"]:
+            message["audio"]["path"] = rewrite(message["audio"]["path"])
+        for audio in message.get("audios", []):
+            if isinstance(audio, dict) and "path" in audio:
+                audio["path"] = rewrite(audio["path"])
+
+    return entry
+
+
 def write_spoken_mqa_provenance(output_dir: Path) -> None:
     provenance_path = output_dir / "spoken-mqa" / "provenance.json"
     provenance_path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +413,26 @@ def write_spoken_mqa_provenance(output_dir: Path) -> None:
         "dataset": "amao0o0/spoken-mqa",
         "dataset_revision": SPOKEN_MQA_SOURCE_REVISION,
         "leaves": SPOKEN_MQA_DATASETS,
+    }
+    with open(provenance_path, "w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def write_earnings_provenance(output_dir: Path) -> None:
+    """Record immutable AudioBench source/protocol contracts for both long-form leaves."""
+    provenance_path = output_dir / "earnings" / "provenance.json"
+    provenance_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "benchmark": "AudioBench",
+        "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+        "metric": "wer",
+        "normalization": "audiobench",
+        "leaves": EARNINGS_LONGFORM_DATASETS,
+        "comparability_note": (
+            "These leaves match the AudioBench leaderboard protocol. Earnings-21 paper numbers use "
+            "Rev FSTAlign and must not be treated as numerically interchangeable."
+        ),
     }
     with open(provenance_path, "w", encoding="utf-8") as f:
         json.dump(provenance, f, indent=2, sort_keys=True)
@@ -396,6 +474,10 @@ def process_dataset(
         # AudioBench mapping for datasets that are not 1:1 AudioLLMs/<dataset_name>.
         hf_map = {
             # AudioLLMs org aliases
+            **{
+                name: {"repo": spec["repo"], "split": "test", "revision": spec["revision"]}
+                for name, spec in EARNINGS_LONGFORM_DATASETS.items()
+            },
             "aishell_asr_zh_test": {"repo": "AudioLLMs/aishell_1_zh_test", "split": "test"},
             "muchomusic_test": {"repo": "AudioLLMs/mu_chomusic_test", "split": "test"},
             "openhermes_audio_test": {"repo": "AudioLLMs/openhermes_instruction_test", "split": "test"},
@@ -539,16 +621,11 @@ def process_dataset(
                 load_kwargs["data_dir"] = data_dir
             hf_ds = load_dataset(hf_repo, **load_kwargs)
 
-            spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
-            if spoken_mqa_spec is not None and not (max_samples is not None and int(max_samples) > 0):
-                expected_rows = spoken_mqa_spec["rows"]
-                if len(hf_ds) != expected_rows:
-                    raise ValueError(
-                        f"Spoken-MQA row contract failed for {dataset_name}: expected {expected_rows}, "
-                        f"found {len(hf_ds)} at revision {revision}"
-                    )
+            is_pinned_audio = dataset_name in SPOKEN_MQA_DATASETS or dataset_name in EARNINGS_LONGFORM_DATASETS
+            if is_pinned_audio and not (max_samples is not None and int(max_samples) > 0):
+                _validate_pinned_row_contract(dataset_name, len(hf_ds))
 
-            if spoken_mqa_spec is not None:
+            if is_pinned_audio:
                 hf_ds = hf_ds.cast_column("context", Audio(decode=False))
 
             fallback_repo = spec.get("fallback_repo")
@@ -661,6 +738,17 @@ def process_dataset(
                 f"Spoken-MQA preparation contract failed for {dataset_name}: "
                 f"expected {expected_rows} successful rows and no failures; got {successful} successful, {failed} failed"
             )
+    earnings_spec = EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    if (
+        earnings_spec is not None
+        and not (max_samples is not None and int(max_samples) > 0)
+        and (successful != earnings_spec["rows"] or failed)
+    ):
+        raise RuntimeError(
+            f"AudioBench Earnings preparation contract failed for {dataset_name}: "
+            f"expected {earnings_spec['rows']} successful rows and no failures; "
+            f"got {successful} successful, {failed} failed"
+        )
 
     # Save dataset-specific manifest to dataset directory
     manifest_path = dataset_dir / f"{split}.jsonl"
@@ -678,6 +766,14 @@ def process_dataset(
                 leaf_entry = make_spoken_mqa_manifest_entry(entry)
                 f.write(json.dumps(leaf_entry, ensure_ascii=False) + "\n")
         print(f"✓ Saved official Spoken-MQA leaf with {successful} samples to {leaf_manifest_path}")
+    if earnings_spec is not None:
+        leaf_dir = output_dir / earnings_spec["leaf"]
+        leaf_dir.mkdir(parents=True, exist_ok=True)
+        leaf_manifest_path = leaf_dir / f"{split}.jsonl"
+        with open(leaf_manifest_path, "w", encoding="utf-8") as f:
+            for entry in manifest_entries:
+                f.write(json.dumps(make_earnings_manifest_entry(entry), ensure_ascii=False) + "\n")
+        print(f"✓ Saved AudioBench {earnings_spec['leaf']} leaf with {successful} samples to {leaf_manifest_path}")
     if failed > 0:
         print(f"✗ Failed to process {failed} samples")
 
@@ -758,6 +854,8 @@ def main():
     if any(name in SPOKEN_MQA_DATASETS for name in target_datasets):
         write_spoken_mqa_provenance(output_dir)
 
+    if any(name in EARNINGS_LONGFORM_DATASETS for name in target_datasets):
+        write_earnings_provenance(output_dir)
     # Initialize category folders with __init__.py for nemo-skills to find dataset defaults
     for category in ["judge", "nonjudge"]:
         category_dir = output_dir / category
