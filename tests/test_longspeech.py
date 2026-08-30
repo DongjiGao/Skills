@@ -6,6 +6,7 @@ import importlib
 import json
 
 import pytest
+import soundfile as sf
 
 from nemo_skills.evaluation.evaluator.longspeech import (
     evaluate_longspeech_sample,
@@ -98,6 +99,7 @@ def test_prepare_preserves_exact_stored_messages_but_sends_audio_only_user_turn(
         source_task="summary",
         row_index=7,
         audio_prefix="/data/longspeech/audio",
+        audio_duration=12.5,
     )
 
     assert source == untouched
@@ -105,7 +107,10 @@ def test_prepare_preserves_exact_stored_messages_but_sends_audio_only_user_turn(
     assert row["messages"] == [
         {
             "role": "user",
-            "audio": {"path": "/data/longspeech/audio/LongSpeech_p1/wavs/part_00/example.wav"},
+            "audio": {
+                "path": "/data/longspeech/audio/LongSpeech_p1/wavs/part_00/example.wav",
+                "duration": 12.5,
+            },
             "content": "Please analyze the audio and produce a summary.",
         }
     ]
@@ -124,6 +129,25 @@ def test_prepare_rejects_nonportable_or_escaping_audio_paths(audio):
     }
     with pytest.raises(ValueError, match="audio path"):
         prepare._validate_source_row(source, "summary")
+
+
+def test_prepare_reads_audio_duration_and_rejects_subframe_audio(tmp_path):
+    audio_dir = tmp_path / "audio"
+    valid_relpath = "LongSpeech_p1/wavs/valid.wav"
+    short_relpath = "LongSpeech_p1/wavs/short.wav"
+    valid_path = audio_dir / valid_relpath
+    short_path = audio_dir / short_relpath
+    valid_path.parent.mkdir(parents=True)
+    sf.write(valid_path, [0.0] * 320, 16000)
+    sf.write(short_path, [0.0] * 160, 16000)
+
+    durations = prepare._read_audio_durations([valid_relpath], audio_dir)
+    assert durations == {valid_relpath: pytest.approx(0.02)}
+
+    with pytest.raises(ValueError, match="shorter than the 0.020s feature minimum"):
+        prepare._read_audio_durations([short_relpath], audio_dir)
+    with pytest.raises(ValueError, match="missing or empty"):
+        prepare._read_audio_durations(["LongSpeech_p1/wavs/missing.wav"], audio_dir)
 
 
 def test_source_contract_rejects_hash_and_row_drift(tmp_path, monkeypatch):

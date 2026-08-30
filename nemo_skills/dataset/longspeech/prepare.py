@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 
 REPO_ID = "ATH-MaaS/Marco_Longspeech"
 REVISION = "bb50d8c11fe9aa9fc5e899a0d941e3b40acbc740"
+MIN_AUDIO_DURATION_SECONDS = 0.02
 
 SUPPORTED_TASKS = {
     "asr": "ASR",
@@ -139,13 +140,14 @@ def _format_row(
     source_task: str,
     row_index: int,
     audio_prefix: str,
+    audio_duration: float,
 ) -> dict:
     """Convert one source row without modifying its exact stored messages."""
     user, assistant = _validate_source_row(row, source_task)
     audio_relpath = _safe_audio_relpath(user["audio"], source_task)
     audio_path = f"{audio_prefix.rstrip('/')}/{audio_relpath}"
     prepared_user = copy.deepcopy(user)
-    prepared_user["audio"] = {"path": audio_path}
+    prepared_user["audio"] = {"path": audio_path, "duration": audio_duration}
 
     return {
         "messages": [prepared_user],
@@ -185,6 +187,34 @@ def _download_audio_files(audio_relpaths: list[str], audio_dir: Path, workers: i
     if invalid:
         preview = ", ".join(invalid[:5])
         raise ValueError(f"LongSpeech downloaded audio closure is incomplete: {preview}")
+
+
+def _read_audio_durations(audio_relpaths: list[str], audio_dir: Path) -> dict[str, float]:
+    """Validate every local audio header and return exact durations for balancing."""
+    import soundfile as sf
+
+    durations: dict[str, float] = {}
+    for audio_relpath in audio_relpaths:
+        path = audio_dir / audio_relpath
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise ValueError(f"LongSpeech audio is missing or empty: {path}")
+        try:
+            info = sf.info(str(path))
+        except Exception as error:
+            raise ValueError(f"LongSpeech audio header is unreadable: {path}") from error
+        if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
+            raise ValueError(
+                f"LongSpeech audio header is invalid: {path} "
+                f"(frames={info.frames}, samplerate={info.samplerate}, channels={info.channels})"
+            )
+        duration = info.frames / info.samplerate
+        if duration < MIN_AUDIO_DURATION_SECONDS:
+            raise ValueError(
+                f"LongSpeech audio is shorter than the {MIN_AUDIO_DURATION_SECONDS:.3f}s feature minimum: "
+                f"{path} ({duration:.6f}s)"
+            )
+        durations[audio_relpath] = duration
+    return durations
 
 
 def _validate_source_contract(benchmark_task: str, source_manifest: Path, rows: list[dict]) -> str:
@@ -229,18 +259,21 @@ def prepare_task(
             output_root / "audio",
             workers=download_workers,
         )
+    audio_durations = _read_audio_durations(audio_relpaths, output_root / "audio")
 
     output_file = output_root / benchmark_task / "test.jsonl"
     output_file.parent.mkdir(parents=True, exist_ok=True)
     temp_output = output_file.with_name(f".{output_file.name}.tmp")
     with temp_output.open("w", encoding="utf-8") as output:
         for row_index, row in enumerate(rows):
+            audio_relpath = _safe_audio_relpath(row["messages"][0]["audio"], source_task)
             formatted = _format_row(
                 row,
                 benchmark_task=benchmark_task,
                 source_task=source_task,
                 row_index=row_index,
                 audio_prefix=audio_prefix,
+                audio_duration=audio_durations[audio_relpath],
             )
             output.write(json.dumps(formatted, ensure_ascii=False) + "\n")
         output.flush()
@@ -274,7 +307,10 @@ def main() -> None:
     parser.add_argument(
         "--no-audio",
         action="store_true",
-        help="Prepare manifests only; referenced audio must already exist at audio-prefix.",
+        help=(
+            "Skip downloads only; referenced audio must already exist under "
+            "<data_dir>/longspeech/audio so headers and durations can still be validated."
+        ),
     )
     parser.add_argument("--download-workers", type=int, default=16)
     args = parser.parse_args()
