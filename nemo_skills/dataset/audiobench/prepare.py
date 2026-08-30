@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import copy
+import io
 import json
 import os
 import shutil
@@ -168,6 +169,37 @@ def extract_audio_dict(sample: Dict) -> Dict | None:
         if isinstance(audio_dict, dict):
             return audio_dict
     return None
+
+
+def decode_audio_dict(audio_dict: Dict) -> tuple[np.ndarray, int]:
+    """Decode HF Audio data without requiring TorchCodec or FFmpeg.
+
+    Existing AudioBench sources may already expose ``array`` and
+    ``sampling_rate``. Spoken-MQA is explicitly cast to ``Audio(decode=False)``
+    and exposes encoded bytes/path, which SoundFile decodes reproducibly.
+    """
+    audio_array = audio_dict.get("array")
+    if audio_array is not None:
+        return np.asarray(audio_array), int(audio_dict.get("sampling_rate", 16000))
+
+    encoded_bytes = audio_dict.get("bytes")
+    encoded_path = audio_dict.get("path")
+    if encoded_bytes is not None:
+        source = io.BytesIO(encoded_bytes)
+    elif encoded_path:
+        source = encoded_path
+    else:
+        raise ValueError("Encoded audio must contain non-null bytes or path")
+
+    audio_array, sampling_rate = sf.read(source, dtype="float32", always_2d=False)
+    audio_array = np.asarray(audio_array)
+    if audio_array.ndim == 2:
+        # SoundFile returns [frames, channels]. Spoken-MQA is mono, but keep
+        # preparation safe if a future source revision contains stereo audio.
+        audio_array = audio_array.mean(axis=1)
+    if audio_array.ndim != 1:
+        raise ValueError(f"Expected mono audio after decoding, got shape {audio_array.shape}")
+    return audio_array, int(sampling_rate)
 
 
 def create_manifest_entry(
@@ -353,7 +385,7 @@ def process_dataset(
     print(f"{'=' * 60}")
 
     try:
-        from datasets import load_dataset
+        from datasets import Audio, load_dataset
     except Exception as e:
         raise ImportError(
             f"Failed to import HuggingFace 'datasets'. Please ensure it is installed.\nOriginal error: {e}"
@@ -516,6 +548,9 @@ def process_dataset(
                         f"found {len(hf_ds)} at revision {revision}"
                     )
 
+            if spoken_mqa_spec is not None:
+                hf_ds = hf_ds.cast_column("context", Audio(decode=False))
+
             fallback_repo = spec.get("fallback_repo")
             if fallback_repo:
                 # Only try fallback if the primary repo is missing/inaccessible.
@@ -577,17 +612,12 @@ def process_dataset(
                 continue
 
             # Extract audio array and sampling rate
-            audio_array = audio_dict.get("array")
-            sampling_rate = audio_dict.get("sampling_rate", 16000)
+            audio_array, sampling_rate = decode_audio_dict(audio_dict)
 
             if audio_array is None or len(audio_array) == 0:
                 print(f"Warning: Empty audio at sample {idx}, skipping")
                 failed += 1
                 continue
-
-            # Convert to numpy array if needed
-            if isinstance(audio_array, list):
-                audio_array = np.array(audio_array)
 
             # Compute duration
             duration = get_audio_duration(audio_array, sampling_rate)

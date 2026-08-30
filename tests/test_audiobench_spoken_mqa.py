@@ -1,15 +1,19 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Licensed under the Apache License, Version 2.0.
 
+import io
 from importlib import import_module
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from nemo_skills.dataset.audiobench.prepare import (
     AUDIOBENCH_OFFICIAL_REVISION,
     SPOKEN_MQA_DATASETS,
     SPOKEN_MQA_SOURCE_REVISION,
     create_manifest_entry,
+    decode_audio_dict,
     make_spoken_mqa_manifest_entry,
 )
 from nemo_skills.evaluation.evaluator.audio import (
@@ -39,6 +43,18 @@ def test_source_and_row_contracts_match_pinned_official_inputs():
         "spoken-mqa_single_step_reasoning": 594,
         "spoken-mqa_multi_step_reasoning": 1402,
     }
+
+
+def test_encoded_audio_decodes_without_torchcodec_and_downmixes_stereo():
+    samples = np.array([[0.25, -0.25], [0.5, 0.0]], dtype=np.float32)
+    encoded = io.BytesIO()
+    sf.write(encoded, samples, 16000, format="WAV", subtype="FLOAT")
+
+    audio, sampling_rate = decode_audio_dict({"bytes": encoded.getvalue(), "path": "ignored.wav"})
+
+    assert sampling_rate == 16000
+    assert audio.shape == (2,)
+    np.testing.assert_allclose(audio, [0.0, 0.25])
 
 
 def test_manifest_preserves_reference_list_and_official_protocol():
