@@ -5,7 +5,7 @@
 
 Corpus: OpenSLR-119 (CC BY-SA 4.0). The official archive contains 20 test
 meetings with near- and far-field audio; only ``Test_Ali_far`` is extracted.
-Channel zero is used to match the released SDM/single-channel recipe.
+Channel zero deliberately reproduces the released SDM/single-channel condition.
 """
 
 from __future__ import annotations
@@ -24,7 +24,30 @@ from nemo_skills.dataset.mandarin_meeting_common import (
 BENCHMARK_NAME = "alimeeting-sot"
 SOURCE_URL = "https://speech-lab-share-data.oss-cn-shanghai.aliyuncs.com/AliMeeting/openlr/Test_Ali.tar.gz"
 SOURCE_SPLIT = "Test_Ali_far"
-EXPECTED_SESSIONS = 20
+AUDIO_STEM_BY_SESSION = {
+    "R8002_M8002": "R8002_M8002_MS802",
+    "R8002_M8003": "R8002_M8003_MS803",
+    "R8004_M8005": "R8004_M8005_MS803",
+    "R8004_M8006": "R8004_M8006_MS805",
+    "R8005_M8007": "R8005_M8007_MS806",
+    "R8005_M8008": "R8005_M8008_MS806",
+    "R8005_M8009": "R8005_M8009_MS802",
+    "R8006_M8012": "R8006_M8012_MS803",
+    "R8008_M8014": "R8008_M8014_MS807",
+    "R8008_M8015": "R8008_M8015_MS808",
+    "R8008_M8016": "R8008_M8016_MS808",
+    "R8008_M8017": "R8008_M8017_MS808",
+    "R8009_M8021": "R8009_M8021_MS810",
+    "R8009_M8022": "R8009_M8022_MS810",
+    "R8009_M8023": "R8009_M8023_MS811",
+    "R8009_M8024": "R8009_M8024_MS811",
+    "R8009_M8025": "R8009_M8025_MS811",
+    "R8009_M8026": "R8009_M8026_MS812",
+    "R8009_M8027": "R8009_M8027_MS812",
+    "R8009_M8028": "R8009_M8028_MS812",
+}
+EXPECTED_SESSION_IDS = tuple(AUDIO_STEM_BY_SESSION)
+EXPECTED_SESSIONS = len(EXPECTED_SESSION_IDS)
 OFFICIAL_REPOSITORY_REVISION = "692a034fd510f1720f547c2c91e0fbadc9c24bf2"
 SOURCE_ARCHIVE_BYTES = 9_555_497_666
 
@@ -89,6 +112,8 @@ def prepare_alimeeting(
         source_metadata=metadata,
         no_audio=no_audio,
         max_samples=max_samples,
+        expected_session_ids=EXPECTED_SESSION_IDS,
+        audio_stem_by_session=AUDIO_STEM_BY_SESSION,
     )
     if max_samples is None:
         rows = sum(1 for line in manifest.open(encoding="utf-8") if line.strip())

@@ -23,10 +23,10 @@ from pathlib import Path
 
 import soundfile as sf
 
-SPEAKER_PROMPT = "Transcribe the mixed audio with speaker tags like <spk:0> hello <spk:1> yes."
+SPEAKER_PROMPT = "Transcribe the mixed audio. Put a distinct <spk:N> tag before every speaker turn."
 _ITEM_RE = re.compile(r"^\s*item\s*\[\d+\]:\s*$")
 _INTERVAL_RE = re.compile(r"^\s*intervals\s*\[\d+\]:\s*$")
-_ASSIGN_RE = re.compile(r'^\s*(name|xmin|xmax|text)\s*=\s*(.*?)\s*$')
+_ASSIGN_RE = re.compile(r"^\s*(name|xmin|xmax|text)\s*=\s*(.*?)\s*$")
 _MARKERS = ("<sil>", "<%>", "<->", "<$>", "<#>", "<_>", "<space>")
 _DELETE_CHARS = "`&,，丶。、？"
 _FULLWIDTH_ASCII = str.maketrans({"Ａ": "A", "ａ": "A", "ｂ": "B", "ｃ": "C", "ｋ": "K", "ｔ": "T"})
@@ -62,18 +62,12 @@ def resumable_http_download(
         actual_size = destination.stat().st_size
         if actual_size == expected_size:
             return destination
-        raise ValueError(
-            f"Existing final download has {actual_size} bytes; expected "
-            f"{expected_size}: {destination}"
-        )
+        raise ValueError(f"Existing final download has {actual_size} bytes; expected {expected_size}: {destination}")
 
     partial = destination.with_suffix(destination.suffix + ".partial")
     offset = partial.stat().st_size if partial.is_file() else 0
     if offset > expected_size:
-        raise ValueError(
-            f"Partial download has {offset} bytes; expected at most "
-            f"{expected_size}: {partial}"
-        )
+        raise ValueError(f"Partial download has {offset} bytes; expected at most {expected_size}: {partial}")
     if offset == expected_size:
         partial.replace(destination)
         return destination
@@ -97,10 +91,7 @@ def resumable_http_download(
             content_range = response.headers.get("Content-Range", "")
             if not content_range.startswith(f"bytes {offset}-"):
                 response.close()
-                raise ValueError(
-                    f"Server resumed at an unexpected range {content_range!r}; "
-                    f"requested byte {offset}"
-                )
+                raise ValueError(f"Server resumed at an unexpected range {content_range!r}; requested byte {offset}")
         elif status == 200:
             offset = 0
             mode = "wb"
@@ -115,10 +106,7 @@ def resumable_http_download(
         shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
     actual_size = partial.stat().st_size
     if actual_size != expected_size:
-        raise OSError(
-            f"Partial download has {actual_size} bytes after transfer; "
-            f"expected {expected_size}: {partial}"
-        )
+        raise OSError(f"Partial download has {actual_size} bytes after transfer; expected {expected_size}: {partial}")
     partial.replace(destination)
     return destination
 
@@ -173,29 +161,38 @@ def parse_long_textgrid(path: Path) -> list[MeetingInterval]:
     return intervals
 
 
-def normalize_mandarin_meeting_text(text: str) -> str:
-    """Match the official AliMeeting/AISHELL-4 text normalization.
-
-    This is a direct Python rendering of AliMeeting
-    ``asr/local/text_normalize.pl`` (revision
-    ``692a034fd510f1720f547c2c91e0fbadc9c24bf2``) and AISHELL-4's
-    ``text_normalize`` function. Whitespace is removed by character
-    tokenization, exactly as the official CER paths do.
-    """
+def normalize_alimeeting_text(text: str) -> str:
+    """Port the complete released AliMeeting ASR text cleanup path."""
     normalized = str(text)
     for marker in _MARKERS:
         normalized = normalized.replace(marker, "")
     normalized = normalized.translate(_FULLWIDTH_ASCII)
     normalized = normalized.translate(str.maketrans("", "", _DELETE_CHARS))
-    normalized = normalized.replace("\r", "").replace("\n", "")
+    for marker in ("！", "？", "(~)", "(SIL)", "(/OVERLAP)"):
+        normalized = normalized.replace(marker, "")
+    normalized = re.sub(r"\s+", "", normalized)
     if re.search(r"[A-Za-z]", normalized):
         normalized = normalized.upper()
     return normalized
 
 
-def cpcer_token_string(text: str) -> str:
+def normalize_aishell4_text(text: str) -> str:
+    """Apply AISHELL-4's released Han-only U+4E00--U+9FA5 rule."""
+    return re.sub(r"[^\u4e00-\u9fa5]", "", str(text))
+
+
+def normalize_mandarin_meeting_text(text: str, corpus: str) -> str:
+    """Select the released corpus-specific reference normalization."""
+    if corpus in {"alimeeting", "alimeeting-sot"}:
+        return normalize_alimeeting_text(text)
+    if corpus in {"aishell4", "aishell4-sot"}:
+        return normalize_aishell4_text(text)
+    raise ValueError(f"Unsupported Mandarin meeting corpus: {corpus!r}")
+
+
+def cpcer_token_string(text: str, corpus: str) -> str:
     """Return whitespace-delimited Unicode characters for cpCER edit distance."""
-    normalized = normalize_mandarin_meeting_text(text)
+    normalized = normalize_mandarin_meeting_text(text, corpus)
     return " ".join(character for character in normalized if not character.isspace())
 
 
@@ -222,14 +219,17 @@ def write_first_channel_wav(source: Path, destination: Path) -> float:
         return float(sf.info(destination).duration)
     partial = destination.with_suffix(destination.suffix + ".partial")
     partial.unlink(missing_ok=True)
-    with sf.SoundFile(source) as input_audio, sf.SoundFile(
-        partial,
-        mode="w",
-        samplerate=input_audio.samplerate,
-        channels=1,
-        format="WAV",
-        subtype="PCM_16",
-    ) as output_audio:
+    with (
+        sf.SoundFile(source) as input_audio,
+        sf.SoundFile(
+            partial,
+            mode="w",
+            samplerate=input_audio.samplerate,
+            channels=1,
+            format="WAV",
+            subtype="PCM_16",
+        ) as output_audio,
+    ):
         while True:
             block = input_audio.read(1_048_576, dtype="float32", always_2d=True)
             if len(block) == 0:
@@ -252,9 +252,12 @@ def build_meeting_record(
 ) -> dict:
     intervals = parse_long_textgrid(textgrid)
     reference, num_speakers, num_changes = intervals_to_sot(intervals)
+    source_info = sf.info(source_audio)
+    if source_info.frames <= 0 or source_info.channels <= 0 or source_info.samplerate <= 0:
+        raise ValueError(f"Invalid source audio header for {session_id}: {source_info}")
     destination = audio_dir / f"{session_id}.wav"
     if no_audio:
-        duration = float(sf.info(source_audio).duration)
+        duration = float(source_info.duration)
     else:
         duration = write_first_channel_wav(source_audio, destination)
     audio_path = f"{audio_prefix.rstrip('/')}/{session_id}.wav"
@@ -271,17 +274,22 @@ def build_meeting_record(
         "target_lang": "zh",
         "task_type": "Mandarin-MS-ASR",
         "category": "nonjudge",
+        "mandarin_corpus": benchmark_name,
         "num_speakers": num_speakers,
         "num_changes": num_changes,
         "subset_for_metrics": "test",
         "extra_fields": {
             **source_metadata,
             "source_audio": str(source_audio),
+            "source_audio_stem": source_audio.stem,
+            "source_audio_channels": source_info.channels,
+            "source_audio_frames": source_info.frames,
+            "source_audio_sample_rate": source_info.samplerate,
             "source_textgrid": str(textgrid),
             "input_channel": 0,
             "reference_intervals": len(intervals),
-            "normalization": "official-alimeeting-aishell4",
-            "metric": "cpCER",
+            "normalization": f"released-{benchmark_name}",
+            "metric": "full-session-cpCER",
         },
     }
 
@@ -296,25 +304,49 @@ def prepare_meeting_tree(
     source_metadata: dict,
     no_audio: bool = False,
     max_samples: int | None = None,
+    expected_session_ids: tuple[str, ...] | None = None,
+    audio_stem_by_session: dict[str, str] | None = None,
 ) -> Path:
-    audio_by_stem = {path.stem: path for path in source_audio_dir.rglob("*") if path.suffix.lower() in {".wav", ".flac"}}
-    textgrids = sorted(source_textgrid_dir.rglob("*.TextGrid"))
-    if max_samples is not None:
-        textgrids = textgrids[:max_samples]
-    if not textgrids:
+    audio_by_stem: dict[str, Path] = {}
+    for path in sorted(source_audio_dir.rglob("*")):
+        if path.suffix.lower() not in {".wav", ".flac"}:
+            continue
+        previous = audio_by_stem.setdefault(path.stem, path)
+        if previous != path:
+            raise ValueError(f"Duplicate source audio stem {path.stem!r}: {previous}, {path}")
+
+    all_textgrids = sorted(source_textgrid_dir.rglob("*.TextGrid"))
+    if not all_textgrids:
         raise ValueError(f"No TextGrid files found under {source_textgrid_dir}")
+    textgrid_by_session: dict[str, Path] = {}
+    for textgrid in all_textgrids:
+        previous = textgrid_by_session.setdefault(textgrid.stem, textgrid)
+        if previous != textgrid:
+            raise ValueError(f"Duplicate TextGrid session {textgrid.stem!r}: {previous}, {textgrid}")
+
+    if expected_session_ids is not None:
+        if len(expected_session_ids) != len(set(expected_session_ids)):
+            raise ValueError("Expected session contract contains duplicate IDs")
+        expected = set(expected_session_ids)
+        discovered = set(textgrid_by_session)
+        unexpected = sorted(discovered - expected)
+        missing = sorted(expected - discovered)
+        if unexpected or (max_samples is None and missing):
+            raise ValueError(f"{benchmark_name} session contract mismatch: missing={missing}, unexpected={unexpected}")
+        if audio_stem_by_session is not None and set(audio_stem_by_session) != expected:
+            raise ValueError(f"{benchmark_name} audio mapping does not cover the exact session contract")
+
+    textgrids = all_textgrids[:max_samples] if max_samples is not None else all_textgrids
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_dir = output_dir / "audio"
     manifest = output_dir / "test.jsonl"
     rows = []
     for textgrid in textgrids:
         session_id = textgrid.stem
-        source_audio = audio_by_stem.get(session_id)
+        audio_stem = (audio_stem_by_session or {}).get(session_id, session_id)
+        source_audio = audio_by_stem.get(audio_stem)
         if source_audio is None:
-            candidates = [path for stem, path in audio_by_stem.items() if stem.startswith(session_id)]
-            if len(candidates) != 1:
-                raise FileNotFoundError(f"Expected one audio file for {session_id}, found {candidates}")
-            source_audio = candidates[0]
+            raise FileNotFoundError(f"Expected exact source audio stem {audio_stem!r} for session {session_id!r}")
         rows.append(
             build_meeting_record(
                 benchmark_name=benchmark_name,
@@ -327,18 +359,23 @@ def prepare_meeting_tree(
                 no_audio=no_audio,
             )
         )
-    with manifest.open("w", encoding="utf-8") as output:
+
+    partial_manifest = manifest.with_suffix(manifest.suffix + ".partial")
+    with partial_manifest.open("w", encoding="utf-8") as output:
         for row in rows:
             output.write(json.dumps(row, ensure_ascii=False) + "\n")
+    partial_manifest.replace(manifest)
     receipt = {
         "benchmark": benchmark_name,
         "rows": len(rows),
         "sessions": [row["id"] for row in rows],
+        "source_audio_stems": {row["id"]: row["extra_fields"]["source_audio_stem"] for row in rows},
         **source_metadata,
     }
-    (output_dir / "source_receipt.json").write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    receipt_path = output_dir / "source_receipt.json"
+    partial_receipt = receipt_path.with_suffix(receipt_path.suffix + ".partial")
+    partial_receipt.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    partial_receipt.replace(receipt_path)
     return manifest
 
 

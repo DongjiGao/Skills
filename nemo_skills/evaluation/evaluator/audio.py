@@ -568,6 +568,8 @@ def _parse_sot_segments(
     tag_re = SOT_STRICT_TAG_RES[strict_tag_style] if mode == "strict" else SOT_CANONICAL_TAG_RE
     matches = list(tag_re.finditer(cleaned))
     if not matches:
+        if mode == "canonical" and cleaned:
+            return [{"speaker": default_speaker, "text": cleaned}]
         return []
 
     segments: list[dict[str, str]] = []

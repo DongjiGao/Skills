@@ -5,7 +5,7 @@
 
 The mirror preserves the 20 OpenSLR-111 test meetings and annotations. Only
 ``test/**`` is fetched at immutable revision ``aada727...``; channel zero is
-materialized to match the official single-channel recipe.
+materialized as a deliberate single-channel distant-microphone condition.
 """
 
 from __future__ import annotations
@@ -20,7 +20,29 @@ BENCHMARK_NAME = "aishell4-sot"
 HF_REPO_ID = "AISHELL/AISHELL-4"
 HF_REVISION = "aada72727856313b19d4a030383c426364931dbf"
 SOURCE_SPLIT = "test"
-EXPECTED_SESSIONS = 20
+EXPECTED_SESSION_IDS = (
+    "L_R003S01C02",
+    "L_R003S02C02",
+    "L_R003S03C02",
+    "L_R003S04C02",
+    "L_R004S01C01",
+    "L_R004S02C01",
+    "L_R004S03C01",
+    "L_R004S06C01",
+    "M_R003S01C01",
+    "M_R003S02C01",
+    "M_R003S04C01",
+    "M_R003S05C01",
+    "S_R003S01C01",
+    "S_R003S02C01",
+    "S_R003S03C01",
+    "S_R003S04C01",
+    "S_R004S01C01",
+    "S_R004S02C01",
+    "S_R004S03C01",
+    "S_R004S04C01",
+)
+EXPECTED_SESSIONS = len(EXPECTED_SESSION_IDS)
 OFFICIAL_REPOSITORY_REVISION = "bad82b77c3753df1b232c5c6491cd3e2f2e32d24"
 
 
@@ -70,6 +92,8 @@ def prepare_aishell4(
         source_metadata=metadata,
         no_audio=no_audio,
         max_samples=max_samples,
+        expected_session_ids=EXPECTED_SESSION_IDS,
+        audio_stem_by_session={session_id: session_id for session_id in EXPECTED_SESSION_IDS},
     )
     if max_samples is None:
         rows = sum(1 for line in manifest.open(encoding="utf-8") if line.strip())
