@@ -899,18 +899,18 @@ def eval(
                 command = (
                     f"python -m nemo_skills.pipeline.summarize_results {results_folder} "
                     f"    --benchmarks {benchmark} "
-                    f"    --save_metrics_path {metric_file} "
-                    f"    --metric_type={effective_metric_type} "
+                    f"    --save-metrics-path {metric_file} "
+                    f"    --metric-type={effective_metric_type} "
                 )
 
                 if wandb_name:
-                    command += f" --wandb_name={wandb_name} "
+                    command += f" --wandb-name={wandb_name} "
                 if wandb_group:
-                    command += f" --wandb_group={wandb_group} "
+                    command += f" --wandb-group={wandb_group} "
                 if wandb_project:
-                    command += f" --wandb_project={wandb_project} "
+                    command += f" --wandb-project={wandb_project} "
                 if metrics_kwargs:
-                    command += f" --metrics_kwargs='{kwargs_to_string(metrics_kwargs)}' "
+                    command += f" --metrics-kwargs='{kwargs_to_string(metrics_kwargs)}' "
 
                 if benchmark in benchmark_to_judge_tasks:
                     dependent_tasks = benchmark_to_judge_tasks[benchmark]

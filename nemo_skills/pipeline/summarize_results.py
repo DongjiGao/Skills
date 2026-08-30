@@ -259,6 +259,8 @@ def summarize_results(
     max_samples: int = typer.Option(-1, help="Limit metric computation only to first `max_samples`"),
     metric_type: Optional[str] = typer.Option(
         None,
+        "--metric_type",
+        "--metric-type",
         help="Specify metric type to use a specific metric calculator.",
     ),
     max_seq_len: Optional[int] = typer.Option(
@@ -267,17 +269,27 @@ def summarize_results(
     ),
     save_metrics_path: Optional[str] = typer.Option(
         None,
+        "--save_metrics_path",
+        "--save-metrics-path",
         help="Path to save the metrics.json file. If not specified, will save to results_dir/metrics.json.",
     ),
     verbose: bool = typer.Option(True, help="Print download/upload progress"),
-    wandb_name: Optional[str] = typer.Option(None, help="Name of the wandb experiment to sync these results to"),
-    wandb_group: str = typer.Option(None, help="Name of the wandb group to sync results to."),
+    wandb_name: Optional[str] = typer.Option(
+        None, "--wandb_name", "--wandb-name", help="Name of the wandb experiment to sync these results to"
+    ),
+    wandb_group: str = typer.Option(
+        None, "--wandb_group", "--wandb-group", help="Name of the wandb group to sync results to."
+    ),
     wandb_project: str = typer.Option(
         "nemo-skills",
+        "--wandb_project",
+        "--wandb-project",
         help="Name of the wandb project to sync results to.",
     ),
     metrics_kwargs: str = typer.Option(
         "",
+        "--metrics_kwargs",
+        "--metrics-kwargs",
         help="Additional kwargs to pass to the metrics calculator. Values should be provided as a JSON string or as a `dict` if invoking from code.",
     ),
 ):
