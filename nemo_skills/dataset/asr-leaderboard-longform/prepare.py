@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -180,7 +181,7 @@ def _validate_source_dataset(dataset: Any, spec: SourceSpec) -> None:
 
 
 def load_pinned_source(spec: SourceSpec):
-    """Load one immutable official source and request official 16 kHz decoding."""
+    """Load one immutable source without invoking Hugging Face's TorchCodec decoder."""
     dataset = load_dataset(
         spec.repo,
         spec.config,
@@ -188,20 +189,31 @@ def load_pinned_source(spec: SourceSpec):
         revision=spec.revision,
     )
     _validate_source_dataset(dataset, spec)
-    try:
-        audio_feature = Audio(sampling_rate=AUDIO_SAMPLE_RATE, num_channels=AUDIO_CHANNELS)
-    except TypeError:  # datasets<4 compatibility; older Audio decoded mono by default.
-        audio_feature = Audio(sampling_rate=AUDIO_SAMPLE_RATE)
-    return dataset.cast_column("audio", audio_feature)
+    return dataset.cast_column("audio", Audio(decode=False))
 
 
 def _decode_audio(audio: Any) -> tuple[np.ndarray, int]:
-    """Return the complete mono waveform from datasets dict or AudioDecoder."""
+    """Decode one source with libsndfile and enforce the pinned mono/16-kHz contract."""
     if isinstance(audio, dict):
-        if audio.get("array") is None or audio.get("sampling_rate") is None:
-            raise ValueError("Decoded Hugging Face audio dict lacks array/sampling_rate")
-        array = audio["array"]
-        sample_rate = audio["sampling_rate"]
+        if audio.get("array") is not None and audio.get("sampling_rate") is not None:
+            array = audio["array"]
+            sample_rate = audio["sampling_rate"]
+        else:
+            encoded = audio.get("bytes")
+            source_path = audio.get("path")
+            if encoded is not None:
+                source: Any = io.BytesIO(encoded)
+            elif isinstance(source_path, (str, os.PathLike)) and str(source_path):
+                source = source_path
+            else:
+                raise ValueError("Raw Hugging Face audio dict lacks bytes/path")
+            try:
+                array, sample_rate = sf.read(source, dtype="float32", always_2d=True)
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                raise ValueError("Could not decode pinned source audio with libsndfile") from error
+            if array.shape[1] != AUDIO_CHANNELS:
+                raise ValueError(f"Pinned source audio has {array.shape[1]} channels, expected {AUDIO_CHANNELS}")
+            array = array[:, 0]
     elif hasattr(audio, "get_all_samples"):
         samples = audio.get_all_samples()
         array = samples.data

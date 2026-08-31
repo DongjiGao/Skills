@@ -3,6 +3,7 @@
 
 import hashlib
 import importlib
+import io
 import json
 
 import numpy as np
@@ -76,15 +77,11 @@ def test_exact_public_protocol_sources_and_census_are_pinned():
         "coraal_VLD": 14,
     }
     assert prepare.EXPECTED_TOTAL_ROWS == 451
-    assert prepare.OFFICIAL_NEMO_RUNNER_SHA256 == (
-        "dcd7f91d13ef194f997d9e11b444689001ad925527172132b7797cc76df71c79"
-    )
-    assert prepare.OFFICIAL_NORMALIZER_SHA256 == (
-        "5cfcaab0e772ac331e9904495ad7c1e07e3eace072f7399d68369303d6927cc4"
-    )
+    assert prepare.OFFICIAL_NEMO_RUNNER_SHA256 == ("dcd7f91d13ef194f997d9e11b444689001ad925527172132b7797cc76df71c79")
+    assert prepare.OFFICIAL_NORMALIZER_SHA256 == ("5cfcaab0e772ac331e9904495ad7c1e07e3eace072f7399d68369303d6927cc4")
 
 
-def test_load_uses_exact_revision_split_and_official_mono_16khz_cast(monkeypatch):
+def test_load_uses_exact_revision_split_and_raw_audio_cast(monkeypatch):
     spec = _spec()
     dataset = FakeDataset([_source_row()])
     observed = {}
@@ -103,8 +100,30 @@ def test_load_uses_exact_revision_split_and_official_mono_16khz_cast(monkeypatch
     }
     name, feature = dataset.cast
     assert name == "audio"
-    assert feature.sampling_rate == 16000
-    assert feature.num_channels == 1
+    assert feature.decode is False
+
+
+def test_raw_audio_bytes_decode_without_torchcodec():
+    source = io.BytesIO()
+    sf.write(source, np.zeros(320, dtype=np.float32), 16000, format="WAV", subtype="PCM_16")
+
+    array, sample_rate = prepare._decode_audio({"bytes": source.getvalue(), "path": None})
+
+    assert sample_rate == 16000
+    assert array.shape == (320,)
+    assert array.dtype == np.float32
+
+
+def test_raw_audio_contract_rejects_non_mono_or_non_16khz():
+    stereo = io.BytesIO()
+    sf.write(stereo, np.zeros((320, 2), dtype=np.float32), 16000, format="WAV", subtype="PCM_16")
+    with pytest.raises(ValueError, match="2 channels"):
+        prepare._decode_audio({"bytes": stereo.getvalue(), "path": None})
+
+    wrong_rate = io.BytesIO()
+    sf.write(wrong_rate, np.zeros(160, dtype=np.float32), 8000, format="WAV", subtype="PCM_16")
+    with pytest.raises(ValueError, match="expected 16000 Hz"):
+        prepare._decode_audio({"bytes": wrong_rate.getvalue(), "path": None})
 
 
 def test_source_contract_fails_closed_on_row_or_schema_drift():
