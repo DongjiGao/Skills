@@ -16,6 +16,7 @@ import hashlib
 import importlib
 import json
 
+import numpy as np
 import pytest
 
 prepare = importlib.import_module("nemo_skills.dataset.mls.prepare")
@@ -102,6 +103,88 @@ def test_manifest_entry_preserves_language_scoring_and_source_provenance():
     assert provenance["source_file_sha256"] == spec.parquet_sha256
     assert provenance["expected_language_rows"] == spec.expected_rows
     assert provenance["paper_revision"] == "arxiv:2012.03411v2"
+
+
+def test_english_mirror_segments_get_stable_distinct_ids_and_provenance():
+    spec = prepare.LANGUAGE_SPECS[0]
+    original_path = (
+        "http://www.archive.org/download/threebears_porcupineridge_1511_librivox/"
+        "threebearsofporcupineridge_03_thompson_64kb.mp3"
+    )
+    first = {
+        "original_path": original_path,
+        "begin_time": 102.02,
+        "end_time": 118.89,
+        "audio_duration": 16.87,
+        "transcript": "first segment",
+    }
+    second = {
+        **first,
+        "begin_time": 118.89,
+        "end_time": 131.17,
+        "audio_duration": 12.28,
+        "transcript": "second segment",
+    }
+
+    first_id = prepare._sample_id(first, spec)
+    second_id = prepare._sample_id(second, spec)
+
+    assert first_id != second_id
+    assert first_id.endswith("-000000102020-000000118890")
+    assert second_id.endswith("-000000118890-000000131170")
+    entry = prepare.format_entry(
+        first,
+        spec,
+        sample_id=first_id,
+        audio_path=f"/data/mls/audio/en/{first_id}.flac",
+        duration=16.87,
+    )
+    assert entry["source_segment"] == {
+        "original_path": original_path,
+        "begin_time_s": 102.02,
+        "end_time_s": 118.89,
+        "audio_duration_s": 16.87,
+        "source_sample_id": first_id,
+    }
+
+
+def test_prepare_language_rejects_an_exact_duplicate_segment(tmp_path, monkeypatch):
+    spec = prepare.LanguageSpec(
+        "xx",
+        "Fixture",
+        "repo/id",
+        "a" * 40,
+        "test.parquet",
+        1,
+        "b" * 64,
+        2,
+    )
+    row = {
+        "original_path": "https://example.test/book/chapter.mp3",
+        "begin_time": 1.25,
+        "end_time": 2.5,
+        "audio_duration": 1.25,
+        "transcript": "duplicate segment",
+    }
+    monkeypatch.setattr(
+        prepare,
+        "_load_source_rows",
+        lambda *_args, **_kwargs: [row, dict(row)],
+    )
+    monkeypatch.setattr(
+        prepare,
+        "_decode_audio",
+        lambda *_args, **_kwargs: (np.zeros(20_000), 16_000),
+    )
+
+    with pytest.raises(ValueError, match="duplicate sample id"):
+        prepare._prepare_language(
+            spec,
+            data_dir=tmp_path,
+            cache_dir=tmp_path / ".cache",
+            audio_prefix="/data/mls/audio",
+            no_audio=False,
+        )
 
 
 def test_prepare_publishes_complete_atomic_manifest_and_receipt(tmp_path, monkeypatch):

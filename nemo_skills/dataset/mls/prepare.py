@@ -32,7 +32,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -219,7 +219,20 @@ def _sample_id(row: dict[str, Any], spec: LanguageSpec) -> str:
     value = row.get("id")
     if value is None or not str(value).strip():
         original_path = str(row.get("original_path") or "").strip()
-        value = PurePosixPath(original_path).stem
+        if not original_path:
+            raise ValueError(f"MLS {spec.code} has no native id or original_path")
+        try:
+            begin_ms = round(float(row["begin_time"]) * 1000)
+            end_ms = round(float(row["end_time"]) * 1000)
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"MLS {spec.code} row without a native id has invalid segment times") from error
+        if begin_ms < 0 or end_ms <= begin_ms:
+            raise ValueError(
+                f"MLS {spec.code} row without a native id has invalid segment interval: "
+                f"begin_ms={begin_ms}, end_ms={end_ms}"
+            )
+        source_digest = hashlib.sha256(original_path.encode("utf-8")).hexdigest()[:16]
+        value = f"segment-{source_digest}-{begin_ms:012d}-{end_ms:012d}"
     sample_id = str(value).strip()
     if not sample_id or re.fullmatch(r"[A-Za-z0-9_.-]+", sample_id) is None:
         raise ValueError(f"MLS {spec.code} has an unsafe or empty sample id: {sample_id!r}")
@@ -284,6 +297,13 @@ def format_entry(
             "split": OFFICIAL_SPLIT,
             "expected_language_rows": spec.expected_rows,
             "normalization": "language-aware multilingual; diacritics preserved; no compound-boundary forgiveness",
+        },
+        "source_segment": {
+            "original_path": str(row.get("original_path") or "").strip() or None,
+            "begin_time_s": row.get("begin_time"),
+            "end_time_s": row.get("end_time"),
+            "audio_duration_s": row.get("audio_duration"),
+            "source_sample_id": sample_id,
         },
     }
 
