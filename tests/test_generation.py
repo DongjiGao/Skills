@@ -17,6 +17,7 @@ import json
 # running most things through subprocess since that's how it's usually used
 import subprocess
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,7 +25,11 @@ from nemo_skills.evaluation.metrics import ComputeMetrics
 from nemo_skills.inference.generate import GenerationTask, GenerationTaskConfig, InferenceConfig
 from nemo_skills.inference.model.base import BaseModel, EndpointType
 from nemo_skills.pipeline.generate import _create_job_unified
-from nemo_skills.pipeline.utils.generation import configure_client
+from nemo_skills.pipeline.utils.declarative import Pipeline
+from nemo_skills.pipeline.utils.generation import (
+    configure_client,
+    replace_server_endpoint_overrides,
+)
 from nemo_skills.pipeline.utils.scripts import ServerScript
 
 
@@ -476,3 +481,107 @@ def test_parse_completion_response_token_counts(usage_kwargs, expected_input):
     result = model._parse_completion_response(response)
     assert result["num_generated_tokens"] == 10
     assert result.get("num_input_tokens") == expected_input
+
+
+def test_single_model_declarative_client_uses_runtime_server_port(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEMO_SKILLS_USE_SLURM_JOB_ID_PORTS", "1")
+    monkeypatch.setattr("nemo_skills.pipeline.utils.server._SLURM_JOB_PORT_OFFSET", 0)
+    model = "test-model"
+    server_config, server_address, extra_arguments = configure_client(
+        model=model,
+        server_type="vllm",
+        server_address=None,
+        server_gpus=8,
+        server_nodes=1,
+        server_args="",
+        server_entrypoint=None,
+        get_random_port=True,
+        extra_arguments="++foo=bar",
+    )
+    base_port_override = f"++server.port={server_config['server_port']}"
+    cluster_config = {
+        "containers": {
+            "vllm": "apitest/vllm",
+            "nemo-skills": "apitest/nemo-skills",
+            "sandbox": "apitest/sandbox",
+        },
+        "executor": "none",
+    }
+    log_dir = str(tmp_path / "logs")
+    groups = _create_job_unified(
+        models=[model],
+        server_configs=[server_config],
+        generation_params={
+            "output_dir": str(tmp_path / "out"),
+            "input_file": str(tmp_path / "input.jsonl"),
+            "extra_arguments": extra_arguments,
+            "server_addresses_prehosted": [server_address],
+            "model_names": [model],
+            "server_types": ["vllm"],
+        },
+        cluster_config=cluster_config,
+        installation_command=None,
+        with_sandbox=False,
+        partition=None,
+        account=None,
+        keep_mounts_for_sandbox=False,
+        task_name="test-task",
+        log_dir=log_dir,
+    )
+    pipeline = Pipeline(
+        name="test-pipeline",
+        cluster_config=cluster_config,
+        jobs=[{"name": "test-task", "group": groups[0]}],
+        skip_hf_home_check=True,
+    )
+    executor = MagicMock()
+    executor.packager = MagicMock()
+    experiment = MagicMock()
+    experiment.add.return_value = "task-id"
+
+    with patch.object(pipeline, "_create_executor", return_value=executor):
+        pipeline._plan_and_add_job(
+            experiment,
+            groups,
+            cluster_config,
+            heterogeneous=False,
+        )
+
+    server_script = groups[0].commands[0].script
+    client_script = groups[0].commands[-1].script
+    assert isinstance(server_script.inline, str)
+    assert isinstance(client_script.inline, str)
+    assert "nemo_skills.pipeline.utils.runtime_port allocate" in server_script.inline
+    assert "nemo_skills.pipeline.utils.runtime_port wait" in client_script.inline
+    server_state = server_script.inline.split("--state-file ", 1)[1].split(" ", 1)[0]
+    client_state = client_script.inline.split("--state-file ", 1)[1].split(")", 1)[0]
+    assert server_state == client_state
+    assert base_port_override not in client_script.inline
+    assert client_script.inline.count("++server.host=") == 1
+    assert client_script.inline.count("++server.port=") == 1
+    assert "++server.base_url=" not in client_script.inline
+
+
+def test_replace_server_endpoint_overrides_preserves_other_raw_shell_semantics():
+    original = (
+        "++server.host=old-host ++server.port=31134 "
+        "++system_message='hello world' ++foo=$RUNTIME_VALUE "
+        "++bar=$(runtime command) ++quoted=\"keep this exactly\" "
+        "++server.base_url=http://stale/v1"
+    )
+
+    rendered = replace_server_endpoint_overrides(
+        original,
+        host="${SLURM_MASTER_NODE:-127.0.0.1}",
+        port="$(runtime port)",
+    )
+
+    assert "++system_message='hello world'" in rendered
+    assert "++foo=$RUNTIME_VALUE" in rendered
+    assert "++bar=$(runtime command)" in rendered
+    assert '++quoted="keep this exactly"' in rendered
+    assert "old-host" not in rendered
+    assert "31134" not in rendered
+    assert "http://stale/v1" not in rendered
+    assert rendered.count("++server.host=") == 1
+    assert rendered.count("++server.port=") == 1

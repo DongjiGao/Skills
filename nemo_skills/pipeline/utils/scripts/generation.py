@@ -17,7 +17,10 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from nemo_skills.pipeline.utils.generation import get_generation_cmd
+from nemo_skills.pipeline.utils.generation import (
+    get_generation_cmd,
+    replace_server_endpoint_overrides,
+)
 from nemo_skills.pipeline.utils.scripts.base import BaseJobScript
 from nemo_skills.pipeline.utils.scripts.server import SandboxScript, ServerScript
 
@@ -83,6 +86,7 @@ class GenerationClientScript(BaseJobScript):
             if self.sandbox:
                 env_vars["NEMO_SKILLS_SANDBOX_PORT"] = str(self.sandbox.port)
 
+            extra_arguments = self.extra_arguments
             server_addresses = None
             if self.servers is not None:
                 server_addresses = []
@@ -93,11 +97,19 @@ class GenerationClientScript(BaseJobScript):
                         addr = self.server_addresses_prehosted[server_idx]
                     server_addresses.append(addr)
 
+                if len(self.servers) == 1 and self.servers[0] is not None:
+                    server = self.servers[0]
+                    extra_arguments = replace_server_endpoint_overrides(
+                        extra_arguments,
+                        host=server.hostname_ref(),
+                        port=server.port,
+                    )
+
             cmd = get_generation_cmd(
                 output_dir=self.output_dir,
                 input_file=self.input_file,
                 input_dir=self.input_dir,
-                extra_arguments=self.extra_arguments,
+                extra_arguments=extra_arguments,
                 random_seed=self.random_seed,
                 chunk_id=self.chunk_id,
                 num_chunks=self.num_chunks,

@@ -37,7 +37,7 @@ from nemo_skills.pipeline.utils.exp import (
     tunnel_hash,
 )
 from nemo_skills.pipeline.utils.mounts import get_mounts_from_config, is_mounted_filepath, normalize_mounts_list
-from nemo_skills.pipeline.utils.scripts import SandboxScript
+from nemo_skills.pipeline.utils.scripts import SandboxScript, ServerScript
 from nemo_skills.pipeline.utils.server import wrap_python_path
 from nemo_skills.utils import get_logger_name
 
@@ -750,6 +750,11 @@ class Pipeline:
         for het_idx, group in enumerate(groups):
             for command in group.commands:
                 command.script.het_group_index = het_idx if heterogeneous else None
+
+        for group in groups:
+            for command in group.commands:
+                if isinstance(command.script, ServerScript):
+                    command.script.configure_runtime_port(log_dir)
 
         # Prepare commands once and collect runtime data for a second pass where we
         # construct executors. This ensures all scripts have resolved cross-references.

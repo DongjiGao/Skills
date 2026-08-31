@@ -15,7 +15,10 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from nemo_skills.pipeline.utils.generation import get_generation_cmd
+from nemo_skills.pipeline.utils.generation import (
+    get_generation_cmd,
+    replace_server_endpoint_overrides,
+)
 from nemo_skills.pipeline.utils.scripts.base import BaseJobScript
 from nemo_skills.pipeline.utils.scripts.server import SandboxScript, ServerScript
 from nemo_skills.pipeline.utils.server import wrap_python_path
@@ -74,9 +77,7 @@ def _inject_single_server_overrides(
     extra_arguments = _inject_if_missing(extra_arguments, "++server.model=", f"++server.model={model_name} ")
 
     if host is not None and port is not None:
-        extra_arguments = _inject_if_missing(extra_arguments, "++server.host=", f"++server.host={host} ")
-        extra_arguments = _inject_if_missing(extra_arguments, "++server.port=", f"++server.port={port} ")
-        return extra_arguments
+        return replace_server_endpoint_overrides(extra_arguments, host=host, port=port)
 
     if base_url is not None:
         extra_arguments = _inject_if_missing(extra_arguments, "++server.base_url=", f"++server.base_url={base_url} ")

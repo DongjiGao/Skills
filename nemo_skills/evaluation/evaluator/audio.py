@@ -1335,7 +1335,9 @@ def _spoken_mqa_answers_match(prediction: str, reference: str) -> bool:
 
 def evaluate_spoken_mqa(reference: Any, hypothesis: Any, protocol: str) -> dict[str, Any]:
     """Score one Spoken-MQA row with the official AudioBench ``acc`` protocol."""
-    prediction = clean_spoken_mqa_prediction(hypothesis) or "empty"
+    parsed_prediction = clean_spoken_mqa_prediction(hypothesis)
+    parse_failure = not parsed_prediction
+    prediction = parsed_prediction or "empty"
     prediction = prediction[:100]
     references = _spoken_mqa_reference_list(reference, protocol)
     if not references or not any(references):
@@ -1346,6 +1348,7 @@ def evaluate_spoken_mqa(reference: Any, hypothesis: Any, protocol: str) -> dict[
         "predicted_answer": prediction,
         "spoken_mqa_prediction": prediction,
         "spoken_mqa_references": references,
+        "spoken_mqa_parse_failure": parse_failure,
         "requires_judge": False,
     }
 

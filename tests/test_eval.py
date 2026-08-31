@@ -110,9 +110,17 @@ def test_eval_client_script_uses_slurm_master_ref_for_self_hosted_single_group(m
     monkeypatch.setattr(eval_scripts, "get_generation_cmd", fake_get_generation_cmd)
     monkeypatch.setattr(eval_scripts, "wrap_python_path", lambda cmd: cmd)
 
-    server = HostnameScript(port=53587)
+    runtime_port = "$(python3 -m nemo_skills.pipeline.utils.runtime_port wait --state-file /logs/port)"
+    server = HostnameScript(port=runtime_port)
     client_script = EvalClientScript(
-        units=[{"extra_arguments": ""}],
+        units=[
+            {
+                "extra_arguments": (
+                    "++server.host=127.0.0.1 ++server.port=31134 "
+                    "++server.base_url=http://stale ++foo=bar"
+                )
+            }
+        ],
         servers=[server],
         model_names=["/models/test-model"],
         server_types=["vllm"],
@@ -120,8 +128,15 @@ def test_eval_client_script_uses_slurm_master_ref_for_self_hosted_single_group(m
 
     client_script.inline()
 
-    assert "++server.host=${SLURM_MASTER_NODE:-127.0.0.1}" in captured["extra_arguments"]
-    assert "++server.port=53587" in captured["extra_arguments"]
+    rendered = captured["extra_arguments"]
+    assert "++server.host=${SLURM_MASTER_NODE:-127.0.0.1}" in rendered
+    assert f"++server.port={runtime_port}" in rendered
+    assert "31134" not in rendered
+    assert "http://stale" not in rendered
+    assert "++foo=bar" in rendered
+    assert rendered.count("++server.host=") == 1
+    assert rendered.count("++server.port=") == 1
+    assert "++server.base_url=" not in rendered
 
 
 def test_prepare_eval_commands_propagates_cli_with_sandbox_to_generation_cmd(monkeypatch):

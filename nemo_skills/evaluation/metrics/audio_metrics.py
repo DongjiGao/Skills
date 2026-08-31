@@ -172,6 +172,8 @@ class AudioMetrics(BaseMetrics):
 
         # Spoken-MQA's official metric name is accuracy (``acc`` upstream).
         self.has_spoken_mqa = False
+        self.spoken_mqa_parse_failures = 0
+        self.spoken_mqa_parse_diagnostics = 0
 
     def _extract_judge_result(self, judgement_text: str) -> tuple[bool, float]:
         """Extract judge result from judgement text.
@@ -286,6 +288,9 @@ class AudioMetrics(BaseMetrics):
         for pred in predictions:
             if pred.get("task_type") == "MathQA":
                 self.has_spoken_mqa = True
+                if "spoken_mqa_parse_failure" in pred:
+                    self.spoken_mqa_parse_diagnostics += 1
+                    self.spoken_mqa_parse_failures += int(bool(pred["spoken_mqa_parse_failure"]))
             if "wer_errors" in pred and "wer_ref_words" in pred:
                 self.wer_total_errors += pred["wer_errors"]
                 self.wer_total_ref_words += pred["wer_ref_words"]
@@ -460,6 +465,12 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["success_rate"] = agg_metrics["judge_correct"]
             if self.has_spoken_mqa and "success_rate" in agg_metrics:
                 agg_metrics["accuracy"] = agg_metrics["success_rate"]
+            if self.spoken_mqa_parse_diagnostics:
+                # Attempt-level diagnostic only; it does not participate in
+                # official accuracy or pass@k correctness.
+                agg_metrics["no_numeric_answer_rate"] = round(
+                    100.0 * self.spoken_mqa_parse_failures / self.spoken_mqa_parse_diagnostics, 2
+                )
 
             # Add AudioBench-style judge_score if rating outputs were used.
             # Formula: judge_score = mean(ratings) * 20 (converts 0-5 scale to 0-100)
@@ -591,6 +602,8 @@ class AudioMetrics(BaseMetrics):
 
         if self.has_spoken_mqa:
             base_metrics["accuracy"] = as_percentage
+            if self.spoken_mqa_parse_diagnostics:
+                base_metrics["no_numeric_answer_rate"] = as_percentage
         if self.compute_no_answer:
             base_metrics["no_answer"] = as_percentage
 

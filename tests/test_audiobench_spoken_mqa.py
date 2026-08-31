@@ -106,6 +106,22 @@ def test_arithmetic_and_reasoning_reference_normalization_match_official_split()
     assert reasoning["requires_judge"] is False
 
 
+def test_transcription_only_output_is_an_observable_parse_failure():
+    result = evaluate_spoken_mqa(
+        ["731"],
+        "What is eight hundred ninety two minus one hundred sixty one?",
+        "arithmetic",
+    )
+
+    assert result["is_correct"] is False
+    assert result["predicted_answer"] == "empty"
+    assert result["spoken_mqa_parse_failure"] is True
+
+    parsed = evaluate_spoken_mqa(["731"], "The answer is: 731", "arithmetic")
+    assert parsed["is_correct"] is True
+    assert parsed["spoken_mqa_parse_failure"] is False
+
+
 def test_audio_evaluator_scores_structured_mathqa_without_a_judge():
     result = evaluate_sample(
         {
@@ -120,6 +136,7 @@ def test_audio_evaluator_scores_structured_mathqa_without_a_judge():
     assert result["is_correct"] is True
     assert result["predicted_answer"] == "21"
     assert result["requires_judge"] is False
+    assert result["spoken_mqa_parse_failure"] is False
 
 
 def test_audio_metrics_emit_official_accuracy_name_and_compatibility_alias():
@@ -132,6 +149,7 @@ def test_audio_metrics_emit_official_accuracy_name_and_compatibility_alias():
                 "generation": "21",
                 "is_correct": True,
                 "num_generated_tokens": 1,
+                "spoken_mqa_parse_failure": False,
             }
         ]
     )
@@ -139,7 +157,47 @@ def test_audio_metrics_emit_official_accuracy_name_and_compatibility_alias():
     pass_at_1 = metrics.get_metrics()["pass@1"]
     assert pass_at_1["accuracy"] == 100.0
     assert pass_at_1["success_rate"] == 100.0
+    assert pass_at_1["no_numeric_answer_rate"] == 0.0
     assert "accuracy" in metrics.metrics_to_print()
+    assert "no_numeric_answer_rate" in metrics.metrics_to_print()
+
+
+def test_audio_metrics_report_no_numeric_answer_rate_without_changing_accuracy():
+    metrics = AudioMetrics(max_k=1)
+    samples = [
+        {
+            "task_type": "MathQA",
+            "spoken_mqa_protocol": "arithmetic",
+            "expected_answer": ["731"],
+            "generation": "What is eight hundred ninety two minus one hundred sixty one?",
+            "num_generated_tokens": 11,
+        },
+        {
+            "task_type": "MathQA",
+            "spoken_mqa_protocol": "arithmetic",
+            "expected_answer": ["731"],
+            "generation": "The answer is: 731",
+            "num_generated_tokens": 5,
+        },
+    ]
+    for sample in samples:
+        scored = {**sample, **evaluate_sample(sample, AudioEvaluatorConfig())}
+        metrics.update([scored])
+
+    pass_at_1 = metrics.get_metrics()["pass@1"]
+    assert pass_at_1["accuracy"] == 50.0
+    assert pass_at_1["success_rate"] == 50.0
+    assert pass_at_1["no_numeric_answer_rate"] == 50.0
+
+
+def test_non_spoken_mqa_metrics_do_not_emit_no_numeric_answer_rate():
+    metrics = AudioMetrics(max_k=1)
+    metrics.update(
+        [{"task_type": "ASR", "generation": "hello", "is_correct": True, "num_generated_tokens": 1}]
+    )
+
+    assert "no_numeric_answer_rate" not in metrics.get_metrics()["pass@1"]
+    assert "no_numeric_answer_rate" not in metrics.metrics_to_print()
 
 
 def test_group_and_all_four_leaf_modules_are_discoverable():
