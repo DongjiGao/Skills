@@ -12,6 +12,9 @@ sacrebleu[ja,ko]
 # Audio file I/O for dataset preparation
 soundfile
 
+# Deterministic high-quality resampling for pinned public ASR sources
+scipy==1.17.1
+
 # torchcodec requires FFmpeg shared libraries (not installable via pip).
 # Install via system package manager before running pip install:
 #   Linux: sudo apt install ffmpeg

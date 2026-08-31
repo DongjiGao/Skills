@@ -114,16 +114,28 @@ def test_raw_audio_bytes_decode_without_torchcodec():
     assert array.dtype == np.float32
 
 
-def test_raw_audio_contract_rejects_non_mono_or_non_16khz():
+def test_raw_audio_contract_rejects_non_mono_and_resamples_non_16khz():
     stereo = io.BytesIO()
     sf.write(stereo, np.zeros((320, 2), dtype=np.float32), 16000, format="WAV", subtype="PCM_16")
     with pytest.raises(ValueError, match="2 channels"):
         prepare._decode_audio({"bytes": stereo.getvalue(), "path": None})
 
     wrong_rate = io.BytesIO()
-    sf.write(wrong_rate, np.zeros(160, dtype=np.float32), 8000, format="WAV", subtype="PCM_16")
-    with pytest.raises(ValueError, match="expected 16000 Hz"):
-        prepare._decode_audio({"bytes": wrong_rate.getvalue(), "path": None})
+    source_rate = 44100
+    samples = 0.1 * np.sin(2 * np.pi * 1000 * np.arange(source_rate) / source_rate)
+    sf.write(wrong_rate, samples.astype(np.float32), source_rate, format="WAV", subtype="PCM_16")
+    first, sample_rate = prepare._decode_audio({"bytes": wrong_rate.getvalue(), "path": None})
+    second, second_sample_rate = prepare._decode_audio({"bytes": wrong_rate.getvalue(), "path": None})
+    assert sample_rate == second_sample_rate == 16000
+    assert first.shape == second.shape == (16000,)
+    assert first.dtype == second.dtype == np.float32
+    assert np.isfinite(first).all()
+    np.testing.assert_array_equal(first, second)
+
+
+def test_raw_audio_contract_rejects_invalid_sample_rate():
+    with pytest.raises(ValueError, match="invalid sample rate"):
+        prepare._decode_audio({"array": np.zeros(320, dtype=np.float32), "sampling_rate": 0})
 
 
 def test_source_contract_fails_closed_on_row_or_schema_drift():
@@ -190,6 +202,12 @@ def test_full_publication_writes_atomic_manifests_and_provenance(tmp_path, monke
     assert receipt["manifests_sha256"]["test.jsonl"] == hashlib.sha256(output_path.read_bytes()).hexdigest()
     assert receipt["prompt_contract"]["randomized"] is False
     assert receipt["prompt_contract"]["audio_bench_earnings_compatible"] is False
+    assert receipt["audio_contract"]["resampling"] == {
+        "backend": "scipy.signal.resample_poly",
+        "scipy_version": prepare.scipy.__version__,
+        "window": ["kaiser", 5.0],
+        "padtype": "constant",
+    }
     assert not list(tmp_path.glob(".*.tmp"))
 
 

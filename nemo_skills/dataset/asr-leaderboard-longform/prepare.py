@@ -41,12 +41,15 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from math import gcd
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import scipy
 import soundfile as sf
 from datasets import Audio, load_dataset
+from scipy.signal import resample_poly
 from tqdm import tqdm
 
 from nemo_skills.evaluation.evaluator.open_asr_normalizer import OpenASREnglishTextNormalizer
@@ -72,6 +75,9 @@ AUDIO_SUBTYPE = "PCM_16"
 AUDIO_ROOT = os.environ.get("NEMO_SKILLS_AUDIO_ROOT", "/data").rstrip("/")
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 USER_MESSAGE = "Transcribe the following audio."
+RESAMPLER_BACKEND = "scipy.signal.resample_poly"
+RESAMPLER_WINDOW = ("kaiser", 5.0)
+RESAMPLER_PADTYPE = "constant"
 PROVENANCE_FILENAME = "provenance.json"
 
 CORAAL_CONFIGS = ("ATL", "DCA", "DCB", "DTA", "LES", "PRV", "ROC", "VLD")
@@ -192,8 +198,35 @@ def load_pinned_source(spec: SourceSpec):
     return dataset.cast_column("audio", Audio(decode=False))
 
 
+def _resample_to_canonical_rate(array: np.ndarray, source_rate: int) -> np.ndarray:
+    """Deterministically implement the official Audio cast's sample-rate contract."""
+    if source_rate <= 0:
+        raise ValueError(f"Pinned source audio has invalid sample rate: {source_rate}")
+    if source_rate == AUDIO_SAMPLE_RATE:
+        return array
+
+    divisor = gcd(source_rate, AUDIO_SAMPLE_RATE)
+    resampled = resample_poly(
+        array,
+        up=AUDIO_SAMPLE_RATE // divisor,
+        down=source_rate // divisor,
+        window=RESAMPLER_WINDOW,
+        padtype=RESAMPLER_PADTYPE,
+    )
+    expected_frames = (array.size * AUDIO_SAMPLE_RATE + source_rate - 1) // source_rate
+    if resampled.shape != (expected_frames,):
+        raise ValueError(
+            f"Deterministic resampler produced {resampled.size} frames, expected {expected_frames} "
+            f"for {array.size} frames at {source_rate} Hz"
+        )
+    resampled = np.asarray(resampled, dtype=np.float32)
+    if resampled.size == 0 or not np.isfinite(resampled).all():
+        raise ValueError("Official resampling produced empty or non-finite audio")
+    return resampled
+
+
 def _decode_audio(audio: Any) -> tuple[np.ndarray, int]:
-    """Decode one source with libsndfile and enforce the pinned mono/16-kHz contract."""
+    """Decode one source with libsndfile and canonicalize it to mono 16-kHz audio."""
     if isinstance(audio, dict):
         if audio.get("array") is not None and audio.get("sampling_rate") is not None:
             array = audio["array"]
@@ -230,9 +263,8 @@ def _decode_audio(audio: Any) -> tuple[np.ndarray, int]:
     if array.size == 0 or not np.isfinite(array).all():
         raise ValueError("Official audio is empty or contains non-finite samples")
     sample_rate = int(sample_rate)
-    if sample_rate != AUDIO_SAMPLE_RATE:
-        raise ValueError(f"Official resampling contract expected {AUDIO_SAMPLE_RATE} Hz, got {sample_rate} Hz")
-    return array, sample_rate
+    array = _resample_to_canonical_rate(array, sample_rate)
+    return array, AUDIO_SAMPLE_RATE
 
 
 def _safe_identifier(value: str) -> str:
@@ -444,11 +476,18 @@ def prepare_open_asr_longform(output_dir: Path, *, no_audio: bool = False) -> Pa
             "manifests_sha256": manifest_hashes,
             "audio_mode": "validated-existing" if no_audio else "materialized-and-validated",
             "audio_contract": {
-                "official_decode": "datasets.Audio(sampling_rate=16000, mono=True)",
+                "official_contract": "datasets.Audio(sampling_rate=16000, num_channels=1)",
+                "decode_backend": "libsndfile via soundfile",
                 "served_format": AUDIO_FORMAT,
                 "served_subtype": AUDIO_SUBTYPE,
                 "sample_rate": AUDIO_SAMPLE_RATE,
                 "channels": AUDIO_CHANNELS,
+                "resampling": {
+                    "backend": RESAMPLER_BACKEND,
+                    "scipy_version": scipy.__version__,
+                    "window": list(RESAMPLER_WINDOW),
+                    "padtype": RESAMPLER_PADTYPE,
+                },
                 "one_complete_recording_per_row": True,
             },
             "prompt_contract": {
