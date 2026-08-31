@@ -30,7 +30,8 @@ SUPPORTED_TASKS = {
 SOURCE_CONTRACTS = {
     "asr": {
         "rows": 15274,
-        "unique_audio": 15274,
+        "prepared_rows": 15273,
+        "unique_audio": 15273,
         "sha256": "2af259b2455eb4135fa82864f5227d974362c39e8724c6b64b0bc550b6065c95",
     },
     "translation": {
@@ -58,6 +59,12 @@ SOURCE_CONTRACTS = {
         "unique_audio": 3170,
         "sha256": "520aed2a12a9d447edb6734e0b0c95d37f19267a0cf06de0fc920d11beeef660",
     },
+}
+# The immutable source manifest references this one absent repository object.
+# Preserve the raw manifest contract, but exclude only this proven unservable
+# row from the prepared audio-complete subset and retain original row indices.
+SOURCE_MISSING_AUDIO = {
+    "asr": {"LongSpeech_p1/wavs/part_02/020934.wav": (12375,)},
 }
 UNSUPPORTED_TASKS = {
     "temporal-qa": (
@@ -227,6 +234,35 @@ def _validate_source_contract(benchmark_task: str, source_manifest: Path, rows: 
     return digest
 
 
+def _select_audio_complete_rows(benchmark_task: str, source_task: str, rows: list[dict]) -> list[tuple[int, dict]]:
+    expected_missing = SOURCE_MISSING_AUDIO.get(benchmark_task, {})
+    observed_missing: dict[str, list[int]] = {}
+    selected: list[tuple[int, dict]] = []
+
+    for row_index, row in enumerate(rows):
+        user, _assistant = _validate_source_row(row, source_task)
+        audio_relpath = _safe_audio_relpath(user["audio"], source_task)
+        if audio_relpath in expected_missing:
+            observed_missing.setdefault(audio_relpath, []).append(row_index)
+            continue
+        selected.append((row_index, row))
+
+    observed_missing_tuples = {path: tuple(row_indices) for path, row_indices in observed_missing.items()}
+    if observed_missing_tuples != expected_missing:
+        raise ValueError(
+            f"LongSpeech {benchmark_task} missing-audio contract drift: "
+            f"expected {expected_missing}, got {observed_missing_tuples}"
+        )
+
+    contract = SOURCE_CONTRACTS[benchmark_task]
+    expected_rows = contract.get("prepared_rows", contract["rows"])
+    if len(selected) != expected_rows:
+        raise ValueError(
+            f"LongSpeech {benchmark_task} prepared row-count drift: expected {expected_rows}, got {len(selected)}"
+        )
+    return selected
+
+
 def prepare_task(
     benchmark_task: str,
     *,
@@ -240,10 +276,11 @@ def prepare_task(
     source_root = output_root / "_source"
     source_manifest = _download_repo_file(source_filename, source_root)
 
-    rows = list(_iter_jsonl(source_manifest))
-    _validate_source_contract(benchmark_task, source_manifest, rows)
+    source_rows = list(_iter_jsonl(source_manifest))
+    _validate_source_contract(benchmark_task, source_manifest, source_rows)
+    rows = _select_audio_complete_rows(benchmark_task, source_task, source_rows)
     audio_relpaths = []
-    for row in rows:
+    for _row_index, row in rows:
         user, _assistant = _validate_source_row(row, source_task)
         audio_relpaths.append(_safe_audio_relpath(user["audio"], source_task))
     audio_relpaths = list(dict.fromkeys(audio_relpaths))
@@ -265,7 +302,7 @@ def prepare_task(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     temp_output = output_file.with_name(f".{output_file.name}.tmp")
     with temp_output.open("w", encoding="utf-8") as output:
-        for row_index, row in enumerate(rows):
+        for row_index, row in rows:
             audio_relpath = _safe_audio_relpath(row["messages"][0]["audio"], source_task)
             formatted = _format_row(
                 row,

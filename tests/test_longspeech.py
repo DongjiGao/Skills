@@ -66,7 +66,21 @@ def test_public_protocol_is_pinned_and_exposes_only_reproducible_tasks():
         "speaker-count": 1263,
         "language-detection": 3170,
     }
+    assert {
+        task: contract.get("prepared_rows", contract["rows"]) for task, contract in prepare.SOURCE_CONTRACTS.items()
+    } == {
+        "asr": 15273,
+        "translation": 6309,
+        "summary": 937,
+        "content-separation": 1263,
+        "speaker-count": 1263,
+        "language-detection": 3170,
+    }
     assert sum(contract["rows"] for contract in prepare.SOURCE_CONTRACTS.values()) == 28216
+    assert (
+        sum(contract.get("prepared_rows", contract["rows"]) for contract in prepare.SOURCE_CONTRACTS.values()) == 28215
+    )
+    assert prepare.SOURCE_MISSING_AUDIO == {"asr": {"LongSpeech_p1/wavs/part_02/020934.wav": (12375,)}}
     assert all(len(contract["sha256"]) == 64 for contract in prepare.SOURCE_CONTRACTS.values())
 
 
@@ -167,6 +181,53 @@ def test_source_contract_rejects_hash_and_row_drift(tmp_path, monkeypatch):
     prepare.SOURCE_CONTRACTS["summary"].update(rows=1, sha256="0" * 64)
     with pytest.raises(ValueError, match="source hash drift"):
         prepare._validate_source_contract("summary", path, rows)
+
+
+def test_audio_complete_selection_skips_only_pinned_missing_object(monkeypatch):
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "audio": "present.wav", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "audio": "missing.wav", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+            ]
+        },
+    ]
+    monkeypatch.setitem(
+        prepare.SOURCE_CONTRACTS,
+        "summary",
+        {"rows": 2, "prepared_rows": 1, "unique_audio": 1, "sha256": "0" * 64},
+    )
+    monkeypatch.setitem(prepare.SOURCE_MISSING_AUDIO, "summary", {"missing.wav": (1,)})
+
+    selected = prepare._select_audio_complete_rows("summary", "summary", rows)
+
+    assert selected == [(0, rows[0])]
+    with pytest.raises(ValueError, match="missing-audio contract drift"):
+        prepare._select_audio_complete_rows("summary", "summary", list(reversed(rows)))
+
+
+def test_audio_complete_selection_rejects_unexpected_prepared_count(monkeypatch):
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "audio": "present.wav", "content": "Question"},
+                {"role": "assistant", "content": "Answer"},
+            ]
+        }
+    ]
+    monkeypatch.setitem(
+        prepare.SOURCE_CONTRACTS,
+        "summary",
+        {"rows": 1, "prepared_rows": 2, "unique_audio": 1, "sha256": "0" * 64},
+    )
+    with pytest.raises(ValueError, match="prepared row-count drift"):
+        prepare._select_audio_complete_rows("summary", "summary", rows)
 
 
 @pytest.mark.parametrize(
