@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+import types
 import wave
 
 import pytest
@@ -30,6 +32,7 @@ from nemo_skills.dataset.halas.prepare import (
     HF_REVISION,
     _default_audio_prefix,
     _default_data_dir,
+    _extract_audio_for_rows,
     _format_entry,
     _model_label_counts,
     _validate_audio_closure,
@@ -171,3 +174,40 @@ def test_halas_validates_complete_audio_headers(tmp_path):
 def test_halas_missing_audio_fails_closed(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing or empty"):
         _validate_audio_closure([_halas_row()], tmp_path)
+
+
+def test_halas_extracts_raw_earnings22_audio_without_torchcodec(tmp_path, monkeypatch):
+    source = tmp_path / "source.wav"
+    _write_wav(source, frames=480)
+
+    class FakeAudio:
+        def __init__(self, *, decode):
+            self.decode = decode
+
+    class FakeDataset:
+        def __init__(self):
+            self.cast = None
+
+        def cast_column(self, name, feature):
+            self.cast = (name, feature.decode)
+            return self
+
+        def __iter__(self):
+            yield {
+                "segment_id": "segment",
+                "file_id": "clip",
+                "audio": {"bytes": source.read_bytes(), "path": None},
+            }
+
+    dataset = FakeDataset()
+    fake_datasets = types.SimpleNamespace(
+        Audio=FakeAudio,
+        load_dataset=lambda *args, **kwargs: dataset,
+    )
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    missing = _extract_audio_for_rows([_halas_row("segment_clip.wav")], tmp_path)
+
+    assert missing == set()
+    assert dataset.cast == ("audio", False)
+    _validate_audio_closure([_halas_row("segment_clip.wav")], tmp_path)

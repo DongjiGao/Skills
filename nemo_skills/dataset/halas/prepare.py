@@ -41,6 +41,7 @@ EARNINGS22_REVISION = "0a034f9ed86d33a3859d9025d3e621cf243773ab"
 EARNINGS22_CONFIG = "chunked"
 EARNINGS22_SPLIT = "test"
 MINIMUM_AUDIO_SAMPLES = 320
+EXPECTED_AUDIO_SAMPLE_RATE = 16000
 BENCHMARK_NAME = "halas"
 PROMPT = (
     "Transcribe the English audio into text. Return only the words spoken in the audio; "
@@ -150,8 +151,43 @@ def _earnings22_audio_id(row: dict) -> str:
     return f"{segment_id}_{file_id}.wav"
 
 
+def _decode_earnings22_audio(audio: dict) -> tuple[np.ndarray, int]:
+    """Decode raw HF audio with libsndfile, avoiding TorchCodec/FFmpeg."""
+    import io
+
+    import soundfile as sf
+
+    if not isinstance(audio, dict):
+        raise TypeError(f"Earnings22 raw audio must be a mapping, found {type(audio).__name__}")
+    encoded = audio.get("bytes")
+    path = audio.get("path")
+    if encoded is not None:
+        source = io.BytesIO(encoded)
+    elif path:
+        source = str(path)
+    else:
+        raise ValueError("Earnings22 raw audio has neither bytes nor path")
+
+    samples, sampling_rate = sf.read(source, dtype="float32", always_2d=False)
+    samples = np.asarray(samples)
+    if samples.ndim == 2:
+        if samples.shape[1] != 1:
+            raise ValueError(f"Earnings22 source audio must be mono, found shape {samples.shape}")
+        samples = samples[:, 0]
+    if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
+        raise ValueError(f"Earnings22 source audio is empty, short, or malformed: shape={samples.shape}")
+    if not np.isfinite(samples).all():
+        raise ValueError("Earnings22 source audio contains non-finite samples")
+    if int(sampling_rate) != EXPECTED_AUDIO_SAMPLE_RATE:
+        raise ValueError(
+            f"Earnings22 source audio sample-rate drift: expected {EXPECTED_AUDIO_SAMPLE_RATE}, "
+            f"found {sampling_rate}"
+        )
+    return samples, int(sampling_rate)
+
+
 def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     audio_dir = data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +200,7 @@ def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
     print("=" * 70)
 
     ds = load_dataset(EARNINGS22_REPO_ID, EARNINGS22_CONFIG, split=EARNINGS22_SPLIT, revision=EARNINGS22_REVISION)
+    ds = ds.cast_column("audio", Audio(decode=False))
     written = 0
     for e22_row in ds:
         audio_id = _earnings22_audio_id(e22_row)
@@ -172,8 +209,8 @@ def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
 
         wav_path = audio_dir / audio_id
         if not wav_path.exists():
-            audio = e22_row["audio"]
-            _write_wav(wav_path, np.asarray(audio["array"]), int(audio["sampling_rate"]))
+            samples, sampling_rate = _decode_earnings22_audio(e22_row["audio"])
+            _write_wav(wav_path, samples, sampling_rate)
             written += 1
         missing_ids.discard(audio_id)
         if not missing_ids:
