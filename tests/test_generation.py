@@ -551,8 +551,8 @@ def test_single_model_declarative_client_uses_runtime_server_port(monkeypatch, t
     client_script = groups[0].commands[-1].script
     assert isinstance(server_script.inline, str)
     assert isinstance(client_script.inline, str)
-    assert "nemo_skills.pipeline.utils.runtime_port allocate" in server_script.inline
-    assert "nemo_skills.pipeline.utils.runtime_port wait" in client_script.inline
+    assert "nemo_skills/pipeline/utils/runtime_port.py allocate" in server_script.inline
+    assert "nemo_skills/pipeline/utils/runtime_port.py wait" in client_script.inline
     server_state = server_script.inline.split("--state-file ", 1)[1].split(" ", 1)[0]
     client_state = client_script.inline.split("--state-file ", 1)[1].split(")", 1)[0]
     assert server_state == client_state

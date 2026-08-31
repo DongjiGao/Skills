@@ -125,3 +125,7 @@ def main() -> None:
     print(port)
 
 
+if __name__ == "__main__":
+    main()
+
+

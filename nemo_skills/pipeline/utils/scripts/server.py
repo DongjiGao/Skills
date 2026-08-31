@@ -107,7 +107,8 @@ class ServerScript(BaseJobScript):
         if self._runtime_port is None:
             return
         het_group = self.het_group_index or 0
-        server_port = self._runtime_port.server_expression(state_dir, het_group)
+        allocation_command = self._runtime_port.server_allocation_command(state_dir, het_group)
+        server_port = '"${NEMO_SKILLS_RUNTIME_PORT}"'
         client_port = self._runtime_port.client_expression(state_dir, het_group)
         cmd, self.num_tasks = get_server_command(
             server_type=self.server_type,
@@ -118,6 +119,14 @@ class ServerScript(BaseJobScript):
             server_port=server_port,
             server_args=self.server_args,
             server_entrypoint=self.server_entrypoint,
+        )
+        # A failed command substitution otherwise becomes a bare ``--port``
+        # and obscures the allocator failure behind the server CLI's parser.
+        # Assignment commands inherit the substitution's exit status, so the
+        # ``&&`` chain fails before the server starts if allocation fails.
+        cmd = (
+            f'NEMO_SKILLS_RUNTIME_PORT="$({allocation_command})" '
+            f'&& test -n "$NEMO_SKILLS_RUNTIME_PORT" && {cmd}'
         )
         self.set_inline(cmd)
         self.port = client_port

@@ -30,6 +30,9 @@ DEFAULT_PORT_RESERVATION_TTL = 3600
 _SLURM_JOB_PORT_OFFSET = 0
 
 
+RUNTIME_PORT_SCRIPT = "/nemo_run/code/nemo_skills/pipeline/utils/runtime_port.py"
+
+
 @dataclass(frozen=True)
 class SlurmJobPort:
     """A port selected on the allocated server node and shared with clients."""
@@ -58,17 +61,23 @@ class SlurmJobPort:
             f"-${{SLURM_RESTART_COUNT:-0}}-{het_group}-{self.offset}"
         )
 
-    def server_expression(self, state_dir: str, het_group: int) -> str:
+    def server_allocation_command(self, state_dir: str, het_group: int) -> str:
+        """Return a standalone allocator command safe in minimal server images.
+
+        Execute the staged file directly rather than importing it with ``-m``.
+        Minimal serving images can contain ``nemo-skills-core``, whose package
+        guard intentionally rejects importing ``nemo_skills.pipeline``.
+        """
         state_file = self._state_file(state_dir, het_group)
         return (
-            "$(python3 -m nemo_skills.pipeline.utils.runtime_port allocate"
-            f" --state-file {state_file} --base-port {self.base_expression(het_group)})"
+            f"python3 {RUNTIME_PORT_SCRIPT} allocate"
+            f" --state-file {state_file} --base-port {self.base_expression(het_group)}"
         )
 
     def client_expression(self, state_dir: str, het_group: int) -> str:
         state_file = self._state_file(state_dir, het_group)
         return (
-            "$(python3 -m nemo_skills.pipeline.utils.runtime_port wait"
+            f"$(python3 {RUNTIME_PORT_SCRIPT} wait"
             f" --state-file {state_file})"
         )
 

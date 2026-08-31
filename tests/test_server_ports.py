@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import os
+import shlex
 import socket
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -106,11 +108,13 @@ def test_server_script_uses_runtime_port_handoff_for_slurm_ports(monkeypatch, tm
     script.configure_runtime_port(str(tmp_path))
 
     assert isinstance(script.inline, str)
-    assert "nemo_skills.pipeline.utils.runtime_port allocate" in script.inline
+    assert "python3 /nemo_run/code/nemo_skills/pipeline/utils/runtime_port.py allocate" in script.inline
     assert "--base-port $((20000+(${SLURM_JOB_ID:-0}*7919+2*1543" in script.inline
+    assert '--port "${NEMO_SKILLS_RUNTIME_PORT}"' in script.inline
+    assert '&& test -n "$NEMO_SKILLS_RUNTIME_PORT" &&' in script.inline
     assert "-2-0" in script.inline
     assert isinstance(script.port, str)
-    assert "nemo_skills.pipeline.utils.runtime_port wait" in script.port
+    assert "nemo_skills/pipeline/utils/runtime_port.py wait" in script.port
     assert "-2-0" in script.port
     server_state = script.inline.split("--state-file ", 1)[1].split(" ", 1)[0]
     client_state = script.port.split("--state-file ", 1)[1].split(")", 1)[0]
@@ -148,3 +152,75 @@ def test_runtime_port_wait_times_out_without_publication(tmp_path):
             timeout=0.01,
             poll_interval=0.001,
         )
+
+
+@pytest.mark.parametrize(
+    ("num_gpus", "server_args"),
+    [
+        pytest.param(1, "--tensor-parallel-size 1", id="v1"),
+        pytest.param(
+            8,
+            "--tensor-parallel-size 1 --data-parallel-size 8 --enable-expert-parallel",
+            id="v2-dp8-ep8-tp1",
+        ),
+    ],
+)
+def test_vllm_server_runtime_port_renders_and_matches_client(
+    monkeypatch, tmp_path, num_gpus, server_args
+):
+    """Exercise the production shell shape for both burst v1 and v2."""
+    monkeypatch.setenv("NEMO_SKILLS_USE_SLURM_JOB_ID_PORTS", "1")
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    monkeypatch.setattr(server, "_SLURM_JOB_PORT_OFFSET", 0)
+    runtime_script = Path(server.RUNTIME_PORT_SCRIPT)
+    local_runtime_script = Path(__file__).parents[1] / "nemo_skills/pipeline/utils/runtime_port.py"
+    captured_port = tmp_path / "served-port"
+    fake_server = tmp_path / "fake_vllm_serve.py"
+    fake_server.write_text(
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser(add_help=False)\n"
+        "parser.add_argument('--port', required=True, type=int)\n"
+        "args, _ = parser.parse_known_args()\n"
+        f"Path({str(captured_port)!r}).write_text(str(args.port))\n"
+    )
+    script = ServerScript(
+        server_type="vllm",
+        model_path="model-name",
+        cluster_config={},
+        num_gpus=num_gpus,
+        num_nodes=1,
+        server_args=server_args,
+        server_entrypoint=str(fake_server),
+        port=None,
+        allocate_port=True,
+    )
+    script.configure_runtime_port(str(tmp_path))
+
+    base_port = _expand_port(server.SlurmJobPort(offset=0).base_expression(0), SLURM_JOB_ID="4242")
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.bind(("0.0.0.0", base_port))
+    try:
+        command = script.inline.replace(
+            str(runtime_script), shlex.quote(str(local_runtime_script))
+        )
+        command = command.replace("nvidia-smi", "true", 1).replace(
+            "cd /nemo_run/code", f"cd {shlex.quote(str(Path(__file__).parents[1]))}", 1
+        )
+        subprocess.run(["bash", "-c", command], check=True)
+    finally:
+        occupied.close()
+
+    served_port = int(captured_port.read_text())
+    assert served_port != base_port
+    assert isinstance(script.port, str)
+    client_expression = script.port.replace(
+        str(runtime_script), shlex.quote(str(local_runtime_script))
+    )
+    client_port = int(
+        subprocess.check_output(["bash", "-c", f"printf %s {client_expression}"], text=True)
+    )
+    assert client_port == served_port
+    assert f"--port {served_port}" not in script.inline
+    assert '--port "${NEMO_SKILLS_RUNTIME_PORT}"' in script.inline
+    assert "python3 -m nemo_skills.pipeline" not in script.inline
