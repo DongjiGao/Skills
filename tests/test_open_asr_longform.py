@@ -61,6 +61,10 @@ def test_exact_public_protocol_sources_and_census_are_pinned():
     assert prepare.LONGFORM_REVISION == "4b158b35bb19ed58280bd09da84cdbbcbfa2be8e"
     assert prepare.CORAAL_REPO == "bezzam/coraal"
     assert prepare.CORAAL_REVISION == "76417d96197aa8bfa419eb5cc7637dab2f75cba0"
+    assert prepare.CORAAL_ALLOWED_MISSING_SUBSET_ROWS == frozenset({("VLD", 13, "VLD_se0_ag2_f_02_1")})
+    assert prepare.CORAAL_VLD_FINAL_SHARD_SHA256 == (
+        "a60fafa448bf5ef6a98dafad3fcae11f50ebbfec0889fddd1389098766967d24"
+    )
     assert prepare.PRIMARY_SUBSETS == ("earnings21", "earnings22", "tedlium")
     assert prepare.CORAAL_CONFIGS == ("ATL", "DCA", "DCB", "DTA", "LES", "PRV", "ROC", "VLD")
     assert prepare.EXPECTED_ROWS == {
@@ -147,6 +151,39 @@ def test_source_contract_fails_closed_on_row_or_schema_drift():
         prepare._validate_source_dataset(FakeDataset([_source_row()], ["audio", "text", "new"]), spec)
 
 
+def test_coraal_vld_final_row_accepts_only_authenticated_missing_subset():
+    spec = next(spec for spec in prepare.SOURCE_SPECS if spec.leaf == "coraal_VLD")
+    row = {
+        **_source_row(),
+        "file_id": "VLD_se0_ag2_f_02_1",
+        "CORAAL.Sub": None,
+    }
+
+    assert prepare._validate_source_row(row, spec, 13) == (
+        "VLD_se0_ag2_f_02_1",
+        "Hello world",
+    )
+
+
+@pytest.mark.parametrize(
+    ("index", "file_id", "subset"),
+    [
+        (12, "VLD_se0_ag2_f_02_1", None),
+        (13, "VLD_unexpected", None),
+        (13, "VLD_se0_ag2_f_02_1", "ROC"),
+    ],
+)
+def test_coraal_missing_subset_exception_remains_fail_closed(index, file_id, subset):
+    spec = next(spec for spec in prepare.SOURCE_SPECS if spec.leaf == "coraal_VLD")
+    row = {
+        **_source_row(),
+        "file_id": file_id,
+        "CORAAL.Sub": subset,
+    }
+    with pytest.raises(ValueError, match="source subset drift"):
+        prepare._validate_source_row(row, spec, index)
+
+
 def test_prepare_source_materializes_validated_audio_and_deterministic_prompt(tmp_path, monkeypatch):
     spec = _spec()
     monkeypatch.setattr(prepare, "load_pinned_source", lambda _spec: FakeDataset([_source_row()]))
@@ -208,6 +245,18 @@ def test_full_publication_writes_atomic_manifests_and_provenance(tmp_path, monke
         "window": ["kaiser", 5.0],
         "padtype": "constant",
     }
+    assert receipt["known_source_exceptions"] == [
+        {
+            "repo": prepare.CORAAL_REPO,
+            "revision": prepare.CORAAL_REVISION,
+            "config": "VLD",
+            "source_row_index": 13,
+            "file_id": "VLD_se0_ag2_f_02_1",
+            "missing_field": "CORAAL.Sub",
+            "source_shard": prepare.CORAAL_VLD_FINAL_SHARD,
+            "source_shard_sha256": prepare.CORAAL_VLD_FINAL_SHARD_SHA256,
+        }
+    ]
     assert not list(tmp_path.glob(".*.tmp"))
 
 

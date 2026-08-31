@@ -81,6 +81,9 @@ RESAMPLER_PADTYPE = "constant"
 PROVENANCE_FILENAME = "provenance.json"
 
 CORAAL_CONFIGS = ("ATL", "DCA", "DCB", "DTA", "LES", "PRV", "ROC", "VLD")
+CORAAL_ALLOWED_MISSING_SUBSET_ROWS = frozenset({("VLD", 13, "VLD_se0_ag2_f_02_1")})
+CORAAL_VLD_FINAL_SHARD = "VLD/test-00007-of-00008.parquet"
+CORAAL_VLD_FINAL_SHARD_SHA256 = "a60fafa448bf5ef6a98dafad3fcae11f50ebbfec0889fddd1389098766967d24"
 PRIMARY_SUBSETS = ("earnings21", "earnings22", "tedlium")
 CORAAL_SUBSETS = tuple(f"coraal_{config}" for config in CORAAL_CONFIGS)
 OFFICIAL_SUBSETS = PRIMARY_SUBSETS + CORAAL_SUBSETS
@@ -284,16 +287,22 @@ def _source_id(entry: dict[str, Any], spec: SourceSpec, index: int) -> str:
 
 
 def _validate_source_row(entry: dict[str, Any], spec: SourceSpec, index: int) -> tuple[str, str]:
+    source_id = _source_id(entry, spec, index)
     text = entry.get("text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError(f"{spec.leaf} row {index} has an empty/non-string reference")
     if not _NORMALIZER(text).strip():
         raise ValueError(f"{spec.leaf} row {index} has an empty reference after official normalization")
-    if spec.repo == CORAAL_REPO and entry.get("CORAAL.Sub") != spec.config:
-        raise ValueError(
-            f"{spec.leaf} row {index} source subset drift: expected {spec.config!r}, got {entry.get('CORAAL.Sub')!r}"
+    if spec.repo == CORAAL_REPO:
+        observed_subset = entry.get("CORAAL.Sub")
+        allowed_missing_subset = (
+            observed_subset is None and (spec.config, index, source_id) in CORAAL_ALLOWED_MISSING_SUBSET_ROWS
         )
-    return _source_id(entry, spec, index), text.strip()
+        if observed_subset != spec.config and not allowed_missing_subset:
+            raise ValueError(
+                f"{spec.leaf} row {index} source subset drift: expected {spec.config!r}, got {observed_subset!r}"
+            )
+    return source_id, text.strip()
 
 
 def _validate_materialized_audio(path: Path, expected_frames: int) -> None:
@@ -470,6 +479,19 @@ def prepare_open_asr_longform(output_dir: Path, *, no_audio: bool = False) -> Pa
                     "license": spec.license,
                 }
                 for spec in SOURCE_SPECS
+            ],
+            "known_source_exceptions": [
+                {
+                    "repo": CORAAL_REPO,
+                    "revision": CORAAL_REVISION,
+                    "config": config,
+                    "source_row_index": index,
+                    "file_id": file_id,
+                    "missing_field": "CORAAL.Sub",
+                    "source_shard": CORAAL_VLD_FINAL_SHARD,
+                    "source_shard_sha256": CORAAL_VLD_FINAL_SHARD_SHA256,
+                }
+                for config, index, file_id in sorted(CORAAL_ALLOWED_MISSING_SUBSET_ROWS)
             ],
             "row_counts": observed_counts,
             "total_rows": len(all_rows),
