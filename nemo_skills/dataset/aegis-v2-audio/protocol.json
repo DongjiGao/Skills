@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "benchmark": "aegis-v2-audio",
+  "display_name": "Nemotron Content Safety Audio Dataset (AEGIS 2.0 derivative)",
+  "status": "product-decision-required",
+  "classification": "public-artifact-no-comparable-speechlm-protocol",
+  "runnable": false,
+  "comparable": false,
+  "public_artifacts": [
+    {
+      "kind": "huggingface_dataset",
+      "repository": "nvidia/Nemotron-Content-Safety-Audio-Dataset",
+      "revision": "8b90c949f88f9d90d5157025bc7695229d512206",
+      "license": "cc-by-4.0",
+      "split": "test",
+      "metadata_path": "metadata.csv",
+      "metadata_sha256": "ff80a362bd88cd1f2d0113f03509f53cf984ee434e909383caa42b20b2c011f0",
+      "metadata_bytes": 1330539,
+      "rows": 1928,
+      "audio_files": 1928,
+      "repository_storage_bytes": 2951859829,
+      "prompt_label_counts": {
+        "safe": 889,
+        "unsafe": 1039
+      },
+      "speaker_native_language_counts": {
+        "English": 648,
+        "Spanish": 642,
+        "French": 638
+      }
+    }
+  ],
+  "source_evidence": [
+    {
+      "url": "https://huggingface.co/datasets/nvidia/Nemotron-Content-Safety-Audio-Dataset/tree/8b90c949f88f9d90d5157025bc7695229d512206",
+      "claim": "The public artifact contains 1,928 synthetic WAV files and inherited prompt labels; the card lists both audio classification and voice red-teaming uses but publishes no single inference or scoring protocol."
+    },
+    {
+      "url": "https://aclanthology.org/2025.naacl-long.306/",
+      "claim": "The cited AEGIS 2.0 paper defines the original text content-safety dataset, not a SpeechLM audio response benchmark."
+    }
+  ],
+  "not_equivalent_to": [
+    "The PRD AEGIS 1.0 response-safety row and its requested reasoning-on/off pass percentages.",
+    "The 1,964-row public AEGIS 2.0 text test snapshot.",
+    "Any internal aegis_v2_audio_reasoning or TrustEval harness."
+  ],
+  "missing_product_decisions": [
+    {
+      "id": "task_contract",
+      "question": "Is the model being evaluated as a binary spoken-content classifier, a conversational assistant responding to spoken prompts, or a faithful transcriber?"
+    },
+    {
+      "id": "target_policy",
+      "question": "For each selected task, which outputs pass, especially verbatim transcription of unsafe speech versus refusal or safe assistance?"
+    },
+    {
+      "id": "prompt_contract",
+      "question": "What exact system/user prompt, output schema, reasoning-on/off instructions, and decoding parameters must be used?"
+    },
+    {
+      "id": "scorer_contract",
+      "question": "What exact parser, judge or classifier revision, decision threshold, invalid-output policy, and error policy define a pass?"
+    },
+    {
+      "id": "aggregation_contract",
+      "question": "Which metric and averaging unit is authoritative: accuracy, unsafe F1/AUPRC, response pass rate, or category/speaker macros?"
+    },
+    {
+      "id": "prd_mapping",
+      "question": "Will the product report this distinct AEGIS 2.0 audio audit separately rather than claim AEGIS 1.0 compliance?"
+    }
+  ],
+  "prohibited_claims": [
+    "Do not report a score from inherited prompt labels without an approved model-output and scorer contract.",
+    "Do not relabel this 1,928-row audio derivative as AEGIS 1.0 or as the 1,964-row AEGIS 2.0 text test.",
+    "Do not treat transcription accuracy, refusal rate, prompt-label accuracy, and response safety as interchangeable metrics.",
+    "Do not publish reasoning-on/off pass percentages until both variants are specified by the product owner."
+  ],
+  "data_preparation_requirements": [
+    "After protocol approval, mirror the Hugging Face dataset at revision 8b90c949f88f9d90d5157025bc7695229d512206 under the applicable CC-BY-4.0 attribution.",
+    "Validate metadata.csv against SHA-256 ff80a362bd88cd1f2d0113f03509f53cf984ee434e909383caa42b20b2c011f0, 1,330,539 bytes, 1,928 unique IDs, and 1,928 unique audio_filename values.",
+    "Materialize and validate all 1,928 referenced WAV headers; the pinned repository reports 2,951,859,829 bytes of storage.",
+    "Create a runnable test manifest only after the approved task, prompt, output, scorer, aggregation, and PRD-mapping decisions are encoded and tested."
+  ],
+  "operator_action": "Content Safety SME and product owner must approve all missing decisions before data preparation, inference, scoring, or PRD compliance claims."
+}
