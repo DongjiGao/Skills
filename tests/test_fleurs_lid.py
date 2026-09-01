@@ -89,12 +89,14 @@ def _source_row(filename: str = "123.wav") -> dict:
     }
 
 
-def _source_artifact(rows: int = 1) -> dict:
+def _source_artifact(rows: int = 1, filenames: list[str] | None = None) -> dict:
     return {
         "rows": rows,
         "tsv_sha256": "1" * 64,
         "audio_tar_sha256": "2" * 64,
-        "wav_inventory_sha256": "3" * 64,
+        "wav_inventory_sha256": hashlib.sha256(
+            json.dumps(sorted(filenames or ["123.wav"]), separators=(",", ":")).encode()
+        ).hexdigest(),
     }
 
 
@@ -169,6 +171,78 @@ def test_fleurs_lid_prepare_publishes_atomic_manifest_and_provenance(tmp_path, m
     info = sf.info(str(tmp_path / "audio" / "en_us" / "123.wav"))
     assert (info.samplerate, info.channels, info.frames) == (16000, 1, 320)
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_fleurs_lid_resume_uses_validated_locale_shard_without_reloading_source(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    first_output = prepare.prepare_fleurs_lid(tmp_path, num_workers=1)
+    first_payload = first_output.read_bytes()
+    first_receipt = json.loads((tmp_path / prepare.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+    assert first_receipt["resumable_locale_shards"] is True
+    assert first_receipt["preparation_workers"] == 1
+
+    first_output.unlink()
+    (tmp_path / prepare.PROVENANCE_FILENAME).unlink()
+
+    def fail_if_source_is_reloaded(*_args, **_kwargs):
+        raise AssertionError("completed locale shard must be resumed without source reload")
+
+    monkeypatch.setattr(prepare, "_load_locale", fail_if_source_is_reloaded)
+    resumed_output = prepare.prepare_fleurs_lid(tmp_path, num_workers=1)
+    assert resumed_output.read_bytes() == first_payload
+
+
+def test_fleurs_lid_parallel_locale_shards_merge_in_canonical_order(tmp_path, monkeypatch):
+    filenames = {"en_us": "english.wav", "fr_fr": "french.wav"}
+    monkeypatch.setattr(prepare, "CANONICAL_LABELS", ("en_us", "fr_fr"))
+    monkeypatch.setattr(
+        prepare,
+        "FLEURS_LANGUAGES",
+        {locale: FLEURS_LANGUAGES[locale] for locale in prepare.CANONICAL_LABELS},
+    )
+    monkeypatch.setattr(prepare, "EXPECTED_LOCALE_COUNTS", {"en_us": 1, "fr_fr": 1})
+    monkeypatch.setattr(prepare, "EXPECTED_TOTAL_ROWS", 2)
+    monkeypatch.setattr(
+        prepare,
+        "EXPECTED_WAV_INVENTORY_SHA256",
+        prepare._inventory_sha256({locale: [filename] for locale, filename in filenames.items()}),
+    )
+
+    def fake_load(locale, _cache):
+        filename = filenames[locale]
+        return [_source_row(filename)], _source_artifact(filenames=[filename])
+
+    monkeypatch.setattr(prepare, "_load_locale", fake_load)
+    output_path = prepare.prepare_fleurs_lid(tmp_path, num_workers=2)
+    records = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    receipt = json.loads((tmp_path / prepare.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+    assert [record["id"] for record in records] == ["en_us:english.wav", "fr_fr:french.wav"]
+    assert receipt["preparation_workers"] == 2
+    assert list(receipt["locale_shards"]) == ["en_us", "fr_fr"]
+
+
+def test_fleurs_lid_bootstraps_interrupted_audio_only_after_exact_source_validation(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    audio_path = tmp_path / "audio" / "en_us" / "123.wav"
+    audio_path.parent.mkdir(parents=True)
+    sf.write(str(audio_path), np.zeros(320, dtype=np.float32), 16000)
+
+    def fail_if_existing_audio_is_rewritten(*_args, **_kwargs):
+        raise AssertionError("validated interrupted audio must be reused")
+
+    monkeypatch.setattr(prepare, "_write_audio_atomic", fail_if_existing_audio_is_rewritten)
+    output_path = prepare.prepare_fleurs_lid(tmp_path, num_workers=1)
+    assert output_path.is_file()
+
+
+def test_fleurs_lid_refuses_mismatched_interrupted_audio(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    audio_path = tmp_path / "audio" / "en_us" / "123.wav"
+    audio_path.parent.mkdir(parents=True)
+    sf.write(str(audio_path), np.ones(320, dtype=np.float32), 16000)
+    with pytest.raises(ValueError, match="differs from canonical pinned source"):
+        prepare.prepare_fleurs_lid(tmp_path, num_workers=1)
+    assert not (tmp_path / "test.jsonl").exists()
 
 
 def test_fleurs_lid_failed_contract_does_not_replace_published_files(tmp_path, monkeypatch):
