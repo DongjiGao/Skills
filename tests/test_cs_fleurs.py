@@ -23,6 +23,7 @@ HuggingFace download and is exercised separately by the GPU eval suite, where
 import hashlib
 import json
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 
@@ -178,3 +179,30 @@ def test_cs_fleurs_record_carries_immutable_source_provenance():
     record = prepare._build_record(row, "read/test", "read")
     assert record["source_provenance"]["dataset_revision"] == prepare.HF_REVISION
     assert record["source_provenance"]["expected_rows"] == 5818
+
+
+def test_cs_fleurs_default_data_dir_honors_cli_managed_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEMO_SKILLS_DATA_DIR", str(tmp_path))
+    assert prepare._default_data_dir() == tmp_path / "cs-fleurs"
+
+    monkeypatch.delenv("NEMO_SKILLS_DATA_DIR")
+    assert prepare._default_data_dir() == Path(prepare.__file__).parent
+
+
+def test_cs_fleurs_manifest_publication_is_atomic_resumable_and_fail_closed(tmp_path):
+    out_path = tmp_path / "read" / "test.jsonl"
+    out_path.parent.mkdir()
+    records = [{"id": "one", "text": "hello"}, {"id": "two", "text": "world"}]
+    expected = b'{"id": "one", "text": "hello"}\n{"id": "two", "text": "world"}\n'
+
+    assert prepare._publish_records(out_path, records) is True
+    assert out_path.read_bytes() == expected
+    assert not out_path.with_suffix(".jsonl.partial").exists()
+
+    assert prepare._publish_records(out_path, records) is False
+    assert out_path.read_bytes() == expected
+
+    out_path.write_text("truncated\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="fails deterministic closure"):
+        prepare._publish_records(out_path, records)
+    assert out_path.read_text(encoding="utf-8") == "truncated\n"

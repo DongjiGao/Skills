@@ -189,6 +189,32 @@ def _build_record(row: dict, raw_subdir: str, subset: str) -> dict:
     }
 
 
+def _default_data_dir() -> Path:
+    """Resolve the CLI-managed immutable data root before falling back locally."""
+    if data_root := os.getenv("NEMO_SKILLS_DATA_DIR"):
+        return Path(data_root) / "cs-fleurs"
+    return Path(__file__).parent
+
+
+def _publish_records(out_path: Path, records: list[dict]) -> bool:
+    """Atomically publish a deterministic manifest, or validate a completed one."""
+    payload = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records).encode("utf-8")
+    if out_path.exists():
+        if not out_path.is_file() or out_path.read_bytes() != payload:
+            raise ValueError(f"Existing CS-FLEURS manifest fails deterministic closure: {out_path}")
+        return False
+
+    partial = out_path.with_suffix(out_path.suffix + ".partial")
+    with partial.open("wb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+    partial.replace(out_path)
+    if out_path.read_bytes() != payload:
+        raise ValueError(f"Published CS-FLEURS manifest failed byte revalidation: {out_path}")
+    return True
+
+
 def prepare_cs_fleurs(data_dir: Path, subsets: list[str], no_audio: bool) -> None:
     raw_dir = data_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -205,11 +231,11 @@ def prepare_cs_fleurs(data_dir: Path, subsets: list[str], no_audio: bool) -> Non
         out_dir = data_dir / subset
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "test.jsonl"
-        with open(out_path, "w", encoding="utf-8") as out:
-            out.writelines(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+        published = _publish_records(out_path, records)
 
         n_cer = sum(1 for r in records if r["extra_fields"]["use_cer"])
-        print(f"  wrote {len(records)} records -> {out_path} ({n_cer} CER, {len(records) - n_cer} WER)")
+        action = "wrote" if published else "revalidated existing"
+        print(f"  {action} {len(records)} records -> {out_path} ({n_cer} CER, {len(records) - n_cer} WER)")
 
 
 def main():
@@ -237,7 +263,7 @@ def main():
     if args.data_dir:
         data_dir = Path(args.data_dir) / "cs-fleurs"
     else:
-        data_dir = Path(__file__).parent
+        data_dir = _default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_cs_fleurs(data_dir=data_dir, subsets=args.subsets, no_audio=args.no_audio)
