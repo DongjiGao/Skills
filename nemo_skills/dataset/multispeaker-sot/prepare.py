@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 BENCHMARK_NAME = "multispeaker-sot"
 DEFAULT_IAD_MANIFEST_ROOT = (
@@ -65,6 +66,12 @@ BENCHMARK_MANIFESTS = {
     "lsm-test-clean-3mix": "libri_speech_mix/lsm-test-clean-3mix_nemo_sot.json",
 }
 
+# The authoritative IAD artifact is immutable input to the product closure.
+# Sentence/audio rows are validated again during materialization.
+PINNED_SOURCE_MANIFESTS: dict[str, tuple[str, int]] = {
+    "under20s-ami-ihm-dev": ("e8ebe7f8e5c285f6b3e3ef3961c3ecf9c8766bb32c294c86bead1c0ee74250c9", 476),
+}
+
 # All current eval sets embed the SOT reference directly in each manifest's "text"
 # field, so no external SegLST companion files are needed. Benchmarks may still opt
 # in per-row via "seglst_filepath"/"reference_seglst_filepath".
@@ -85,9 +92,18 @@ def _resolve_manifest_root(cluster: str | None, manifest_root: str | None) -> Pa
     env_root = os.getenv("MULTISPEAKER_SOT_MANIFEST_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
+    cluster = cluster or "iad"
     if cluster == "ord":
         return Path(DEFAULT_ORD_MANIFEST_ROOT)
-    return Path(DEFAULT_IAD_MANIFEST_ROOT)
+    if cluster == "iad":
+        return Path(DEFAULT_IAD_MANIFEST_ROOT)
+    if cluster == "dfw":
+        raise ValueError(
+            "DFW has no canonical multi-speaker SOT raw-source mirror. "
+            "Prepare on IAD and mirror the self-contained prepared closure, or pass "
+            "--manifest-root for a hash-verified DFW mirror whose referenced audio is present."
+        )
+    raise ValueError(f"Unsupported multi-speaker SOT cluster: {cluster!r}")
 
 
 def _resolve_values(values: list[str] | None, allowed: Iterable[str]) -> list[str]:
@@ -524,6 +540,32 @@ def build_record(
     return record
 
 
+def _validate_pinned_source_manifest(benchmark: str, path: Path) -> int | None:
+    contract = PINNED_SOURCE_MANIFESTS.get(benchmark)
+    if contract is None:
+        return None
+    expected_sha256, expected_rows = contract
+    digest = hashlib.sha256()
+    row_count = 0
+    with path.open("rb") as source:
+        for line in source:
+            digest.update(line)
+            if line.strip():
+                row_count += 1
+    observed_sha256 = digest.hexdigest()
+    if observed_sha256 != expected_sha256:
+        raise ValueError(
+            f"Pinned source manifest SHA-256 drift for {benchmark}: "
+            f"expected {expected_sha256}, found {observed_sha256} at {path}"
+        )
+    if row_count != expected_rows:
+        raise ValueError(
+            f"Pinned source manifest row-count drift for {benchmark}: "
+            f"expected {expected_rows}, found {row_count} at {path}"
+        )
+    return expected_rows
+
+
 def write_jsonl(path: Path, rows: Iterable[dict]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -550,6 +592,7 @@ def prepare_manifest_set(
     manifest_path = manifest_root / manifest_rel
     if not manifest_path.exists():
         raise FileNotFoundError(f"Missing manifest for {benchmark}: {manifest_path}")
+    pinned_rows = _validate_pinned_source_manifest(benchmark, manifest_path)
     rows = []
     for index, row in enumerate(iter_jsonl(manifest_path)):
         if max_samples is not None and len(rows) >= max_samples:
@@ -575,6 +618,11 @@ def prepare_manifest_set(
         rows.append(record)
         if (index + 1) % 25 == 0:
             print(f"{benchmark}: completed {index + 1} rows", flush=True)
+    if max_samples is None and pinned_rows is not None and len(rows) != pinned_rows:
+        raise ValueError(
+            f"Pinned prepared row closure drift for {benchmark}: "
+            f"expected {pinned_rows}, produced {len(rows)}"
+        )
     return write_jsonl(output_dir / benchmark / "test.jsonl", rows)
 
 
@@ -594,7 +642,12 @@ def main() -> None:
         default=None,
         help="Root containing the eval sets (under20s/60s_90s/120s_180s/full_length/libri_speech_mix).",
     )
-    parser.add_argument("--cluster", choices=("iad", "ord"), default="iad", help="Default manifest-root selector.")
+    parser.add_argument(
+        "--cluster",
+        choices=("iad", "ord", "dfw"),
+        default="iad",
+        help="Default manifest-root selector; DFW requires --manifest-root or the environment override.",
+    )
     parser.add_argument("--audio-prefix", type=str, default=None, help="Audio path prefix embedded in manifests.")
     parser.add_argument(
         "--output-dir",
