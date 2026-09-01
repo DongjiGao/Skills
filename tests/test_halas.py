@@ -16,6 +16,7 @@ import sys
 import types
 import wave
 
+import numpy as np
 import pytest
 
 pytest.importorskip("jiwer")
@@ -30,6 +31,7 @@ from nemo_skills.dataset.halas.prepare import (
     HALAS_SPLIT,
     HF_REPO_ID,
     HF_REVISION,
+    _decode_earnings22_audio,
     _default_audio_prefix,
     _default_data_dir,
     _extract_audio_for_rows,
@@ -174,6 +176,27 @@ def test_halas_validates_complete_audio_headers(tmp_path):
 def test_halas_missing_audio_fails_closed(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing or empty"):
         _validate_audio_closure([_halas_row()], tmp_path)
+
+
+def test_halas_deterministically_downmixes_stereo_earnings22_audio(tmp_path):
+    source = tmp_path / "stereo.wav"
+    stereo = np.column_stack(
+        (
+            np.full(480, 8192, dtype=np.int16),
+            np.full(480, -4096, dtype=np.int16),
+        )
+    )
+    with wave.open(str(source), "wb") as stream:
+        stream.setnchannels(2)
+        stream.setsampwidth(2)
+        stream.setframerate(16000)
+        stream.writeframes(stereo.tobytes())
+
+    samples, sampling_rate = _decode_earnings22_audio({"bytes": source.read_bytes(), "path": None})
+    assert samples.dtype == np.float32
+    assert samples.shape == (480,)
+    np.testing.assert_array_equal(samples, np.full(480, 0.0625, dtype=np.float32))
+    assert sampling_rate == 16000
 
 
 def test_halas_extracts_raw_earnings22_audio_without_torchcodec(tmp_path, monkeypatch):

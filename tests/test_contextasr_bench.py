@@ -14,6 +14,7 @@
 
 import hashlib
 import json
+import sys
 from importlib import import_module
 
 import pytest
@@ -63,3 +64,37 @@ def test_contextasr_record_carries_immutable_source_provenance():
     assert provenance["dataset"] == prepare.HF_REPO_ID
     assert provenance["dataset_revision"] == prepare.HF_REVISION
     assert provenance["expected_rows"] == 15326
+
+
+def test_contextasr_default_root_refuses_staged_code(monkeypatch):
+    monkeypatch.delenv("NEMO_SKILLS_DATA_DIR", raising=False)
+    with pytest.raises(SystemExit, match="refusing to write.*staged code"):
+        prepare._default_data_dir()
+
+
+def test_contextasr_prepare_publishes_under_immutable_env_root(tmp_path, monkeypatch):
+    data_dir = tmp_path / prepare.BENCHMARK_NAME
+    data_dir.mkdir()
+    metadata = data_dir / prepare.JSONL_FILENAME
+    row = _sample()
+    metadata.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
+    monkeypatch.setattr(prepare, "JSONL_SHA256", hashlib.sha256(metadata.read_bytes()).hexdigest())
+    monkeypatch.setenv("NEMO_SKILLS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["prepare.py", "--no-audio"])
+
+    prepare.main()
+
+    for mode in ("contextless", "coarse", "fine"):
+        manifest = data_dir / mode / "test.jsonl"
+        records = [json.loads(line) for line in manifest.read_text().splitlines()]
+        assert len(records) == 1
+        assert records[0]["uniq_id"] == row["uniq_id"]
+        assert records[0]["audio_filepath"] == str(data_dir / row["audio"])
+    assert not list(data_dir.rglob("*.partial"))
+
+    prepare.main()
+    stale_manifest = data_dir / "fine" / "test.jsonl"
+    stale_manifest.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="deterministic closure"):
+        prepare.main()

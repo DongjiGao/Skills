@@ -171,9 +171,9 @@ def _decode_earnings22_audio(audio: dict) -> tuple[np.ndarray, int]:
     samples, sampling_rate = sf.read(source, dtype="float32", always_2d=False)
     samples = np.asarray(samples)
     if samples.ndim == 2:
-        if samples.shape[1] != 1:
-            raise ValueError(f"Earnings22 source audio must be mono, found shape {samples.shape}")
-        samples = samples[:, 0]
+        if samples.shape[1] < 1:
+            raise ValueError(f"Earnings22 source audio has no channels: shape={samples.shape}")
+        samples = samples.mean(axis=1, dtype=np.float32)
     if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
         raise ValueError(f"Earnings22 source audio is empty, short, or malformed: shape={samples.shape}")
     if not np.isfinite(samples).all():

@@ -18,14 +18,15 @@ Downloads the ContextASR-Speech English subset from HuggingFace (JSONL + 8
 audio tar files, ~22 GB total), extracts audio, and produces three JSONL
 split files — one per evaluation mode (contextless, coarse, fine).
 
-If --data_dir is provided and already contains the dataset, the download
+The data/output root must be supplied through ``--data_dir`` or
+``NEMO_SKILLS_DATA_DIR``. If it already contains the dataset, the download
 step is skipped and the existing data is used directly.
 
 Dataset: https://huggingface.co/datasets/MrSupW/ContextASR-Bench
 
 Usage:
-    # Auto-download to default location (alongside this script)
-    ns prepare_data contextasr-bench
+    # Auto-download under an immutable benchmark-data root
+    NEMO_SKILLS_DATA_DIR=/path/to/skills-data ns prepare_data contextasr-bench
 
     # Use pre-downloaded data
     ns prepare_data contextasr-bench --data_dir=/path/to/ContextASR-Bench
@@ -37,10 +38,12 @@ Usage:
 import argparse
 import hashlib
 import json
+import os
 import tarfile
 from pathlib import Path
 
 HF_REPO_ID = "MrSupW/ContextASR-Bench"
+BENCHMARK_NAME = "contextasr-bench"
 HF_REVISION = "7906fd98d1d093bf244df80e726e07fc8afed6a6"
 JSONL_FILENAME = "ContextASR-Speech_English.jsonl"
 JSONL_SHA256 = "b6bcb3de39aebe36328ab03d7d4d865899712c2dc375b6cd2b9ce156b6a952e4"
@@ -85,6 +88,35 @@ def _assert_audio_complete(download_dir: Path, rows: list[dict]) -> None:
     if missing:
         preview = ", ".join(missing[:3])
         raise FileNotFoundError(f"ContextASR download is incomplete: {len(missing)} files missing ({preview})")
+
+
+def _default_data_dir() -> Path:
+    """Resolve the CLI-managed immutable root and refuse staged-code output."""
+    if data_root := os.getenv("NEMO_SKILLS_DATA_DIR"):
+        return Path(data_root) / BENCHMARK_NAME
+    raise SystemExit(
+        f"Missing --data_dir and NEMO_SKILLS_DATA_DIR; refusing to write {BENCHMARK_NAME} into staged code."
+    )
+
+
+def _publish_records(out_path: Path, records: list[dict]) -> bool:
+    """Atomically publish a deterministic manifest, or revalidate an existing one."""
+    payload = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records).encode("utf-8")
+    if out_path.exists():
+        if not out_path.is_file() or out_path.read_bytes() != payload:
+            raise ValueError(f"Existing ContextASR manifest fails deterministic closure: {out_path}")
+        return False
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = out_path.with_suffix(out_path.suffix + ".partial")
+    with partial.open("wb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+    partial.replace(out_path)
+    if out_path.read_bytes() != payload:
+        raise ValueError(f"Published ContextASR manifest failed byte revalidation: {out_path}")
+    return True
 
 
 def download_dataset(download_dir):
@@ -224,7 +256,7 @@ def main():
             "ContextASR-Speech_English.jsonl, that data is used directly. If the "
             "directory is empty or the file is missing, data will be downloaded there "
             "automatically from HuggingFace. "
-            "If not provided, downloads to a 'data/' subdirectory next to this script."
+            f"If not provided, requires $NEMO_SKILLS_DATA_DIR and uses its {BENCHMARK_NAME} subdirectory."
         ),
     )
     parser.add_argument(
@@ -244,9 +276,7 @@ def main():
     )
     args = parser.parse_args()
 
-    output_dir = Path(__file__).parent
-
-    data_dir = Path(args.data_dir) if args.data_dir else output_dir / "data"
+    data_dir = Path(args.data_dir) if args.data_dir else _default_data_dir()
     jsonl_path = data_dir / JSONL_FILENAME
 
     if jsonl_path.exists():
@@ -280,18 +310,17 @@ def main():
         print(f"All {len(samples)} referenced audio files verified under {data_dir}")
 
     modes = {
-        "contextless": output_dir / "contextless" / "test.jsonl",
-        "coarse": output_dir / "coarse" / "test.jsonl",
-        "fine": output_dir / "fine" / "test.jsonl",
+        "contextless": data_dir / "contextless" / "test.jsonl",
+        "coarse": data_dir / "coarse" / "test.jsonl",
+        "fine": data_dir / "fine" / "test.jsonl",
     }
 
     print("\nWriting JSONL splits...")
     for mode_name, output_path in modes.items():
         entries = [format_entry(sample, mode_name, audio_prefix) for sample in samples]
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as fout:
-            fout.writelines(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries)
-        print(f"  {mode_name}: wrote {len(entries)} samples to {output_path}")
+        published = _publish_records(output_path, entries)
+        action = "wrote" if published else "revalidated existing"
+        print(f"  {mode_name}: {action} {len(entries)} samples at {output_path}")
 
     print(f"\nDone. Total: {len(samples)} samples x 3 modes = {len(samples) * 3} records")
 
