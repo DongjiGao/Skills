@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import io
 import json
 import sys
 
@@ -164,6 +166,124 @@ def test_musan_prepare_fails_closed_when_source_load_fails(monkeypatch, tmp_path
         assert "checksum mismatch" in str(error)
     else:
         raise AssertionError("MUSAN source failures must propagate")
+
+
+class _FakeResponse(io.BytesIO):
+    def __init__(self, payload: bytes, *, status: int, headers: dict[str, str]):
+        super().__init__(payload)
+        self.status = status
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def _patch_tiny_openslr(monkeypatch, payload: bytes) -> None:
+    monkeypatch.setattr(prepare, "OPENSLR_ARCHIVE_BYTES", len(payload))
+    monkeypatch.setattr(
+        prepare,
+        "OPENSLR_MD5",
+        hashlib.md5(payload, usedforsecurity=False).hexdigest(),
+    )
+    monkeypatch.setattr(prepare, "OPENSLR_ETAG", '"test-etag"')
+    monkeypatch.setattr(prepare, "DOWNLOAD_CHUNK_BYTES", 3)
+
+
+def test_musan_resumes_legacy_partial_only_after_range_and_entity_validation(monkeypatch, tmp_path):
+    payload = b"authenticated archive"
+    _patch_tiny_openslr(monkeypatch, payload)
+    legacy_path = tmp_path / "musan.tar.gz"
+    offset = 7
+    legacy_path.write_bytes(payload[:offset])
+    observed_request = {}
+
+    def fake_urlopen(request):
+        observed_request["range"] = request.get_header("Range")
+        observed_request["if_range"] = request.get_header("If-range")
+        return _FakeResponse(
+            payload[offset:],
+            status=206,
+            headers={
+                "ETag": prepare.OPENSLR_ETAG,
+                "Content-Length": str(len(payload) - offset),
+                "Content-Range": f"bytes {offset}-{len(payload) - 1}/{len(payload)}",
+            },
+        )
+
+    monkeypatch.setattr(prepare.urllib.request, "urlopen", fake_urlopen)
+    output_path = prepare._download_openslr_archive(tmp_path)
+    assert output_path == legacy_path
+    assert output_path.read_bytes() == payload
+    assert observed_request == {"range": f"bytes={offset}-", "if_range": prepare.OPENSLR_ETAG}
+    assert not (tmp_path / "musan.tar.gz.part").exists()
+
+
+def test_musan_restarts_when_server_does_not_authenticate_partial(monkeypatch, tmp_path):
+    payload = b"complete pinned archive"
+    _patch_tiny_openslr(monkeypatch, payload)
+    partial_path = tmp_path / "musan.tar.gz.part"
+    partial_path.write_bytes(b"untrusted")
+    responses = [
+        _FakeResponse(
+            payload,
+            status=200,
+            headers={"ETag": prepare.OPENSLR_ETAG, "Content-Length": str(len(payload))},
+        ),
+        _FakeResponse(
+            payload,
+            status=200,
+            headers={"ETag": prepare.OPENSLR_ETAG, "Content-Length": str(len(payload))},
+        ),
+    ]
+
+    monkeypatch.setattr(prepare.urllib.request, "urlopen", lambda _request: responses.pop(0))
+    output_path = prepare._download_openslr_archive(tmp_path)
+    assert output_path.read_bytes() == payload
+    assert not responses
+    assert not partial_path.exists()
+
+
+def test_musan_short_authenticated_response_is_retained_for_resume(monkeypatch, tmp_path):
+    payload = b"complete pinned archive"
+    _patch_tiny_openslr(monkeypatch, payload)
+    monkeypatch.setattr(
+        prepare.urllib.request,
+        "urlopen",
+        lambda _request: _FakeResponse(
+            payload[:5],
+            status=200,
+            headers={"ETag": prepare.OPENSLR_ETAG, "Content-Length": str(len(payload))},
+        ),
+    )
+    try:
+        prepare._download_openslr_archive(tmp_path)
+    except RuntimeError as error:
+        assert "retained for resume" in str(error)
+    else:
+        raise AssertionError("short MUSAN response must fail")
+    assert (tmp_path / "musan.tar.gz.part").read_bytes() == payload[:5]
+
+
+def test_musan_uses_nemo_skills_data_root_instead_of_package_directory(monkeypatch, tmp_path):
+    observed = {}
+    monkeypatch.setenv("NEMO_SKILLS_DATA_DIR", str(tmp_path))
+
+    def fail_after_observing_root(_source, output_dir):
+        observed["output_dir"] = output_dir
+        raise RuntimeError("stop after output-root resolution")
+
+    monkeypatch.setattr(prepare, "load_dataset_from_source", fail_after_observing_root)
+    monkeypatch.setattr(sys, "argv", ["prepare"])
+    try:
+        prepare.main()
+    except RuntimeError as error:
+        assert "stop after output-root resolution" in str(error)
+    else:
+        raise AssertionError("test sentinel must stop MUSAN preparation")
+    assert observed["output_dir"] == tmp_path / "musan"
 
 
 def test_musan_file_processing_rejects_partial_corpus(monkeypatch, tmp_path):

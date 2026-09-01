@@ -30,6 +30,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 import sys
 import tarfile
 import urllib.request
@@ -42,6 +44,9 @@ from tqdm import tqdm
 
 OPENSLR_URL = "https://www.openslr.org/resources/17/musan.tar.gz"
 OPENSLR_MD5 = "0c472d4fc0c5141eca47ad1ffeb2a7df"
+OPENSLR_ARCHIVE_BYTES = 11086114085
+OPENSLR_ETAG = '"294c8ad25-55aac6b8c8a2d"'
+DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 NEMO_GYM_PROTOCOL_REVISION = "68cb9969d656d259846c45e7369acfe6529f0e97"
 ALL_CATEGORIES = ("noise", "music", "speech")
 DEFAULT_SOURCE = "openslr"
@@ -103,46 +108,152 @@ def _md5(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _archive_is_valid(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size == OPENSLR_ARCHIVE_BYTES and _md5(path) == OPENSLR_MD5
+
+
+def _response_status(response) -> int:
+    status = getattr(response, "status", None)
+    return int(status if status is not None else response.getcode())
+
+
+def _response_matches_pinned_archive(response, offset: int) -> bool:
+    if response.headers.get("ETag") != OPENSLR_ETAG:
+        return False
+    try:
+        content_length = int(response.headers.get("Content-Length"))
+    except (TypeError, ValueError):
+        return False
+    status = _response_status(response)
+    if offset == 0:
+        return status == 200 and content_length == OPENSLR_ARCHIVE_BYTES
+    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+    if match is None:
+        return False
+    start, end, total = (int(value) for value in match.groups())
+    return (
+        status == 206
+        and start == offset
+        and end == OPENSLR_ARCHIVE_BYTES - 1
+        and total == OPENSLR_ARCHIVE_BYTES
+        and content_length == OPENSLR_ARCHIVE_BYTES - offset
+    )
+
+
+def _stream_openslr_archive(partial_path: Path, offset: int) -> bool:
+    headers = {"User-Agent": "nemo-skills-musan/1"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+        headers["If-Range"] = OPENSLR_ETAG
+    request = urllib.request.Request(OPENSLR_URL, headers=headers)
+    with urllib.request.urlopen(request) as response:
+        if not _response_matches_pinned_archive(response, offset):
+            return False
+        downloaded = offset
+        last_report = offset
+        with partial_path.open("ab" if offset else "wb") as output:
+            while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+                output.write(chunk)
+                downloaded += len(chunk)
+                if downloaded - last_report >= 64 * 1024 * 1024 or downloaded == OPENSLR_ARCHIVE_BYTES:
+                    percent = downloaded / OPENSLR_ARCHIVE_BYTES * 100
+                    print(
+                        f"\r{percent:.1f}% "
+                        f"({downloaded / (1024 * 1024):.1f}/{OPENSLR_ARCHIVE_BYTES / (1024 * 1024):.1f} MB)",
+                        end="",
+                    )
+                    last_report = downloaded
+            output.flush()
+            os.fsync(output.fileno())
+    print()
+    return True
+
+
+def _download_openslr_archive(output_dir: Path) -> Path:
+    download_path = output_dir / "musan.tar.gz"
+    partial_path = output_dir / "musan.tar.gz.part"
+    if _archive_is_valid(download_path):
+        print(f"Using validated cached archive: {download_path}")
+        return download_path
+    if download_path.exists():
+        if partial_path.exists():
+            raise RuntimeError(
+                f"Conflicting incomplete OpenSLR archives exist at {download_path} and {partial_path}; "
+                "refusing to choose one implicitly"
+            )
+        os.replace(download_path, partial_path)
+    if partial_path.exists() and partial_path.stat().st_size > OPENSLR_ARCHIVE_BYTES:
+        partial_path.unlink()
+    if partial_path.exists() and partial_path.stat().st_size == OPENSLR_ARCHIVE_BYTES:
+        if _archive_is_valid(partial_path):
+            os.replace(partial_path, download_path)
+            return download_path
+        partial_path.unlink()
+    offset = partial_path.stat().st_size if partial_path.exists() else 0
+    if offset:
+        print(f"Resuming authenticated OpenSLR download at byte {offset} of {OPENSLR_ARCHIVE_BYTES}")
+        if not _stream_openslr_archive(partial_path, offset):
+            print("Server did not authenticate the partial archive; restarting from byte 0")
+            partial_path.unlink()
+            offset = 0
+    if offset == 0 and not _stream_openslr_archive(partial_path, 0):
+        raise RuntimeError("OpenSLR response did not match the pinned archive size and ETag")
+    observed_size = partial_path.stat().st_size
+    if observed_size != OPENSLR_ARCHIVE_BYTES:
+        raise RuntimeError(
+            f"OpenSLR-17 download ended at {observed_size} bytes; expected {OPENSLR_ARCHIVE_BYTES}. "
+            "The authenticated partial archive is retained for resume."
+        )
+    archive_md5 = _md5(partial_path)
+    if archive_md5 != OPENSLR_MD5:
+        partial_path.unlink()
+        raise RuntimeError(f"OpenSLR-17 archive MD5 mismatch: expected {OPENSLR_MD5}, got {archive_md5}")
+    os.replace(partial_path, download_path)
+    return download_path
+
+
+def _validate_extracted_openslr(extract_path: Path) -> Path:
+    musan_path = extract_path / "musan"
+    observed = {category: len(list((musan_path / category).glob("**/*.wav"))) for category in ALL_CATEGORIES}
+    if observed != OFFICIAL_CATEGORY_FILE_COUNTS:
+        raise RuntimeError(
+            f"Official OpenSLR-17 extracted inventory drift: expected {OFFICIAL_CATEGORY_FILE_COUNTS}, got {observed}"
+        )
+    return musan_path
+
+
 def download_from_openslr(output_dir: Path) -> Path:
     """Download MUSAN dataset from OpenSLR (11 GB)."""
-    url = OPENSLR_URL
-    download_path = output_dir / "musan.tar.gz"
     extract_path = output_dir / "musan_openslr"
+    extracting_path = output_dir / ".musan_openslr.extracting"
 
     print("Downloading from OpenSLR (~11 GB)")
-    print(f"URL: {url}")
+    print(f"URL: {OPENSLR_URL}")
 
-    if not download_path.exists():
+    download_path = _download_openslr_archive(output_dir)
 
-        def reporthook(block_num, block_size, total_size):
-            downloaded = block_num * block_size
-            percent = min(downloaded / total_size * 100, 100)
-            mb_downloaded = downloaded / (1024 * 1024)
-            mb_total = total_size / (1024 * 1024)
-            print(f"\r{percent:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end="")
-
-        urllib.request.urlretrieve(url, download_path, reporthook)
-        print("\nDownload complete")
-    else:
-        print(f"Using cached archive: {download_path}")
-
-    archive_md5 = _md5(download_path)
-    if archive_md5 != OPENSLR_MD5:
-        raise RuntimeError(f"OpenSLR-17 archive MD5 mismatch: expected {OPENSLR_MD5}, got {archive_md5}")
-
-    if not extract_path.exists():
-        print(f"Extracting to {extract_path}...")
-        extract_path.mkdir(parents=True, exist_ok=True)
+    if extract_path.exists():
+        try:
+            return _validate_extracted_openslr(extract_path)
+        except RuntimeError:
+            shutil.rmtree(extract_path)
+    if extracting_path.exists():
+        shutil.rmtree(extracting_path)
+    print(f"Extracting atomically to {extract_path}...")
+    extracting_path.mkdir(parents=True)
+    try:
         with tarfile.open(download_path, "r:gz") as tar:
             if sys.version_info >= (3, 11, 4):
-                tar.extractall(extract_path, filter="data")
+                tar.extractall(extracting_path, filter="data")
             else:
-                tar.extractall(extract_path)
-        print("Extraction complete")
-    else:
-        print(f"Using extracted data: {extract_path}")
-
-    return extract_path / "musan"
+                tar.extractall(extracting_path)
+        _validate_extracted_openslr(extracting_path)
+        os.replace(extracting_path, extract_path)
+    finally:
+        if extracting_path.exists():
+            shutil.rmtree(extracting_path)
+    print("Extraction complete")
+    return _validate_extracted_openslr(extract_path)
 
 
 def load_dataset_from_source(source: str, output_dir: Path):
@@ -478,8 +589,15 @@ def main():
 
     if args.output_dir:
         output_dir = Path(args.output_dir)
+    elif os.getenv("NEMO_SKILLS_DATA_DIR"):
+        output_dir = Path(os.environ["NEMO_SKILLS_DATA_DIR"]) / "musan"
     else:
         output_dir = Path(__file__).parent
+        if "site-packages" in str(output_dir) or "dist-packages" in str(output_dir):
+            raise SystemExit(
+                "Missing --output-dir and NEMO_SKILLS_DATA_DIR; "
+                "refusing to write into the installed package directory."
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
