@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES
+from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES, HR7_LID_LOCALES
 from nemo_skills.evaluation.evaluator import is_evaluator_registered
 from nemo_skills.evaluation.evaluator.fleurs_lid import evaluate_fleurs_lid_sample
 from nemo_skills.evaluation.metrics.fleurs_lid_metrics import FleursLIDMetrics
@@ -38,18 +38,22 @@ def _evaluated(locale: str, generation: str) -> dict:
 
 
 def test_fleurs_lid_has_exact_official_label_space_and_pin():
-    assert len(prepare.CANONICAL_LABELS) == 102
-    assert tuple(sorted(FLEURS_LANGUAGES)) == prepare.CANONICAL_LABELS
+    assert len(prepare.CANONICAL_LABELS) == 36
+    assert prepare.CANONICAL_LABELS == HR7_LID_LOCALES
+    assert set(prepare.CANONICAL_LABELS).issubset(FLEURS_LANGUAGES)
+    assert "hy_am" not in prepare.CANONICAL_LABELS
+    assert "nb_no" not in prepare.CANONICAL_LABELS
     assert len({metadata["group"] for metadata in FLEURS_LANGUAGES.values()}) == 7
     assert prepare.HF_REVISION == "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
     assert set(prepare.EXPECTED_LOCALE_COUNTS) == set(prepare.CANONICAL_LABELS)
-    assert sum(prepare.EXPECTED_LOCALE_COUNTS.values()) == prepare.EXPECTED_TOTAL_ROWS == 77810
+    assert sum(prepare.EXPECTED_LOCALE_COUNTS.values()) == prepare.EXPECTED_TOTAL_ROWS == 28033
     assert prepare.EXPECTED_LOCALE_COUNTS["en_us"] == 647
-    assert prepare.EXPECTED_LOCALE_COUNTS["xh_za"] == 1041
+    assert prepare.EXPECTED_LOCALE_COUNTS["th_th"] == 1021
     assert prepare.EXPECTED_WAV_INVENTORY_SHA256 == (
-        "58ed6f8d74f07dc401a4844b24587576a2aced7fd00fbf741fe89eb278e8d27d"
+        "e58647952a5a59821ed6a77d9f11156737c58a06bb2d27b7424af6311b3e9124"
     )
-    assert "en_us" in prepare.PROMPT and "yue_hant_hk" in prepare.PROMPT
+    assert "en_us" in prepare.PROMPT and "vi_vn" in prepare.PROMPT
+    assert "hy_am" not in prepare.PROMPT and "nb_no" not in prepare.PROMPT
 
 
 def _tsv_row(row_id: int, filename: str) -> str:
@@ -112,6 +116,110 @@ def _patch_mini_contract(monkeypatch, *, inventory_sha256: str | None = None) ->
         inventory_sha256 or prepare._inventory_sha256({"en_us": filenames}),
     )
     monkeypatch.setattr(prepare, "_load_locale", lambda _locale, _cache: ([_source_row()], _source_artifact()))
+
+def _accepted_fleurs_asr_fixture(tmp_path: Path, monkeypatch):
+
+    _patch_mini_contract(monkeypatch)
+    monkeypatch.setattr(prepare, "SOURCE_FLEURS_ASR_LOCALE_COUNTS", {"en_us": 1})
+    monkeypatch.setattr(prepare, "SOURCE_FLEURS_ASR_TOTAL_ROWS", 1)
+    source_root = tmp_path / "accepted-source"
+    manifest = source_root / prepare.SOURCE_FLEURS_ASR_MANIFEST_RELATIVE
+    audio_root = source_root / prepare.SOURCE_FLEURS_ASR_AUDIO_RELATIVE
+    audio = audio_root / "en_us" / "123.wav"
+    audio.parent.mkdir(parents=True)
+    sf.write(str(audio), np.zeros(320, dtype=np.float32), 16000, subtype="PCM_16")
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_path": "/dataset/fleurs/audio/en_us/123.wav",
+                "duration": 0.02,
+                "expected_answer": "source transcript",
+                "messages": [],
+                "subset_for_metrics": "en_us",
+                "task_type": "ASR",
+                "extra_fields": {"src_lang": "en_us"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    receipt = tmp_path / "accepted-closure.tar.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "archive": str(tmp_path / "accepted-closure.tar"),
+                "data_root": str(source_root),
+                "manifests": [
+                    {
+                        "path": prepare.SOURCE_FLEURS_ASR_MANIFEST_RELATIVE.as_posix(),
+                        "rows": 1,
+                        "sha256": manifest_sha256,
+                    }
+                ],
+                "mode": "manifest-closure",
+                "sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt_sha256 = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    return manifest, audio_root, audio, receipt, receipt_sha256
+
+
+def test_fleurs_lid_reuses_authenticated_asr_audio_by_same_inode(tmp_path, monkeypatch):
+    manifest, audio_root, source_audio, receipt, receipt_sha256 = _accepted_fleurs_asr_fixture(
+        tmp_path, monkeypatch
+    )
+    data_dir = tmp_path / "prepared" / "fleurs-lid"
+    output = prepare.prepare_fleurs_lid_from_accepted_fleurs_asr(
+        data_dir,
+        source_manifest=manifest,
+        source_audio_root=audio_root,
+        source_receipt=receipt,
+        source_receipt_sha256=receipt_sha256,
+    )
+    derived = json.loads(output.read_text(encoding="utf-8"))
+    provenance = json.loads((data_dir / prepare.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+    reused_audio = data_dir.parent / "fleurs" / "audio" / "en_us" / "123.wav"
+    assert derived["id"] == "en_us:123.wav"
+    assert derived["expected_answer"] == "en_us"
+    assert derived["audio_path"] == "/dataset/fleurs/audio/en_us/123.wav"
+    assert derived["messages"][0]["audio"]["path"] == derived["audio_path"]
+    assert (reused_audio.stat().st_dev, reused_audio.stat().st_ino) == (
+        source_audio.stat().st_dev,
+        source_audio.stat().st_ino,
+    )
+    assert provenance["scope"] == "hr7-training-language-intersection-v1"
+    assert provenance["audio_mode"] == "same-inode-hardlinks-to-accepted-fleurs-asr"
+    assert provenance["audio_files"] == provenance["total_rows"] == 1
+    assert provenance["source_receipt_sha256"] == receipt_sha256
+
+    first_manifest = output.read_bytes()
+    first_receipt = (data_dir / prepare.PROVENANCE_FILENAME).read_bytes()
+    prepare.prepare_fleurs_lid_from_accepted_fleurs_asr(
+        data_dir,
+        source_manifest=manifest,
+        source_audio_root=audio_root,
+        source_receipt=receipt,
+        source_receipt_sha256=receipt_sha256,
+    )
+    assert output.read_bytes() == first_manifest
+    assert (data_dir / prepare.PROVENANCE_FILENAME).read_bytes() == first_receipt
+
+
+def test_fleurs_lid_reuse_rejects_unauthenticated_source_receipt(tmp_path, monkeypatch):
+    manifest, audio_root, _audio, receipt, _receipt_sha256 = _accepted_fleurs_asr_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="source receipt hash mismatch"):
+        prepare.prepare_fleurs_lid_from_accepted_fleurs_asr(
+            tmp_path / "prepared" / "fleurs-lid",
+            source_manifest=manifest,
+            source_audio_root=audio_root,
+            source_receipt=receipt,
+            source_receipt_sha256="0" * 64,
+        )
+
 
 
 def test_fleurs_lid_record_ids_use_unique_locale_and_wav_identity():
@@ -404,6 +512,9 @@ def test_fleurs_lid_evaluator_requires_exact_canonical_output():
     invalid = evaluate_fleurs_lid_sample({"expected_answer": "en_us", "generation": "EN_US"})
     assert invalid["valid_label"] is False
     assert invalid["lid_correct"] is False
+    excluded = evaluate_fleurs_lid_sample({"expected_answer": "en_us", "generation": "hy_am"})
+    assert excluded["valid_label"] is False
+    assert excluded["lid_correct"] is False
 
 
 def test_fleurs_lid_micro_locale_macro_and_geographic_reporting():

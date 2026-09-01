@@ -14,7 +14,7 @@
 
 """Exact-label evaluator for FLEURS language identification."""
 
-from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES, get_lang_group
+from nemo_skills.dataset.fleurs.languages import HR7_LID_LOCALES, get_lang_group
 from nemo_skills.evaluation.evaluator.language_id import (
     LanguageIDEvaluator,
     LanguageIDEvaluatorConfig,
@@ -24,7 +24,7 @@ from nemo_skills.utils import nested_dataclass
 
 
 def evaluate_fleurs_lid_sample(data_point: dict) -> dict:
-    result = evaluate_language_id_sample(data_point, valid_labels=FLEURS_LANGUAGES)
+    result = evaluate_language_id_sample(data_point, valid_labels=HR7_LID_LOCALES)
     result["locale"] = result["label"]
     result["lang_group"] = get_lang_group(result["label"])
     result["label_group"] = result["lang_group"]

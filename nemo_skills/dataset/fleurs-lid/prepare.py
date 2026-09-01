@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Prepare the pinned merged FLEURS-LID test set (all 102 locales)."""
+"""Prepare the pinned HR7-language intersection of the FLEURS-LID test set."""
 
 from __future__ import annotations
 
@@ -30,14 +30,20 @@ import soundfile as sf
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
-from nemo_skills.dataset.fleurs.languages import FLEURS_LANGUAGES, LANGUAGE_SETS, get_lang_group, get_lang_name
+from nemo_skills.dataset.fleurs.languages import (
+    FLEURS_LANGUAGES,
+    HR7_LID_LOCALES,
+    LANGUAGE_SETS,
+    get_lang_group,
+    get_lang_name,
+)
 
 HF_REPO_ID = "google/fleurs"
 HF_REVISION = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
 OFFICIAL_SPLIT = "test"
-CANONICAL_LABELS = LANGUAGE_SETS["all"]
-EXPECTED_TOTAL_ROWS = 77810
-EXPECTED_LOCALE_COUNTS = {
+CANONICAL_LABELS = HR7_LID_LOCALES
+EXPECTED_TOTAL_ROWS = 28033
+ALL_EXPECTED_LOCALE_COUNTS = {
     "af_za": 264,
     "am_et": 516,
     "ar_eg": 428,
@@ -141,10 +147,17 @@ EXPECTED_LOCALE_COUNTS = {
     "yue_hant_hk": 819,
     "zu_za": 854,
 }
+EXPECTED_LOCALE_COUNTS = {locale: ALL_EXPECTED_LOCALE_COUNTS[locale] for locale in CANONICAL_LABELS}
+SOURCE_FLEURS_ASR_LOCALE_COUNTS = {
+    locale: ALL_EXPECTED_LOCALE_COUNTS[locale] for locale in LANGUAGE_SETS["nemotron-asr"]
+}
+SOURCE_FLEURS_ASR_TOTAL_ROWS = 29322
+SOURCE_FLEURS_ASR_MANIFEST_RELATIVE = Path("fleurs/asr/test.jsonl")
+SOURCE_FLEURS_ASR_AUDIO_RELATIVE = Path("fleurs/audio")
 # SHA-256 of canonical JSON {locale: sorted(test TSV wav_filename values)} at
-# HF_REVISION. This authenticates the exact 102-locale merged test inventory,
+# HF_REVISION. This authenticates the exact 36-locale HR7-intersection test inventory,
 # not merely its aggregate row count.
-EXPECTED_WAV_INVENTORY_SHA256 = "58ed6f8d74f07dc401a4844b24587576a2aced7fd00fbf741fe89eb278e8d27d"
+EXPECTED_WAV_INVENTORY_SHA256 = "e58647952a5a59821ed6a77d9f11156737c58a06bb2d27b7424af6311b3e9124"
 EXPECTED_SAMPLE_RATE = 16000
 EXPECTED_CHANNELS = 1
 PROVENANCE_FILENAME = "provenance.json"
@@ -426,11 +439,264 @@ def _publish_final_output(
     os.replace(temporary_output, output_path)
     _write_json_atomic(provenance_path, receipt)
 
+def _ensure_same_inode_hardlink(source: Path, destination: Path) -> os.stat_result:
+
+    """Publish one zero-data-copy link, or strictly revalidate an interrupted link."""
+    source_stat = source.stat()
+    if destination.exists():
+        destination_stat = destination.stat()
+        if (destination_stat.st_dev, destination_stat.st_ino) != (source_stat.st_dev, source_stat.st_ino):
+            raise ValueError(
+                f"Existing FLEURS-LID reused audio is not the accepted source inode: {destination}"
+            )
+        return destination_stat
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        os.link(source, temporary)
+        os.replace(temporary, destination)
+    except OSError as error:
+        raise ValueError(
+            "FLEURS-LID accepted-ASR reuse requires same-filesystem hardlinks; "
+            f"could not link {source} to {destination}"
+        ) from error
+    finally:
+        temporary.unlink(missing_ok=True)
+    destination_stat = destination.stat()
+    if (destination_stat.st_dev, destination_stat.st_ino) != (source_stat.st_dev, source_stat.st_ino):
+        raise ValueError(f"FLEURS-LID reused audio inode changed during publication: {destination}")
+    return destination_stat
+
+
+def _load_accepted_fleurs_asr_receipt(
+    source_receipt: Path,
+    expected_receipt_sha256: str,
+    source_manifest: Path,
+    source_audio_root: Path,
+) -> tuple[dict, str, str]:
+    expected_receipt_sha256 = _require_sha256(expected_receipt_sha256, "source receipt SHA-256")
+    if not source_receipt.is_file():
+        raise ValueError(f"FLEURS-LID accepted source receipt is missing: {source_receipt}")
+    observed_receipt_sha256 = _sha256_file(source_receipt)
+    if observed_receipt_sha256 != expected_receipt_sha256:
+        raise ValueError(
+            "FLEURS-LID accepted source receipt hash mismatch: "
+            f"expected {expected_receipt_sha256}, got {observed_receipt_sha256}"
+        )
+    try:
+        receipt = json.loads(source_receipt.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise ValueError("FLEURS-LID accepted source receipt is unreadable") from error
+    if receipt.get("mode") != "manifest-closure":
+        raise ValueError("FLEURS-LID accepted source receipt is not a manifest-closure receipt")
+    data_root_raw = receipt.get("data_root")
+    if not isinstance(data_root_raw, str):
+        raise TypeError("FLEURS-LID accepted source receipt has no data_root")
+    data_root = Path(data_root_raw).resolve(strict=True)
+    expected_manifest = (data_root / SOURCE_FLEURS_ASR_MANIFEST_RELATIVE).resolve(strict=True)
+    expected_audio_root = (data_root / SOURCE_FLEURS_ASR_AUDIO_RELATIVE).resolve(strict=True)
+    if source_manifest.resolve(strict=True) != expected_manifest:
+        raise ValueError("FLEURS-LID source manifest does not match the authenticated receipt data_root")
+    if source_audio_root.resolve(strict=True) != expected_audio_root:
+        raise ValueError("FLEURS-LID source audio root does not match the authenticated receipt data_root")
+
+    matching_manifests = [
+        item
+        for item in receipt.get("manifests", [])
+        if isinstance(item, dict) and item.get("path") == SOURCE_FLEURS_ASR_MANIFEST_RELATIVE.as_posix()
+    ]
+    if len(matching_manifests) != 1:
+        raise ValueError("FLEURS-LID accepted source receipt must authenticate exactly one FLEURS ASR manifest")
+    manifest_receipt = matching_manifests[0]
+    if manifest_receipt.get("rows") != SOURCE_FLEURS_ASR_TOTAL_ROWS:
+        raise ValueError("FLEURS-LID accepted source receipt has the wrong FLEURS ASR row count")
+    expected_manifest_sha256 = _require_sha256(
+        manifest_receipt.get("sha256"), "source manifest SHA-256"
+    )
+    observed_manifest_sha256 = _sha256_file(source_manifest)
+    if observed_manifest_sha256 != expected_manifest_sha256:
+        raise ValueError(
+            "FLEURS-LID accepted source manifest hash mismatch: "
+            f"expected {expected_manifest_sha256}, got {observed_manifest_sha256}"
+        )
+    source_archive_sha256 = _require_sha256(receipt.get("sha256"), "source archive SHA-256")
+    return receipt, observed_manifest_sha256, source_archive_sha256
+
+
+def prepare_fleurs_lid_from_accepted_fleurs_asr(
+    data_dir: Path,
+    *,
+    source_manifest: Path,
+    source_audio_root: Path,
+    source_receipt: Path,
+    source_receipt_sha256: str,
+) -> Path:
+    """Derive the 36-locale LID view from an authenticated accepted FLEURS-ASR closure."""
+    _validate_static_contract()
+    if data_dir.name != "fleurs-lid":
+        raise ValueError("FLEURS-LID accepted-ASR reuse requires output at <data-root>/fleurs-lid")
+    source_receipt_value, source_manifest_sha256, source_archive_sha256 = (
+        _load_accepted_fleurs_asr_receipt(
+            source_receipt,
+            source_receipt_sha256,
+            source_manifest,
+            source_audio_root,
+        )
+    )
+    data_dir.mkdir(parents=True, exist_ok=True)
+    output_path = data_dir / "test.jsonl"
+    provenance_path = data_dir / PROVENANCE_FILENAME
+    temporary_output = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    portable_audio_root = data_dir.parent / SOURCE_FLEURS_ASR_AUDIO_RELATIVE
+    observed_source_counts: dict[str, int] = {locale: 0 for locale in SOURCE_FLEURS_ASR_LOCALE_COUNTS}
+    selected_counts: dict[str, int] = {locale: 0 for locale in CANONICAL_LABELS}
+    inventory: dict[str, list[str]] = {locale: [] for locale in CANONICAL_LABELS}
+    record_ids: set[str] = set()
+    source_audio_paths: set[Path] = set()
+    audio_bytes = 0
+    try:
+        with source_manifest.open(encoding="utf-8") as source, temporary_output.open(
+            "w", encoding="utf-8"
+        ) as output:
+            for line_number, line in enumerate(source, start=1):
+                try:
+                    row = json.loads(line)
+                except Exception as error:
+                    raise ValueError(f"FLEURS-LID accepted source row {line_number} is not JSON") from error
+                if not isinstance(row, dict):
+                    raise TypeError(f"FLEURS-LID accepted source row {line_number} is not an object")
+                locale = row.get("subset_for_metrics")
+                if locale not in SOURCE_FLEURS_ASR_LOCALE_COUNTS:
+                    raise ValueError(
+                        f"FLEURS-LID accepted source row {line_number} has unexpected locale {locale!r}"
+                    )
+                observed_source_counts[locale] += 1
+                raw_audio_path = row.get("audio_path")
+                expected_prefix = f"/dataset/fleurs/audio/{locale}/"
+                if not isinstance(raw_audio_path, str) or not raw_audio_path.startswith(expected_prefix):
+                    raise ValueError(
+                        f"FLEURS-LID accepted source row {line_number} has a noncanonical audio path"
+                    )
+                filename = raw_audio_path[len(expected_prefix) :]
+                if (
+                    not filename
+                    or PurePosixPath(filename).name != filename
+                    or not filename.endswith(".wav")
+                ):
+                    raise ValueError(
+                        f"FLEURS-LID accepted source row {line_number} has unsafe WAV filename {filename!r}"
+                    )
+                if locale not in selected_counts:
+                    continue
+
+                record_id = f"{locale}:{filename}"
+                if record_id in record_ids:
+                    raise ValueError(f"FLEURS-LID accepted source has duplicate identity {record_id!r}")
+                record_ids.add(record_id)
+                source_audio = source_audio_root / locale / filename
+                if source_audio in source_audio_paths:
+                    raise ValueError(f"FLEURS-LID accepted source reuses audio {source_audio}")
+                source_audio_paths.add(source_audio)
+                destination_audio = portable_audio_root / locale / filename
+                destination_stat = _ensure_same_inode_hardlink(source_audio, destination_audio)
+                _validate_materialized_audio(destination_audio, locale, filename)
+                info = sf.info(str(destination_audio))
+                duration = row.get("duration")
+                if not isinstance(duration, (int, float)) or round(
+                    float(duration) * EXPECTED_SAMPLE_RATE
+                ) != int(info.frames):
+                    raise ValueError(
+                        f"FLEURS-LID accepted source row {line_number} duration/audio-frame mismatch"
+                    )
+                selected_counts[locale] += 1
+                inventory[locale].append(filename)
+                audio_bytes += destination_stat.st_size
+                derived = {
+                    "id": record_id,
+                    "expected_answer": locale,
+                    "audio_path": raw_audio_path,
+                    "duration": float(duration),
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": PROMPT,
+                            "audio": {"path": raw_audio_path, "duration": float(duration)},
+                        }
+                    ],
+                    "subset_for_metrics": locale,
+                    "task_type": "FLEURS-LID",
+                    "extra_fields": {
+                        "locale": locale,
+                        "locale_name": get_lang_name(locale),
+                        "lang_group": get_lang_group(locale),
+                        "source_audio_path": raw_audio_path,
+                        "source_manifest_sha256": source_manifest_sha256,
+                        "source_archive_sha256": source_archive_sha256,
+                    },
+                }
+                output.write(json.dumps(derived, ensure_ascii=False) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+
+        if observed_source_counts != SOURCE_FLEURS_ASR_LOCALE_COUNTS:
+            raise ValueError(
+                "FLEURS-LID accepted source locale-count drift: "
+                f"expected={SOURCE_FLEURS_ASR_LOCALE_COUNTS}, observed={observed_source_counts}"
+            )
+        if selected_counts != EXPECTED_LOCALE_COUNTS:
+            raise ValueError(
+                f"FLEURS-LID selected locale-count drift: expected={EXPECTED_LOCALE_COUNTS}, observed={selected_counts}"
+            )
+        if len(record_ids) != EXPECTED_TOTAL_ROWS:
+            raise ValueError(
+                f"FLEURS-LID selected-row drift: expected {EXPECTED_TOTAL_ROWS}, got {len(record_ids)}"
+            )
+        inventory_sha256 = _inventory_sha256(inventory)
+        if inventory_sha256 != EXPECTED_WAV_INVENTORY_SHA256:
+            raise ValueError(
+                "FLEURS-LID selected WAV inventory drift: "
+                f"expected {EXPECTED_WAV_INVENTORY_SHA256}, got {inventory_sha256}"
+            )
+        receipt = {
+            "schema_version": 2,
+            "dataset": "fleurs-lid",
+            "scope": "hr7-training-language-intersection-v1",
+            "manifest": output_path.name,
+            "manifest_sha256": _sha256_file(temporary_output),
+            "total_rows": EXPECTED_TOTAL_ROWS,
+            "locale_counts": selected_counts,
+            "locales": list(CANONICAL_LABELS),
+            "excluded_source_locales": {"hy_am": 932, "nb_no": 357},
+            "wav_inventory_sha256": inventory_sha256,
+            "audio_mode": "same-inode-hardlinks-to-accepted-fleurs-asr",
+            "audio_files": len(source_audio_paths),
+            "audio_bytes": audio_bytes,
+            "audio_contract": {
+                "sample_rate": EXPECTED_SAMPLE_RATE,
+                "channels": EXPECTED_CHANNELS,
+                "nonempty": True,
+                "same_inode_as_source": True,
+            },
+            "source_receipt": str(source_receipt.resolve(strict=True)),
+            "source_receipt_sha256": _sha256_file(source_receipt),
+            "source_manifest": str(source_manifest.resolve(strict=True)),
+            "source_manifest_sha256": source_manifest_sha256,
+            "source_manifest_rows": SOURCE_FLEURS_ASR_TOTAL_ROWS,
+            "source_archive": source_receipt_value.get("archive"),
+            "source_archive_sha256": source_archive_sha256,
+        }
+        _publish_final_output(output_path, provenance_path, temporary_output, receipt)
+    finally:
+        temporary_output.unlink(missing_ok=True)
+    return output_path
+
+
 
 def _validate_static_contract() -> None:
     labels = set(CANONICAL_LABELS)
-    if labels != set(FLEURS_LANGUAGES):
-        raise ValueError("FLEURS-LID requires the exact 102 canonical FLEURS locales")
+    if not labels or not labels.issubset(FLEURS_LANGUAGES):
+        raise ValueError("FLEURS-LID labels must be a nonempty subset of canonical FLEURS locales")
     if labels != set(EXPECTED_LOCALE_COUNTS):
         raise ValueError("FLEURS-LID pinned locale-count contract does not match the canonical labels")
     if sum(EXPECTED_LOCALE_COUNTS.values()) != EXPECTED_TOTAL_ROWS:
@@ -775,7 +1041,7 @@ def prepare_fleurs_lid(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare official FLEURS-LID test data for all 102 locales")
+    parser = argparse.ArgumentParser(description="Prepare official FLEURS-LID test data for 36 HR7 locales")
     parser.add_argument("--data_dir", default=os.getenv("NEMO_SKILLS_DATA_DIR"))
     parser.add_argument(
         "--no-audio",
@@ -795,13 +1061,33 @@ def main() -> None:
         "--locale-shard-count",
         type=int,
         default=None,
-        help="Partition the canonical 102-locale list into this many contiguous shards.",
+        help="Partition the canonical 36-locale list into this many contiguous shards.",
     )
     parser.add_argument(
         "--locale-shard-index",
         type=int,
         default=None,
         help="Zero-based locale shard to prepare; requires --locale-shard-count.",
+    )
+    reuse = parser.add_argument_group("accepted FLEURS-ASR reuse")
+    reuse.add_argument(
+        "--reuse-fleurs-asr-manifest",
+        type=Path,
+        help="Authenticated accepted FLEURS ASR manifest used to derive the 36-locale LID view.",
+    )
+    reuse.add_argument(
+        "--reuse-fleurs-asr-audio-root",
+        type=Path,
+        help="Accepted FLEURS ASR locale-audio root authenticated by the source receipt.",
+    )
+    reuse.add_argument(
+        "--reuse-fleurs-asr-receipt",
+        type=Path,
+        help="Immutable manifest-closure receipt authenticating the accepted FLEURS ASR source.",
+    )
+    reuse.add_argument(
+        "--reuse-fleurs-asr-receipt-sha256",
+        help="Expected SHA-256 of --reuse-fleurs-asr-receipt.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -812,21 +1098,48 @@ def main() -> None:
     mode.add_argument(
         "--finalize-only",
         action="store_true",
-        help="Download nothing; require all 102 locale receipts, then validate and atomically publish the merged manifest.",
+        help="Download nothing; require all 36 locale receipts, then validate and atomically publish the merged manifest.",
     )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) / "fleurs-lid" if args.data_dir else Path(__file__).parent
-    output_path = prepare_fleurs_lid(
-        data_dir,
-        no_audio=args.no_audio,
-        num_workers=args.num_workers,
-        locale_shard_count=args.locale_shard_count,
-        locale_shard_index=args.locale_shard_index,
-        shard_only=args.shard_only,
-        finalize_only=args.finalize_only,
+    reuse_values = (
+        args.reuse_fleurs_asr_manifest,
+        args.reuse_fleurs_asr_audio_root,
+        args.reuse_fleurs_asr_receipt,
+        args.reuse_fleurs_asr_receipt_sha256,
     )
-    action = "locale shards prepared" if args.shard_only else "prepared"
+    if any(value is not None for value in reuse_values) and not all(value is not None for value in reuse_values):
+        raise ValueError("FLEURS-LID accepted-ASR reuse requires all four --reuse-fleurs-asr-* arguments")
+    if all(value is not None for value in reuse_values):
+        if (
+            args.no_audio
+            or args.num_workers is not None
+            or args.locale_shard_count is not None
+            or args.locale_shard_index is not None
+            or args.shard_only
+            or args.finalize_only
+        ):
+            raise ValueError("FLEURS-LID accepted-ASR reuse cannot be combined with download/shard options")
+        output_path = prepare_fleurs_lid_from_accepted_fleurs_asr(
+            data_dir,
+            source_manifest=args.reuse_fleurs_asr_manifest,
+            source_audio_root=args.reuse_fleurs_asr_audio_root,
+            source_receipt=args.reuse_fleurs_asr_receipt,
+            source_receipt_sha256=args.reuse_fleurs_asr_receipt_sha256,
+        )
+        action = "prepared from accepted FLEURS ASR"
+    else:
+        output_path = prepare_fleurs_lid(
+            data_dir,
+            no_audio=args.no_audio,
+            num_workers=args.num_workers,
+            locale_shard_count=args.locale_shard_count,
+            locale_shard_index=args.locale_shard_index,
+            shard_only=args.shard_only,
+            finalize_only=args.finalize_only,
+        )
+        action = "locale shards prepared" if args.shard_only else "prepared"
     print(f"FLEURS-LID {action} at {output_path}")
 
 
