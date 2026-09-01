@@ -69,6 +69,25 @@ LOG = logging.getLogger(get_logger_name(__file__))
 
 _SIMPLE_TEMPLATE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ROUTER_CONTROL_FIELD = "_speechlm_router"
+_PROHIBITED_ASR_PROMPT = "Transcribe the " "following:"
+
+
+def _validate_effective_prompt(prompt: Any) -> None:
+    """Reject the legacy ASR instruction after all row/CLI overrides resolve."""
+    pending = [prompt]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            if _PROHIBITED_ASR_PROMPT in value:
+                raise ValueError(
+                    "Effective request uses the prohibited legacy ASR prompt; "
+                    "use the current HR7 verbatim-transcription instruction."
+                )
+        elif isinstance(value, Mapping):
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, ListConfig)):
+            pending.extend(value)
+
 # Row-level inference overrides intentionally expose only prediction knobs that
 # are already explicit arguments of BaseModel.generate_async. Transport,
 # routing, endpoint, tool, response-format, and arbitrary extra_body controls
@@ -1061,6 +1080,7 @@ class GenerationTask:
                 )
                 if self.cfg.prompt_suffix:
                     GenerationTask._append_message_text_suffix(messages[-1], self.cfg.prompt_suffix)
+                _validate_effective_prompt(messages)
                 return messages
 
             # OpenAI path with prompt_config template -- build prompt from template, merge audio from data.
@@ -1082,6 +1102,7 @@ class GenerationTask:
                     GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
                 else:
                     filled_prompt += self.cfg.prompt_suffix
+            _validate_effective_prompt(filled_prompt)
             return filled_prompt
 
         # NS path -- always uses prompt template
@@ -1105,6 +1126,7 @@ class GenerationTask:
                 GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
             elif isinstance(filled_prompt, str):
                 filled_prompt += self.cfg.prompt_suffix
+        _validate_effective_prompt(filled_prompt)
         return filled_prompt
 
     def dump_outputs(self, outputs, data_points, fout):

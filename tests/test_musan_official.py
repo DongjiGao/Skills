@@ -90,7 +90,7 @@ def test_canary_paper_profile_is_one_greedy_generation_and_not_gym():
     assert paper.NUM_SAMPLES == 1
     assert paper.METRICS_TYPE == "audio"
     assert prepare.CANARY_PAPER_CATEGORIES == ("music", "noise")
-    assert prepare.CANARY_PAPER_PROTOCOL == "canary-table6-reconstruction-v1"
+    assert prepare.CANARY_PAPER_PROTOCOL == "canary-table6-hr7-prompt-reconstruction-v2"
     assert prepare.OPENSLR_MD5 == "0c472d4fc0c5141eca47ad1ffeb2a7df"
 
 
@@ -121,10 +121,10 @@ def test_canary_paper_manifest_excludes_speech_and_records_limit(monkeypatch, tm
     paper_rows = [json.loads(line) for line in (tmp_path / "paper" / "test.jsonl").read_text().splitlines()]
     assert [row["category"] for row in paper_rows] == ["noise", "music"]
     assert all(row["category"] != "speech" for row in paper_rows)
-    assert all(row["messages"][0]["content"] == "" for row in paper_rows)
+    assert all(row["messages"][0]["content"] == prepare.SYSTEM_PROMPT for row in paper_rows)
     assert all(row["messages"][1]["content"] == prepare.CANARY_PAPER_USER_PROMPT for row in paper_rows)
     assert all(row["protocol_profile"] == prepare.CANARY_PAPER_PROTOCOL for row in paper_rows)
-    assert all(row["protocol_revision"] == "arxiv:2406.19674v1" for row in paper_rows)
+    assert all(row["protocol_revision"] == prepare.CANARY_PAPER_REVISION for row in paper_rows)
     assert all(row["num_repeated_generations"] == 1 for row in paper_rows)
     assert all("does not publish" in row["comparability_limit"] for row in paper_rows)
 

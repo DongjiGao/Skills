@@ -22,7 +22,8 @@ from nemo_skills.dataset.ascend.prepare import (
     OFFICIAL_TEST_PARQUET,
     OFFICIAL_TEST_PARQUET_BYTES,
     OFFICIAL_TEST_PARQUET_SHA256,
-    PROMPT,
+    SYSTEM_PROMPT,
+    USER_PROMPT,
     _format_entry,
 )
 from nemo_skills.evaluation.evaluator import is_evaluator_registered
@@ -91,8 +92,9 @@ def test_ascend_empty_reference_after_official_normalization_uses_corpus_counts(
 
 def test_ascend_manifest_is_plain_transcript_and_pinned():
     record = _format_entry({"id": "sample/1", "transcription": "你好 hello", "duration": 1.25, "language": "mixed"}, 0)
-    assert record["messages"][0]["content"] == PROMPT
-    assert len(record["messages"]) == 1
+    assert record["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert record["messages"][1]["content"] == USER_PROMPT
+    assert len(record["messages"]) == 2
     assert record["extra_fields"]["source_revision"] == HF_REVISION
     assert record["extra_fields"]["source_split"] == OFFICIAL_SPLIT
     assert record["extra_fields"]["source_parquet"] == OFFICIAL_TEST_PARQUET

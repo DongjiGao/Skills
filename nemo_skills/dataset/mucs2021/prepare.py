@@ -35,7 +35,8 @@ SOURCE_BYTES = 1_008_263_116
 ARCHIVE_NAME = "subtask2_blindtest_wReadme.tar.gz"
 ARCHIVE_ROOT = "subtask2_blindtest_wReadme"
 ARCHIVE_MEMBER_COUNT = 88
-PROMPT = "Transcribe the following audio."
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Produce a verbatim transcript of the audio."
 
 
 @dataclass(frozen=True)
@@ -351,7 +352,10 @@ def _prepare_language(
                 "expected_answer": references[utterance_id],
                 "audio_path": audio_path,
                 "duration": duration,
-                "messages": [{"role": "user", "content": PROMPT, "audio": audio}],
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": USER_PROMPT, "audio": audio},
+                ],
                 "subset_for_metrics": contract.leaf,
                 "task_type": "Code-Switched-ASR",
                 "extra_fields": {

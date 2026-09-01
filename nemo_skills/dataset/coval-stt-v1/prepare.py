@@ -48,7 +48,8 @@ EXPECTED_FORMAT = "WAV"
 PROVENANCE_FILENAME = "provenance.json"
 NORMALIZER_DISTRIBUTION = "whisper-normalizer"
 NORMALIZER_VERSION = "0.1.12"
-PROMPT = "Transcribe the following:"
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Produce a verbatim transcript of the audio."
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -235,7 +236,10 @@ def _build_record(item: dict, audio_prefix: str) -> dict:
     audio = {"path": audio_path, "duration": duration}
     return {
         "id": item["utterance_id"],
-        "messages": [{"role": "user", "content": PROMPT, "audio": audio}],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": USER_PROMPT, "audio": audio},
+        ],
         "expected_answer": item["transcript"],
         "audio_filepath": audio_path,
         "audio_duration": duration,

@@ -29,7 +29,8 @@ EXPECTED_CHANNELS = 1
 EXPECTED_SUBTYPE = "PCM_16"
 MINIMUM_AUDIO_SAMPLES = 320
 PROVENANCE_FILENAME = "provenance.json"
-PROMPT = "Transcribe the following:"
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Produce a verbatim transcript of the audio."
 RESAMPLER_BACKEND = "scipy.signal.resample_poly"
 RESAMPLER_WINDOW = ("kaiser", 5.0)
 RESAMPLER_PADTYPE = "constant"
@@ -258,9 +259,10 @@ def _build_record(row: dict, contract: SourceContract) -> dict:
     record = {
         "id": f"{BENCHMARK_NAME}-{contract.profile}-{row['id']}",
         "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": PROMPT,
+                "content": USER_PROMPT,
                 "audio": {"path": audio_path, "duration": float(row["audio_length_s"])},
             }
         ],

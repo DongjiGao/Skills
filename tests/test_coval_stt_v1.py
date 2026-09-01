@@ -143,7 +143,9 @@ def test_prepare_validates_every_hash_and_publishes_manifest_and_receipt_atomica
     assert len(rows) == 1
     assert rows[0]["id"] == item["utterance_id"]
     assert rows[0]["expected_answer"] == item["transcript"]
-    assert rows[0]["messages"][0]["audio"] == {
+    assert rows[0]["messages"][0] == {"role": "system", "content": prepare.SYSTEM_PROMPT}
+    assert rows[0]["messages"][1]["content"] == prepare.USER_PROMPT
+    assert rows[0]["messages"][1]["audio"] == {
         "path": "/data/coval-stt-v1/audio/0001.wav",
         "duration": 2.0,
     }

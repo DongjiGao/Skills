@@ -151,8 +151,9 @@ def test_prepare_manifest_keeps_scorer_metadata_out_of_prompt():
         "entity_count": 1,
     }
     entry = prepare._format_entry(row, "/data/voice-code-bench")
-    message = entry["messages"][0]
-    assert message["content"] == "Transcribe the following:"
+    assert entry["messages"][0] == {"role": "system", "content": prepare.SYSTEM_PROMPT}
+    message = entry["messages"][1]
+    assert message["content"] == prepare.USER_PROMPT
     assert "secret_domain" not in message["content"]
     assert "123" not in message["content"]
     assert entry["voice_code_bench"]["entities"] == row["entities"]

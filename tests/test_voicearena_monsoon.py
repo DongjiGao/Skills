@@ -108,7 +108,9 @@ def test_formatted_records_pin_provenance_and_preserve_hindi_lattice(monkeypatch
     hi = prepare._build_record(_hindi_row(), hi_contract)
 
     assert en["expected_answer"] == "Hello, world!"
-    assert en["messages"][0]["audio"] == {
+    assert en["messages"][0] == {"role": "system", "content": prepare.SYSTEM_PROMPT}
+    assert en["messages"][1]["content"] == prepare.USER_PROMPT
+    assert en["messages"][1]["audio"] == {
         "path": "/data/voicearena-monsoon/en-in/public/audio/clip-1.wav",
         "duration": 1.0,
     }

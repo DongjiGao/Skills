@@ -63,10 +63,10 @@ OFFICIAL_TOTAL_FILES = sum(OFFICIAL_CATEGORY_FILE_COUNTS.values())
 SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
 USER_PROMPT = "Transcribe the speech in this audio. If there is no speech, do not output anything."
 CANARY_PAPER_CATEGORIES = ("music", "noise")
-CANARY_PAPER_PROTOCOL = "canary-table6-reconstruction-v1"
-CANARY_PAPER_REVISION = "arxiv:2406.19674v1"
-CANARY_PAPER_SYSTEM_PROMPT = ""
-CANARY_PAPER_USER_PROMPT = "Transcribe the following:"
+CANARY_PAPER_PROTOCOL = "canary-table6-hr7-prompt-reconstruction-v2"
+CANARY_PAPER_REVISION = "arxiv:2406.19674v1+hr7-asr-prompt"
+CANARY_PAPER_SYSTEM_PROMPT = SYSTEM_PROMPT
+CANARY_PAPER_USER_PROMPT = "Produce a verbatim transcript of the audio."
 EXPECTED_ANSWER = ""
 HALLUCINATION_CHAR_RATE_THRESHOLD = 1500.0
 NUM_REPEATED_GENERATIONS = 4
@@ -673,7 +673,7 @@ def main():
             paper_entry["protocol_profile"] = CANARY_PAPER_PROTOCOL
             paper_entry["num_repeated_generations"] = 1
             paper_entry["comparability_limit"] = (
-                "The paper does not publish its exact prompt, decoder, manifest, or character preprocessing."
+                "The paper does not publish its exact prompt, decoder, manifest, or character preprocessing; this profile uses the HR7 ASR prompt."
             )
             paper_entries.append(paper_entry)
         paper_dir = output_dir / "paper"

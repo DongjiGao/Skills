@@ -32,7 +32,8 @@ OFFICIAL_REVISION = "af309592118b83fdf9b0ad896b564a142657aac8"
 BENCHMARK_NAME = "voice-code-bench"
 EXPECTED_ROWS = 300
 EXPECTED_ENTITIES = 1482
-GENERIC_PROMPT = "Transcribe the following:"
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Produce a verbatim transcript of the audio."
 
 
 def _default_data_dir() -> Path:
@@ -128,9 +129,10 @@ def _format_entry(row: dict[str, Any], audio_prefix: str) -> dict[str, Any]:
     }
     return {
         "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": GENERIC_PROMPT,
+                "content": USER_PROMPT,
                 "audio": {"path": audio_path, "duration": float(row["duration"])},
             }
         ],

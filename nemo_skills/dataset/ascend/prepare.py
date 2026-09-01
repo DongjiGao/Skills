@@ -33,7 +33,8 @@ OFFICIAL_TEST_SIZE = 1315
 OFFICIAL_TEST_PARQUET = "main/test-00000-of-00001.parquet"
 OFFICIAL_TEST_PARQUET_SHA256 = "a4c81d2b5ed6124f052089a695972808c16e0ce0c365ec9773c5d1a8fcf043a7"
 OFFICIAL_TEST_PARQUET_BYTES = 105756434
-PROMPT = "Transcribe the following audio."
+SYSTEM_PROMPT = "You are a helpful assistant. /no_think"
+USER_PROMPT = "Produce a verbatim transcript of the audio."
 
 
 def _sha256(path: Path) -> str:
@@ -99,7 +100,10 @@ def _format_entry(row: dict, index: int) -> dict:
         "expected_answer": str(row["transcription"]),
         "audio_path": audio_path,
         "duration": duration,
-        "messages": [{"role": "user", "content": PROMPT, "audio": audio}],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": USER_PROMPT, "audio": audio},
+        ],
         "subset_for_metrics": OFFICIAL_SPLIT,
         "task_type": "Code-Switched-ASR",
         "extra_fields": {
