@@ -37,11 +37,14 @@ Usage:
 """
 
 import argparse
+import io
 import json
+import os
 import wave
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 HF_REPO_ID = "argmaxinc/contextual-earnings22"
 HF_REVISION = "59d7f94771cc197984d8038e494c83abeff87282"
@@ -66,11 +69,14 @@ PROMPT_GLOBAL = (
 def _default_data_dir() -> Path:
     """Pick a dataset download location that sits OUTSIDE the repo.
 
+    Honors ``NEMO_SKILLS_DATA_DIR`` when invoked by ``ns prepare_data``.
     Walks up from this file until it finds the repo root (identified by
     ``pyproject.toml``) and returns ``<repo_root>.parent / "<repo_name>-data" /
     <BENCHMARK_NAME>``. Falls back to ``~/.cache/nemo-skills-data/<bench>`` if
     no repo root is found. Never returns a path inside the repo tree.
     """
+    if root := os.environ.get("NEMO_SKILLS_DATA_DIR"):
+        return Path(root) / BENCHMARK_NAME
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "pyproject.toml").exists():
@@ -93,20 +99,84 @@ def _audio_filename(file_id: str, audio_start: float, idx: int) -> str:
     return f"{file_id}__{audio_start:09.2f}__{idx}.wav"
 
 
+def _decode_audio(value: object) -> tuple[np.ndarray, int]:
+    """Decode raw Hugging Face audio with libsndfile, without TorchCodec."""
+    if not isinstance(value, dict):
+        raise TypeError(f"Contextual Earnings22 raw audio must be a mapping, found {type(value).__name__}")
+    encoded = value.get("bytes")
+    path = value.get("path")
+    if encoded is not None:
+        source = io.BytesIO(encoded)
+    elif path:
+        source = str(path)
+    else:
+        raise ValueError("Contextual Earnings22 raw audio has neither bytes nor path")
+
+    try:
+        samples, sampling_rate = sf.read(source, dtype="float32", always_2d=False)
+    except (RuntimeError, TypeError, ValueError) as error:
+        raise ValueError("Contextual Earnings22 raw audio could not be decoded by libsndfile") from error
+    samples = np.asarray(samples)
+    if samples.ndim == 2:
+        if samples.shape[1] != 1:
+            raise ValueError(f"Contextual Earnings22 source audio must be mono; got shape={samples.shape}")
+        samples = samples[:, 0]
+    if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
+        raise ValueError(f"Contextual Earnings22 source audio is empty, short, or malformed: shape={samples.shape}")
+    if not np.isfinite(samples).all():
+        raise ValueError("Contextual Earnings22 source audio contains non-finite samples")
+    sampling_rate = int(sampling_rate)
+    if sampling_rate != SAMPLING_RATE:
+        raise ValueError(
+            f"Contextual Earnings22 source sample-rate drift: expected {SAMPLING_RATE}, found {sampling_rate}"
+        )
+    return samples.astype(np.float32, copy=False), sampling_rate
+
+
 def _write_wav(path: Path, samples: np.ndarray, sampling_rate: int) -> None:
-    """Write a mono int16 WAV at ``sampling_rate`` Hz."""
-    if samples.ndim > 1:
-        samples = samples.mean(axis=tuple(range(1, samples.ndim)))
+    """Atomically write a mono int16 WAV at ``sampling_rate`` Hz."""
+    samples = np.asarray(samples)
+    if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
+        raise ValueError(f"Contextual Earnings22 output audio must be nonempty mono; got shape={samples.shape}")
+    if not np.isfinite(samples).all():
+        raise ValueError("Contextual Earnings22 output audio contains non-finite samples")
+    if sampling_rate != SAMPLING_RATE:
+        raise ValueError(f"Contextual Earnings22 output sample-rate must be {SAMPLING_RATE}, got {sampling_rate}")
     if np.issubdtype(samples.dtype, np.floating):
         samples = np.clip(samples, -1.0, 1.0)
         samples_i16 = (samples * 32767.0).astype(np.int16)
     else:
         samples_i16 = samples.astype(np.int16)
-    with wave.open(str(path), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sampling_rate)
-        wf.writeframes(samples_i16.tobytes())
+    temporary = path.with_name(f".{path.name}.partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        with wave.open(str(temporary), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sampling_rate)
+            wf.writeframes(samples_i16.tobytes())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    _validate_wav(path)
+
+
+def _validate_wav(path: Path) -> int:
+    if not path.is_file() or path.stat().st_size <= 44:
+        raise FileNotFoundError(f"Contextual Earnings22 audio is missing or empty: {path}")
+    try:
+        with wave.open(str(path), "rb") as stream:
+            header = (
+                stream.getnchannels(),
+                stream.getsampwidth(),
+                stream.getframerate(),
+                stream.getnframes(),
+            )
+    except (EOFError, wave.Error) as error:
+        raise ValueError(f"Contextual Earnings22 audio has an invalid WAV header: {path}") from error
+    if header[:3] != (1, 2, SAMPLING_RATE) or header[3] < MINIMUM_AUDIO_SAMPLES:
+        raise ValueError(f"Contextual Earnings22 audio contract failed for {path}: {header}")
+    return int(header[3])
 
 
 def download_and_extract_audio(data_dir: Path) -> int:
@@ -114,7 +184,7 @@ def download_and_extract_audio(data_dir: Path) -> int:
 
     Returns the number of clips written. Skips clips that already exist on disk.
     """
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     audio_dir = _audio_subdir(data_dir)
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +198,7 @@ def download_and_extract_audio(data_dir: Path) -> int:
     ds = load_dataset(HF_REPO_ID, split=SPLIT, revision=HF_REVISION)
     if len(ds) != EXPECTED_ROWS:
         raise ValueError(f"Contextual Earnings22 row-count drift: expected {EXPECTED_ROWS}, found {len(ds)}")
+    ds = ds.cast_column("audio", Audio(decode=False))
 
     print(f"Loaded {len(ds)} samples. Extracting audio to {audio_dir} ...")
 
@@ -141,14 +212,16 @@ def download_and_extract_audio(data_dir: Path) -> int:
         wav_path = audio_dir / wav_name
 
         if not wav_path.exists():
-            arr = np.asarray(audio["array"])
-            sr = int(audio["sampling_rate"])
-            if sr != SAMPLING_RATE:
-                raise ValueError(
-                    f"Unexpected sampling rate {sr} for sample {idx} (file_id={file_id}); expected {SAMPLING_RATE}."
-                )
+            arr, sr = _decode_audio(audio)
             _write_wav(wav_path, arr, sr)
             written += 1
+        frames = _validate_wav(wav_path)
+        source_duration = float(row["duration"])
+        if abs(frames / SAMPLING_RATE - source_duration) > 0.11:
+            raise ValueError(
+                f"Contextual Earnings22 audio duration drift for sample {idx}: "
+                f"metadata={source_duration}, WAV={frames / SAMPLING_RATE}"
+            )
 
         samples.append(
             {
@@ -156,7 +229,7 @@ def download_and_extract_audio(data_dir: Path) -> int:
                 "audio_filename": wav_name,
                 "audio_start": audio_start,
                 "audio_end": float(row["audio_end"]),
-                "duration": float(row["duration"]),
+                "duration": source_duration,
                 "text": row["text"],
                 "norm_text": row["norm_text"],
                 "transcript_tokens": list(row["transcript"]),
@@ -174,8 +247,16 @@ def download_and_extract_audio(data_dir: Path) -> int:
     print(f"Wrote {written} new audio files (skipped {len(samples) - written} already present).")
 
     metadata_path = data_dir / "samples.jsonl"
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        f.writelines(json.dumps(s, ensure_ascii=False) + "\n" for s in samples)
+    temporary = metadata_path.with_name(f".{metadata_path.name}.partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            f.writelines(json.dumps(s, ensure_ascii=False) + "\n" for s in samples)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, metadata_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     print(f"Wrote sample metadata: {metadata_path}")
 
     return len(samples)
@@ -233,20 +314,7 @@ def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: boo
         if not require_audio:
             continue
         audio_path = data_dir / "audio" / audio_filename
-        if not audio_path.is_file() or audio_path.stat().st_size <= 44:
-            raise FileNotFoundError(f"Contextual Earnings22 audio is missing or empty: {audio_path}")
-        try:
-            with wave.open(str(audio_path), "rb") as stream:
-                header = (
-                    stream.getnchannels(),
-                    stream.getsampwidth(),
-                    stream.getframerate(),
-                    stream.getnframes(),
-                )
-        except (EOFError, wave.Error) as exc:
-            raise ValueError(f"Contextual Earnings22 audio has an invalid WAV header: {audio_path}") from exc
-        if header[:3] != (1, 2, SAMPLING_RATE) or header[3] < MINIMUM_AUDIO_SAMPLES:
-            raise ValueError(f"Contextual Earnings22 audio contract failed for {audio_path}: {header}")
+        _validate_wav(audio_path)
 
 
 def build_messages(prompt_text: str, audio_path: str, duration: float) -> list[dict]:

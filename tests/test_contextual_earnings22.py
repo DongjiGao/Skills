@@ -1,8 +1,12 @@
 import importlib
+import io
+import json
 import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 prepare = importlib.import_module("nemo_skills.dataset.contextual-earnings22.prepare")
 
@@ -42,6 +46,79 @@ def test_contextual_earnings22_source_contract_is_immutable():
     assert prepare.HF_REVISION == "59d7f94771cc197984d8038e494c83abeff87282"
     assert prepare.SPLIT == "test"
     assert prepare.EXPECTED_ROWS == 772
+
+
+def test_contextual_earnings22_default_data_dir_honors_prepare_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEMO_SKILLS_DATA_DIR", str(tmp_path))
+    assert prepare._default_data_dir() == tmp_path / prepare.BENCHMARK_NAME
+
+
+def _encoded_wav(*, sample_rate=16000, channels=1, samples=16000):
+    payload = io.BytesIO()
+    shape = (samples,) if channels == 1 else (samples, channels)
+    sf.write(payload, np.zeros(shape, dtype=np.float32), sample_rate, format="WAV", subtype="PCM_16")
+    return payload.getvalue()
+
+
+def test_contextual_earnings22_raw_audio_decode_avoids_torchcodec(tmp_path):
+    encoded = _encoded_wav()
+    samples, sample_rate = prepare._decode_audio({"bytes": encoded, "path": None})
+    assert samples.shape == (16000,)
+    assert samples.dtype == np.float32
+    assert sample_rate == 16000
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(encoded)
+    from_path, path_rate = prepare._decode_audio({"bytes": None, "path": str(source)})
+    np.testing.assert_array_equal(from_path, samples)
+    assert path_rate == sample_rate
+
+    with pytest.raises(ValueError, match="must be mono"):
+        prepare._decode_audio({"bytes": _encoded_wav(channels=2), "path": None})
+    with pytest.raises(ValueError, match="sample-rate drift"):
+        prepare._decode_audio({"bytes": _encoded_wav(sample_rate=8000), "path": None})
+
+
+def test_contextual_earnings22_download_forces_raw_audio_and_atomic_outputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
+    raw_row = {
+        "audio": {"bytes": _encoded_wav(), "path": None},
+        "file_id": "call-1",
+        "audio_start": 0.0,
+        "audio_end": 1.0,
+        "duration": 1.0,
+        "text": "NVIDIA Corporation",
+        "norm_text": "nvidia corporation",
+        "transcript": ["NVIDIA", "Corporation"],
+        "dictionary": ["NVIDIA"],
+        "keywords": ["NVIDIA", "Corporation"],
+        "is_flagged": False,
+    }
+
+    class RawDataset:
+        def __init__(self):
+            self.raw_audio = False
+
+        def __len__(self):
+            return 1
+
+        def cast_column(self, name, feature):
+            assert name == "audio"
+            assert feature.decode is False
+            self.raw_audio = True
+            return self
+
+        def __iter__(self):
+            assert self.raw_audio
+            return iter([raw_row])
+
+    source = RawDataset()
+    monkeypatch.setattr("datasets.load_dataset", lambda *args, **kwargs: source)
+    assert prepare.download_and_extract_audio(tmp_path) == 1
+    assert not list(tmp_path.rglob("*.partial"))
+    metadata = [json.loads(line) for line in (tmp_path / "samples.jsonl").read_text().splitlines()]
+    assert len(metadata) == 1
+    prepare._validate_wav(tmp_path / "audio" / metadata[0]["audio_filename"])
 
 
 def test_contextual_earnings22_validates_all_audio_and_provenance(tmp_path, monkeypatch):
