@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import soundfile as sf
@@ -317,3 +318,189 @@ def test_language_detection_partitions_correct_misunderstanding_and_error():
             "detection_error_rate",
         )
     ) == pytest.approx(100.0, abs=0.02)
+
+
+def _install_mini_recovery_contract(monkeypatch, tmp_path, tasks):
+    output_root = tmp_path / "longspeech"
+    audio_relpath = "LongSpeech_p1/wavs/shared.wav"
+    audio_path = output_root / "audio" / audio_relpath
+    audio_path.parent.mkdir(parents=True)
+    sf.write(audio_path, [0.0] * 320, 16000)
+
+    supported_tasks = {}
+    source_contracts = {}
+    for benchmark_task, source_task in tasks.items():
+        supported_tasks[benchmark_task] = source_task
+        row = {
+            "language": "en",
+            "task": source_task,
+            "messages": [
+                {
+                    "role": "user",
+                    "audio": audio_relpath,
+                    "content": f"Question for {source_task}",
+                },
+                {"role": "assistant", "content": f"Answer for {source_task}"},
+            ],
+        }
+        source_path = output_root / "_source" / f"LongSpeechQA/{source_task}/test.jsonl"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        source_contracts[benchmark_task] = {
+            "rows": 1,
+            "unique_audio": 1,
+            "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        }
+
+    monkeypatch.setattr(prepare, "SUPPORTED_TASKS", supported_tasks)
+    monkeypatch.setattr(prepare, "SOURCE_CONTRACTS", source_contracts)
+    monkeypatch.setattr(prepare, "SOURCE_MISSING_AUDIO", {})
+
+    def cached_source(filename, local_dir):
+        source_path = local_dir / filename
+        assert source_path.is_file()
+        return source_path
+
+    monkeypatch.setattr(prepare, "_download_repo_file", cached_source)
+    return output_root, audio_relpath
+
+
+def _prepare_mini_task(output_root, task, *, adopt_existing=False):
+    return prepare.prepare_task(
+        task,
+        output_root=output_root,
+        audio_prefix="/data/longspeech/audio",
+        download_audio=False,
+        download_workers=1,
+        adopt_existing=adopt_existing,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tasks", "options", "message"),
+    [
+        (["asr", "translation"], {"task_only": True}, "exactly one"),
+        (["asr"], {"finalize_only": True}, "tasks=all"),
+        (["asr"], {"adopt_existing": True}, "requires --task-only and --no-audio"),
+        (
+            ["asr"],
+            {"task_only": True, "adopt_existing": True},
+            "requires --task-only and --no-audio",
+        ),
+        (list(prepare.SUPPORTED_TASKS), {"finalize_only": True, "no_audio": True}, "already downloads nothing"),
+    ],
+)
+def test_recovery_modes_fail_closed(tasks, options, message):
+    arguments = {
+        "task_only": False,
+        "finalize_only": False,
+        "adopt_existing": False,
+        "no_audio": False,
+    }
+    arguments.update(options)
+    with pytest.raises(ValueError, match=message):
+        prepare._validate_recovery_modes(tasks, **arguments)
+
+
+def test_task_only_leaves_share_audio_and_finalize_without_downloads(tmp_path, monkeypatch):
+    output_root, audio_relpath = _install_mini_recovery_contract(
+        monkeypatch,
+        tmp_path,
+        {"summary": "summary", "speaker-count": "speaker_count"},
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda task: _prepare_mini_task(output_root, task), prepare.SUPPORTED_TASKS))
+    assert results == [1, 1]
+    assert (output_root / "audio" / audio_relpath).is_file()
+    assert len(list((output_root / "audio").rglob("*.wav"))) == 1
+    assert (output_root / "summary" / "provenance.json").is_file()
+    assert (output_root / "speaker-count" / "provenance.json").is_file()
+    assert not (output_root / "provenance.json").exists()
+
+    monkeypatch.setattr(
+        prepare,
+        "_download_repo_file",
+        lambda *_args, **_kwargs: pytest.fail("finalizer must use pinned cached source manifests"),
+    )
+    monkeypatch.setattr(
+        prepare,
+        "_download_audio_files",
+        lambda *_args, **_kwargs: pytest.fail("finalizer must never download audio"),
+    )
+    assert prepare.finalize_longspeech(output_root, audio_prefix="/data/longspeech/audio") == 2
+
+    receipt = json.loads((output_root / "provenance.json").read_text(encoding="utf-8"))
+    assert receipt["total_rows"] == 2
+    assert list(receipt["tasks"]) == ["speaker-count", "summary"]
+    assert (
+        receipt["tasks"]["summary"]["audio_inventory_sha256"]
+        == receipt["tasks"]["speaker-count"]["audio_inventory_sha256"]
+    )
+
+
+def test_legacy_manifest_requires_explicit_exact_adoption(tmp_path, monkeypatch):
+    output_root, _audio_relpath = _install_mini_recovery_contract(
+        monkeypatch,
+        tmp_path,
+        {"summary": "summary"},
+    )
+    _prepare_mini_task(output_root, "summary")
+    manifest_path = output_root / "summary" / "test.jsonl"
+    receipt_path = output_root / "summary" / "provenance.json"
+    manifest_bytes = manifest_path.read_bytes()
+    receipt_path.unlink()
+
+    with pytest.raises(ValueError, match="legacy manifest has no authenticated task receipt"):
+        _prepare_mini_task(output_root, "summary")
+    assert not receipt_path.exists()
+
+    assert _prepare_mini_task(output_root, "summary", adopt_existing=True) == 1
+    assert manifest_path.read_bytes() == manifest_bytes
+    assert receipt_path.is_file()
+
+
+def test_legacy_adoption_rejects_manifest_drift(tmp_path, monkeypatch):
+    output_root, _audio_relpath = _install_mini_recovery_contract(
+        monkeypatch,
+        tmp_path,
+        {"summary": "summary"},
+    )
+    _prepare_mini_task(output_root, "summary")
+    manifest_path = output_root / "summary" / "test.jsonl"
+    (output_root / "summary" / "provenance.json").unlink()
+    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fails deterministic closure"):
+        _prepare_mini_task(output_root, "summary", adopt_existing=True)
+    assert not (output_root / "summary" / "provenance.json").exists()
+
+
+def test_finalizer_rejects_missing_leaf_receipt(tmp_path, monkeypatch):
+    output_root, _audio_relpath = _install_mini_recovery_contract(
+        monkeypatch,
+        tmp_path,
+        {"summary": "summary", "speaker-count": "speaker_count"},
+    )
+    _prepare_mini_task(output_root, "summary")
+    _prepare_mini_task(output_root, "speaker-count")
+    (output_root / "speaker-count" / "provenance.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match="speaker-count has no complete task manifest and receipt"):
+        prepare.finalize_longspeech(output_root, audio_prefix="/data/longspeech/audio")
+    assert not (output_root / "provenance.json").exists()
+
+
+def test_finalizer_revalidates_audio_closure(tmp_path, monkeypatch):
+    output_root, audio_relpath = _install_mini_recovery_contract(
+        monkeypatch,
+        tmp_path,
+        {"summary": "summary"},
+    )
+    _prepare_mini_task(output_root, "summary")
+    audio_path = output_root / "audio" / audio_relpath
+    audio_path.write_bytes(b"not audio")
+
+    with pytest.raises(ValueError, match="audio header is unreadable"):
+        prepare.finalize_longspeech(output_root, audio_prefix="/data/longspeech/audio")
+    assert not (output_root / "provenance.json").exists()
