@@ -124,9 +124,7 @@ def test_contextual_earnings22_download_forces_raw_audio_and_atomic_outputs(tmp_
     prepare._validate_wav(tmp_path / "audio" / metadata[0]["audio_filename"])
 
 
-def test_contextual_earnings22_publishes_decoded_duration_and_preserves_nominal_source_duration(
-    tmp_path, monkeypatch
-):
+def test_contextual_earnings22_publishes_decoded_duration_and_preserves_nominal_source_duration(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
     decoded_frames = 232_319
     raw_row = {
@@ -227,3 +225,51 @@ def test_contextual_earnings22_records_unique_mode_id_and_source_provenance(
         "duration_policy": "decoded_wav_frames_divided_by_16000",
     }
     assert row["messages"][0]["audio"]["path"].startswith("/data/ce22/audio/")
+
+
+def test_contextual_earnings22_publishes_atomically_to_data_root_and_resumes(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
+    sample = _sample()
+    sample["expected_rows"] = 1
+
+    outputs = prepare.publish_manifests([sample], tmp_path, "/data/contextual-earnings22")
+    assert outputs == {
+        "contextless": tmp_path / "contextless" / "test.jsonl",
+        "local": tmp_path / "local" / "test.jsonl",
+        "global": tmp_path / "global" / "test.jsonl",
+    }
+    receipt_path = tmp_path / prepare.PROVENANCE_FILENAME
+    receipt_payload = receipt_path.read_bytes()
+    receipt = json.loads(receipt_payload)
+    assert receipt["status"] == "ready"
+    assert receipt["expected_rows_per_mode"] == 1
+    assert [item["mode"] for item in receipt["manifests"]] == ["contextless", "local", "global"]
+    assert all(item["rows"] == 1 for item in receipt["manifests"])
+    assert not list(tmp_path.rglob("*.partial"))
+
+    first_payloads = {mode: path.read_bytes() for mode, path in outputs.items()}
+    resumed = prepare.publish_manifests([sample], tmp_path, "/data/contextual-earnings22")
+    assert {mode: path.read_bytes() for mode, path in resumed.items()} == first_payloads
+    assert receipt_path.read_bytes() == receipt_payload
+    assert not list(tmp_path.rglob("*.partial"))
+
+
+def test_contextual_earnings22_resume_rejects_stale_manifest(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
+    sample = _sample()
+    sample["expected_rows"] = 1
+    outputs = prepare.publish_manifests([sample], tmp_path, "/data/contextual-earnings22")
+    stale_path = outputs["local"]
+    stale_path.write_text("stale\n")
+
+    with pytest.raises(ValueError, match="existing artifact does not match pinned output"):
+        prepare.publish_manifests([sample], tmp_path, "/data/contextual-earnings22")
+    assert stale_path.read_text() == "stale\n"
+    assert not list(tmp_path.rglob("*.partial"))
+
+
+def test_contextual_earnings22_publication_rejects_row_count_drift(tmp_path, monkeypatch):
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 2)
+    with pytest.raises(ValueError, match="publication row-count drift"):
+        prepare.publish_manifests([_sample()], tmp_path, "/data/contextual-earnings22")
+    assert not (tmp_path / prepare.PROVENANCE_FILENAME).exists()

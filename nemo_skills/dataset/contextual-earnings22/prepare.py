@@ -37,9 +37,11 @@ Usage:
 """
 
 import argparse
+import hashlib
 import io
 import json
 import os
+import tempfile
 import wave
 from pathlib import Path
 
@@ -55,6 +57,7 @@ EXPECTED_ROWS = 772
 MINIMUM_AUDIO_SAMPLES = 320
 PREPARATION_SCHEMA_VERSION = 2
 DURATION_POLICY = "decoded_wav_frames_divided_by_16000"
+PROVENANCE_FILENAME = "provenance.json"
 
 PROMPT_CONTEXTLESS = "Transcribe the English audio into text, ensuring all punctuation marks are included."
 PROMPT_LOCAL = (
@@ -329,9 +332,7 @@ def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: boo
         audio_path = data_dir / "audio" / audio_filename
         frames = _validate_wav(audio_path)
         if abs(duration * SAMPLING_RATE - frames) > 0.5:
-            raise ValueError(
-                f"Contextual Earnings22 row {index} duration does not match decoded WAV frames"
-            )
+            raise ValueError(f"Contextual Earnings22 row {index} duration does not match decoded WAV frames")
 
 
 def build_messages(prompt_text: str, audio_path: str, duration: float) -> list[dict]:
@@ -392,6 +393,98 @@ def format_entry(sample: dict, mode: str, audio_prefix: str) -> dict:
     }
 
 
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _atomic_publish_exact(path: Path, payload: bytes) -> None:
+    """Publish ``payload`` once and reject any non-identical prior artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if not path.is_file() or path.read_bytes() != payload:
+            raise ValueError(f"Contextual Earnings22 existing artifact does not match pinned output: {path}")
+        return
+
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".partial",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            # Linking within the destination directory creates the final name
+            # atomically without ever overwriting a concurrent publisher.
+            os.link(temporary, path)
+        except FileExistsError:
+            if not path.is_file() or path.read_bytes() != payload:
+                raise ValueError(
+                    f"Contextual Earnings22 concurrent artifact does not match pinned output: {path}"
+                ) from None
+        if path.read_bytes() != payload:
+            raise ValueError(f"Contextual Earnings22 published artifact failed revalidation: {path}")
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def publish_manifests(samples: list[dict], output_dir: Path, audio_prefix: str) -> dict[str, Path]:
+    """Atomically publish and strictly revalidate the three CE22 profiles.
+
+    The deterministic provenance receipt is published last. A killed run can
+    safely resume from any byte-identical subset, while stale or mixed-source
+    artifacts fail closed instead of being overwritten.
+    """
+    if len(samples) != EXPECTED_ROWS:
+        raise ValueError(
+            f"Contextual Earnings22 publication row-count drift: expected {EXPECTED_ROWS}, found {len(samples)}"
+        )
+    output_dir = Path(output_dir)
+    modes = ("contextless", "local", "global")
+    outputs: dict[str, Path] = {}
+    manifest_receipts: list[dict] = []
+    for mode_name in modes:
+        output_path = output_dir / mode_name / "test.jsonl"
+        payload = b"".join(
+            (json.dumps(format_entry(sample, mode_name, audio_prefix), ensure_ascii=False) + "\n").encode("utf-8")
+            for sample in samples
+        )
+        _atomic_publish_exact(output_path, payload)
+        outputs[mode_name] = output_path
+        manifest_receipts.append(
+            {
+                "mode": mode_name,
+                "path": f"{mode_name}/test.jsonl",
+                "rows": len(samples),
+                "sha256": _sha256_bytes(payload),
+            }
+        )
+
+    manifest_set_payload = "".join(f"{item['path']}\0{item['sha256']}\n" for item in manifest_receipts).encode("utf-8")
+    receipt = {
+        "audio_prefix": audio_prefix,
+        "dataset": BENCHMARK_NAME,
+        "expected_rows_per_mode": EXPECTED_ROWS,
+        "manifest_set_sha256": _sha256_bytes(manifest_set_payload),
+        "manifests": manifest_receipts,
+        "preparation_schema_version": PREPARATION_SCHEMA_VERSION,
+        "schema_version": 1,
+        "source_repo": HF_REPO_ID,
+        "source_revision": HF_REVISION,
+        "source_split": SPLIT,
+        "status": "ready",
+    }
+    receipt_payload = (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _atomic_publish_exact(output_dir / PROVENANCE_FILENAME, receipt_payload)
+    return outputs
+
+
 def main() -> None:
     """Parse arguments, download/extract data if needed, and write per-mode JSONL splits."""
     parser = argparse.ArgumentParser(description="Prepare Contextual Earnings-22 for NeMo Skills")
@@ -424,7 +517,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    output_dir = Path(__file__).parent
     data_dir = Path(args.data_dir) if args.data_dir else _default_data_dir()
     metadata_path = data_dir / "samples.jsonl"
 
@@ -456,21 +548,12 @@ def main() -> None:
     if not args.no_audio:
         print(f"Verified {len(samples)} pinned 16 kHz mono WAV files")
 
-    modes = {
-        "contextless": output_dir / "contextless" / "test.jsonl",
-        "local": output_dir / "local" / "test.jsonl",
-        "global": output_dir / "global" / "test.jsonl",
-    }
-
     print("\nWriting JSONL splits...")
-    for mode_name, output_path in modes.items():
-        lines = [json.dumps(format_entry(s, mode_name, audio_prefix), ensure_ascii=False) for s in samples]
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as fout:
-            fout.writelines(line + "\n" for line in lines)
-        print(f"  {mode_name}: wrote {len(lines)} samples to {output_path}")
+    outputs = publish_manifests(samples, data_dir, audio_prefix)
+    for mode_name, output_path in outputs.items():
+        print(f"  {mode_name}: published and revalidated {len(samples)} samples at {output_path}")
 
-    print(f"\nDone. Total: {len(samples)} samples x 3 modes = {len(samples) * 3} records")
+    print(f"\nDone. Total: {len(samples)} samples x 3 modes = {len(samples) * 3} records; READY provenance published")
 
 
 if __name__ == "__main__":
