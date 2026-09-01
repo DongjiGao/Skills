@@ -16,11 +16,15 @@ import asyncio
 import importlib
 import json
 import logging
+import math
 import random
+import re
 import shutil
+import string
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, field, is_dataclass
 from pathlib import Path
@@ -61,6 +65,139 @@ from nemo_skills.utils import (
 )
 
 LOG = logging.getLogger(get_logger_name(__file__))
+
+
+_SIMPLE_TEMPLATE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ROUTER_CONTROL_FIELD = "_speechlm_router"
+# Row-level inference overrides intentionally expose only prediction knobs that
+# are already explicit arguments of BaseModel.generate_async. Transport,
+# routing, endpoint, tool, response-format, and arbitrary extra_body controls
+# remain launcher-owned so a dataset row cannot weaken operational safeguards.
+SAFE_REQUEST_INFERENCE_OVERRIDES = frozenset(
+    {
+        "min_p",
+        "random_seed",
+        "repetition_penalty",
+        "temperature",
+        "tokens_to_generate",
+        "top_k",
+        "top_logprobs",
+        "top_p",
+    }
+)
+_REQUEST_CONTROL_OVERRIDE_KEYS = frozenset(
+    {
+        "endpoint_type",
+        "extra_body",
+        "response_format",
+        "stream",
+        "timeout",
+        "tools",
+    }
+)
+
+
+def _request_template_namespace(data_point: Mapping) -> dict[str, Any]:
+    """Build one unambiguous template namespace from a request row."""
+    if not isinstance(data_point, Mapping):
+        raise TypeError(
+            f"Per-request prompt templates require each data row to be a mapping; got {type(data_point).__name__}"
+        )
+
+    namespace: dict[str, Any] = {}
+    for key, value in data_point.items():
+        if key == "extra_fields":
+            continue
+        if not isinstance(key, str):
+            raise TypeError("Per-request prompt template row keys must be strings")
+        namespace[key] = value
+
+    extra_fields = data_point.get("extra_fields")
+    if extra_fields is None:
+        return namespace
+    if not isinstance(extra_fields, Mapping):
+        raise TypeError(
+            f"Per-request prompt template field 'extra_fields' must be a mapping; got {type(extra_fields).__name__}"
+        )
+    for key, value in extra_fields.items():
+        if not isinstance(key, str):
+            raise TypeError("Per-request prompt template extra_fields keys must be strings")
+        if key in namespace:
+            raise ValueError(
+                f"Per-request prompt template field {key!r} is ambiguous: it is "
+                "present both at the top level and in extra_fields"
+            )
+        namespace[key] = value
+    return namespace
+
+
+def _render_request_message_template(template: str, data_point: Mapping, config_key: str) -> str:
+    """Render a prompt template using simple scalar ``{field}`` placeholders."""
+    namespace = _request_template_namespace(data_point)
+    try:
+        parsed = list(string.Formatter().parse(template))
+    except ValueError as exc:
+        raise ValueError(f"Invalid {config_key}: {exc}") from exc
+
+    for _literal, field_name, format_spec, conversion in parsed:
+        if field_name is None:
+            continue
+        if not _SIMPLE_TEMPLATE_FIELD.fullmatch(field_name):
+            raise ValueError(
+                f"Invalid {config_key} placeholder {field_name!r}: only simple "
+                "{field_name} placeholders are supported"
+            )
+        if format_spec or conversion is not None:
+            raise ValueError(
+                f"Invalid {config_key} placeholder {field_name!r}: conversions "
+                "and format specifications are not supported"
+            )
+        if field_name not in namespace:
+            raise ValueError(f"Cannot render {config_key}: request row is missing field {field_name!r}")
+        value = namespace[field_name]
+        if isinstance(value, (Mapping, list, tuple, set)):
+            raise TypeError(
+                f"Cannot render {config_key}: field {field_name!r} must be a scalar, got {type(value).__name__}"
+            )
+
+    try:
+        return template.format_map(namespace)
+    except (KeyError, ValueError) as exc:  # defensive: all fields were checked above
+        raise ValueError(f"Cannot render {config_key}: {exc}") from exc
+
+
+def _finite_number(value: Any, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"Per-request inference override {name!r} must be a number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"Per-request inference override {name!r} must be finite")
+    return parsed
+
+
+def _validate_request_inference_override(name: str, value: Any) -> None:
+    if name in {"tokens_to_generate", "top_k", "top_logprobs", "random_seed"}:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"Per-request inference override {name!r} must be an integer")
+        if name == "tokens_to_generate" and value <= 0:
+            raise ValueError("Per-request inference override 'tokens_to_generate' must be positive")
+        if name == "top_k" and value != -1 and value <= 0:
+            raise ValueError("Per-request inference override 'top_k' must be -1 or positive")
+        if name == "top_logprobs" and not 0 <= value <= 20:
+            raise ValueError("Per-request inference override 'top_logprobs' must be in [0, 20]")
+        if name == "random_seed" and value < 0:
+            raise ValueError("Per-request inference override 'random_seed' must be non-negative")
+        return
+
+    parsed = _finite_number(value, name=name)
+    if name == "temperature" and not 0 <= parsed <= 2:
+        raise ValueError("Per-request inference override 'temperature' must be in [0, 2]")
+    if name == "top_p" and not 0 < parsed <= 1:
+        raise ValueError("Per-request inference override 'top_p' must be in (0, 1]")
+    if name == "min_p" and not 0 <= parsed <= 1:
+        raise ValueError("Per-request inference override 'min_p' must be in [0, 1]")
+    if name == "repetition_penalty" and parsed <= 0:
+        raise ValueError("Per-request inference override 'repetition_penalty' must be positive")
 
 
 @nested_dataclass(kw_only=True)
@@ -107,6 +244,15 @@ class GenerationTaskConfig:
     prompt_suffix: str = ""  # suffix to add to the prompt, e.g. " /no_think"
     system_message: str | None = None  # can override the default system message in the config
     user_message: str | None = None  # can override the user message in the prompt config template
+    # Row-level alternatives to the static message overrides. Placeholders are
+    # resolved from top-level row fields plus the row's optional extra_fields
+    # mapping. Only simple scalar {{field_name}} placeholders are accepted.
+    system_message_template: str | None = None
+    user_message_template: str | None = None
+    # Optional top-level row key containing a mapping of safe decoding knobs.
+    # The allowlist is SAFE_REQUEST_INFERENCE_OVERRIDES; transport/router fields
+    # and arbitrary extra_body payloads are rejected.
+    inference_overrides_key: str | None = None
     code_tags: str | None = None  # required when using code execution
     examples_type: str | None = None  # to be able to customize few-shot examples
 
@@ -237,6 +383,7 @@ class GenerationTaskConfig:
         self._post_init_validate_data()
         self._post_init_validate_server()
         self._post_init_validate_params()
+        self._post_init_validate_request_overrides()
         self._post_init_deprecated_params()
 
     def _post_init_validate_data(self):
@@ -266,6 +413,36 @@ class GenerationTaskConfig:
         for param, default_value in self._get_disallowed_params():
             if getattr(self, param) != default_value:
                 raise ValueError(f"{param} must be {default_value}")
+
+    def _post_init_validate_request_overrides(self):
+        for role in ("system", "user"):
+            static_value = getattr(self, f"{role}_message")
+            template_value = getattr(self, f"{role}_message_template")
+            if static_value is not None and template_value is not None:
+                raise ValueError(f"Only one of {role}_message and {role}_message_template may be set")
+            if template_value is not None and not isinstance(template_value, str):
+                raise TypeError(f"{role}_message_template must be a string or None")
+            if template_value is not None:
+                try:
+                    parsed = string.Formatter().parse(template_value)
+                    for _literal, field_name, format_spec, conversion in parsed:
+                        if field_name is not None and not _SIMPLE_TEMPLATE_FIELD.fullmatch(field_name):
+                            raise ValueError("only simple {field_name} placeholders are supported")
+                        if format_spec or conversion is not None:
+                            raise ValueError("conversions and format specifications are not supported")
+                except ValueError as exc:
+                    raise ValueError(f"Invalid {role}_message_template: {exc}") from exc
+
+        if self.inference_overrides_key is not None:
+            if not isinstance(self.inference_overrides_key, str):
+                raise TypeError("inference_overrides_key must be a non-empty stripped string or None")
+            if (
+                not self.inference_overrides_key
+                or self.inference_overrides_key.strip() != self.inference_overrides_key
+            ):
+                raise ValueError("inference_overrides_key must be a non-empty stripped string or None")
+            if self.inference_overrides_key == self.async_position_key:
+                raise ValueError("inference_overrides_key cannot use the internal async_position_key")
 
     def _post_init_deprecated_params(self):
         if self.use_completions_api:
@@ -783,6 +960,92 @@ class GenerationTask:
                 return
         content.append({"type": "text", "text": suffix})
 
+    def _request_message_overrides(self, data_point) -> tuple[str | None, str | None]:
+        """Resolve static or row-templated message overrides for one request."""
+        system_template = self.cfg.system_message_template
+        if isinstance(system_template, str):
+            system_message = _render_request_message_template(
+                system_template,
+                data_point,
+                "system_message_template",
+            )
+        else:
+            # Prompt-config formatters already receive the static value in
+            # setup_prompt. Pure OpenAI rows need it applied here.
+            system_message = self.cfg.system_message if self.prompt is None else None
+
+        user_template = self.cfg.user_message_template
+        if isinstance(user_template, str):
+            user_message = _render_request_message_template(
+                user_template,
+                data_point,
+                "user_message_template",
+            )
+        else:
+            user_message = self.cfg.user_message if self.prompt is None else None
+        return system_message, user_message
+
+    @staticmethod
+    def _apply_request_message_overrides(messages, system_message, user_message):
+        if not isinstance(messages, (list, ListConfig)):
+            if system_message is not None or user_message is not None:
+                raise ValueError(
+                    f"Per-request message templates require a chat/message prompt; got {type(messages).__name__}"
+                )
+            return messages
+
+        messages = deepcopy(messages)
+        if user_message is not None:
+            user_msgs = [message for message in messages if message.get("role") == "user"]
+            if len(user_msgs) != 1:
+                raise ValueError(f"user_message override expects exactly 1 user message, found {len(user_msgs)}")
+            GenerationTask._set_message_text_content(user_msgs[0], user_message)
+
+        if system_message is not None:
+            has_system = len(messages) > 0 and messages[0].get("role") == "system"
+            if system_message == "":
+                if has_system:
+                    messages.pop(0)
+            elif has_system:
+                messages[0]["content"] = system_message
+            else:
+                messages.insert(0, {"role": "system", "content": system_message})
+        return messages
+
+    def _request_inference_overrides(self, data_point) -> dict[str, Any]:
+        key = self.cfg.inference_overrides_key
+        if not isinstance(key, str):
+            return {}
+        if not isinstance(data_point, Mapping):
+            raise TypeError("Per-request inference overrides require each data row to be a mapping")
+        if key not in data_point:
+            raise ValueError(f"Request row is missing inference overrides field {key!r}")
+        raw_overrides = data_point[key]
+        if not isinstance(raw_overrides, Mapping):
+            raise TypeError(
+                f"Request row field {key!r} must be a mapping of inference overrides; "
+                f"got {type(raw_overrides).__name__}"
+            )
+
+        overrides = deepcopy(dict(raw_overrides))
+        for name, value in overrides.items():
+            if not isinstance(name, str):
+                raise TypeError(f"Request row field {key!r} override keys must be strings")
+            if (
+                name in _REQUEST_CONTROL_OVERRIDE_KEYS
+                or name == _ROUTER_CONTROL_FIELD
+                or name.startswith(f"{_ROUTER_CONTROL_FIELD}.")
+            ):
+                raise ValueError(
+                    f"Per-request inference override {name!r} is a router/transport/control field "
+                    "and must remain launcher-owned"
+                )
+            if name not in SAFE_REQUEST_INFERENCE_OVERRIDES:
+                allowed = ", ".join(sorted(SAFE_REQUEST_INFERENCE_OVERRIDES))
+                raise ValueError(f"Unsupported per-request inference override {name!r}; allowed: {allowed}")
+            _validate_request_inference_override(name, value)
+        return overrides
+
     # TODO: data will not include any samples skipped after restart
     def fill_prompt(self, data_point, data, prompt_format=None):
         """Passing in full data in case it's needed to fill the prompt in subclasses."""
@@ -790,27 +1053,15 @@ class GenerationTask:
         if prompt_format == "openai":
             if self.prompt is None:
                 # Pure openai path -- messages come from the data
-                data_point = deepcopy(data_point)
-                if self.cfg.user_message is not None:
-                    user_msgs = [m for m in data_point["messages"] if m["role"] == "user"]
-                    if len(user_msgs) != 1:
-                        raise ValueError(
-                            f"user_message override expects exactly 1 user message, found {len(user_msgs)}"
-                        )
-                    GenerationTask._set_message_text_content(user_msgs[0], self.cfg.user_message)
+                system_message, user_message = GenerationTask._request_message_overrides(self, data_point)
+                messages = GenerationTask._apply_request_message_overrides(
+                    data_point["messages"],
+                    system_message,
+                    user_message,
+                )
                 if self.cfg.prompt_suffix:
-                    GenerationTask._append_message_text_suffix(data_point["messages"][-1], self.cfg.prompt_suffix)
-                if self.cfg.system_message is not None:
-                    messages = data_point["messages"]
-                    has_system = len(messages) > 0 and messages[0]["role"] == "system"
-                    if self.cfg.system_message == "":
-                        if has_system:
-                            messages.pop(0)
-                    elif has_system:
-                        messages[0]["content"] = self.cfg.system_message
-                    else:
-                        messages.insert(0, {"role": "system", "content": self.cfg.system_message})
-                return data_point["messages"]
+                    GenerationTask._append_message_text_suffix(messages[-1], self.cfg.prompt_suffix)
+                return messages
 
             # OpenAI path with prompt_config template -- build prompt from template, merge audio from data.
             data_point = deepcopy(data_point)
@@ -822,6 +1073,10 @@ class GenerationTask:
             )
             if isinstance(filled_prompt, list):
                 self._merge_audio_from_data(filled_prompt, data_point)
+            system_message, user_message = GenerationTask._request_message_overrides(self, data_point)
+            filled_prompt = GenerationTask._apply_request_message_overrides(
+                filled_prompt, system_message, user_message
+            )
             if self.cfg.prompt_suffix:
                 if isinstance(filled_prompt, list):
                     GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
@@ -843,6 +1098,8 @@ class GenerationTask:
             chat_template_kwargs=self.cfg.chat_template_kwargs,
             format_as_string=(self.cfg.inference.endpoint_type == EndpointType.text),
         )
+        system_message, user_message = GenerationTask._request_message_overrides(self, data_point)
+        filled_prompt = GenerationTask._apply_request_message_overrides(filled_prompt, system_message, user_message)
         if self.cfg.prompt_suffix:
             if isinstance(filled_prompt, list):
                 GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
@@ -928,6 +1185,9 @@ class GenerationTask:
             "prompt": self.fill_prompt(data_point=data_point, data=all_data, prompt_format=prompt_format),
             "stop_phrases": [self.cfg.stop_phrase] if self.cfg.stop_phrase else None,
         }
+
+        # Use a validated copy so request construction cannot mutate the source row or leak state to another row.
+        generation_params.update(GenerationTask._request_inference_overrides(self, data_point))
 
         if self.cfg.structured_output is not None:
             generation_params["response_format"] = STRUCTURED_OUTPUTS[self.cfg.structured_output]
