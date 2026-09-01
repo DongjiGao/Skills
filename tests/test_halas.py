@@ -178,25 +178,46 @@ def test_halas_missing_audio_fails_closed(tmp_path):
         _validate_audio_closure([_halas_row()], tmp_path)
 
 
+def test_halas_deterministically_resamples_44k1_earnings22_audio(tmp_path):
+    source = tmp_path / "44k1.wav"
+    source_samples = np.arange(1323, dtype=np.int16) - 661
+    with wave.open(str(source), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(44100)
+        stream.writeframes(source_samples.tobytes())
+
+    first, first_rate = _decode_earnings22_audio({"bytes": source.read_bytes(), "path": None})
+    second, second_rate = _decode_earnings22_audio({"bytes": source.read_bytes(), "path": None})
+
+    assert first.dtype == np.float32
+    assert first.shape == (480,)
+    assert np.isfinite(first).all()
+    np.testing.assert_array_equal(first, second)
+    assert first_rate == second_rate == 16000
+
+
 def test_halas_deterministically_downmixes_stereo_earnings22_audio(tmp_path):
     source = tmp_path / "stereo.wav"
     stereo = np.column_stack(
         (
-            np.full(480, 8192, dtype=np.int16),
-            np.full(480, -4096, dtype=np.int16),
+            np.full(1323, 8192, dtype=np.int16),
+            np.full(1323, -4096, dtype=np.int16),
         )
     )
     with wave.open(str(source), "wb") as stream:
         stream.setnchannels(2)
         stream.setsampwidth(2)
-        stream.setframerate(16000)
+        stream.setframerate(44100)
         stream.writeframes(stereo.tobytes())
 
     samples, sampling_rate = _decode_earnings22_audio({"bytes": source.read_bytes(), "path": None})
+    second, second_rate = _decode_earnings22_audio({"bytes": source.read_bytes(), "path": None})
     assert samples.dtype == np.float32
     assert samples.shape == (480,)
-    np.testing.assert_array_equal(samples, np.full(480, 0.0625, dtype=np.float32))
+    np.testing.assert_array_equal(samples, second)
     assert sampling_rate == 16000
+    assert second_rate == 16000
 
 
 def test_halas_extracts_raw_earnings22_audio_without_torchcodec(tmp_path, monkeypatch):

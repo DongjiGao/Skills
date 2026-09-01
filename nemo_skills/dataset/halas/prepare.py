@@ -26,9 +26,11 @@ import os
 import wave
 from collections import Counter
 from collections.abc import Iterable
+from math import gcd
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import resample_poly
 
 HF_REPO_ID = "MatBar99/HALAS"
 HF_REVISION = "317cef3a10d1097edc37e8eb1c007f415e3d0c55"
@@ -43,6 +45,9 @@ EARNINGS22_SPLIT = "test"
 MINIMUM_AUDIO_SAMPLES = 320
 EXPECTED_AUDIO_SAMPLE_RATE = 16000
 BENCHMARK_NAME = "halas"
+RESAMPLER_BACKEND = "scipy.signal.resample_poly"
+RESAMPLER_WINDOW = ("kaiser", 5.0)
+RESAMPLER_PADTYPE = "constant"
 PROMPT = (
     "Transcribe the English audio into text. Return only the words spoken in the audio; "
     "do not add explanations or continue beyond the audible speech."
@@ -151,8 +156,39 @@ def _earnings22_audio_id(row: dict) -> str:
     return f"{segment_id}_{file_id}.wav"
 
 
+def _resample_earnings22_audio(samples: np.ndarray, source_rate: int) -> np.ndarray:
+    """Deterministically canonicalize one mono Earnings22 clip to 16 kHz."""
+    source_rate = int(source_rate)
+    if source_rate <= 0:
+        raise ValueError(f"Earnings22 source audio has invalid sample rate: {source_rate}")
+
+    source_frames = samples.size
+    expected_frames = source_frames
+    if source_rate != EXPECTED_AUDIO_SAMPLE_RATE:
+        divisor = gcd(source_rate, EXPECTED_AUDIO_SAMPLE_RATE)
+        samples = resample_poly(
+            samples,
+            up=EXPECTED_AUDIO_SAMPLE_RATE // divisor,
+            down=source_rate // divisor,
+            window=RESAMPLER_WINDOW,
+            padtype=RESAMPLER_PADTYPE,
+        )
+        expected_frames = (source_frames * EXPECTED_AUDIO_SAMPLE_RATE + source_rate - 1) // source_rate
+
+    samples = np.asarray(samples, dtype=np.float32)
+    if samples.shape != (expected_frames,):
+        raise ValueError(
+            f"Earnings22 deterministic resampler produced {samples.size} frames; expected {expected_frames}"
+        )
+    if samples.size < MINIMUM_AUDIO_SAMPLES:
+        raise ValueError(f"Earnings22 canonical audio is too short: shape={samples.shape}")
+    if not np.isfinite(samples).all():
+        raise ValueError("Earnings22 canonical audio contains non-finite samples")
+    return samples
+
+
 def _decode_earnings22_audio(audio: dict) -> tuple[np.ndarray, int]:
-    """Decode raw HF audio with libsndfile, avoiding TorchCodec/FFmpeg."""
+    """Decode raw HF audio and deterministically canonicalize it to mono 16 kHz."""
     import io
 
     import soundfile as sf
@@ -174,16 +210,10 @@ def _decode_earnings22_audio(audio: dict) -> tuple[np.ndarray, int]:
         if samples.shape[1] < 1:
             raise ValueError(f"Earnings22 source audio has no channels: shape={samples.shape}")
         samples = samples.mean(axis=1, dtype=np.float32)
-    if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
-        raise ValueError(f"Earnings22 source audio is empty, short, or malformed: shape={samples.shape}")
-    if not np.isfinite(samples).all():
-        raise ValueError("Earnings22 source audio contains non-finite samples")
-    if int(sampling_rate) != EXPECTED_AUDIO_SAMPLE_RATE:
-        raise ValueError(
-            f"Earnings22 source audio sample-rate drift: expected {EXPECTED_AUDIO_SAMPLE_RATE}, "
-            f"found {sampling_rate}"
-        )
-    return samples, int(sampling_rate)
+    if samples.ndim != 1 or samples.size == 0:
+        raise ValueError(f"Earnings22 source audio is empty or malformed: shape={samples.shape}")
+    samples = _resample_earnings22_audio(samples, int(sampling_rate))
+    return samples, EXPECTED_AUDIO_SAMPLE_RATE
 
 
 def _extract_audio_for_rows(rows: Iterable[dict], data_dir: Path) -> set[str]:
