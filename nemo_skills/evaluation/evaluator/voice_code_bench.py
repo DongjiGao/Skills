@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Official-protocol evaluator for VoiceCodeBench.
+"""Versioned WER and entity evaluation for VoiceCodeBench.
 
 The deterministic lattice-WER implementation below is a direct, dependency-
 free transcription of the MIT-licensed official scorer at revision
-``af309592118b83fdf9b0ad896b564a142657aac8``. CTEM and TSR are computed by
-loading that pinned snapshot's versioned GPT-5.5 verifier at runtime. Raw judge
-responses are cached beside the generation file for audit and replay.
+``af309592118b83fdf9b0ad896b564a142657aac8``. CTEM and TSR can use the offline
+``deterministic_annotations_v1`` verifier, or the pinned release GPT-5.5
+verifier in explicit live/replay modes. The verifier ID and digest are carried
+into every metric artifact because values from the two verifiers are not
+interchangeable.
 """
 
 import asyncio
@@ -34,6 +36,12 @@ from types import ModuleType
 from typing import Any
 
 from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorConfig
+from nemo_skills.evaluation.evaluator.voice_code_bench_deterministic import (
+    DETERMINISTIC_VERIFIER_DIGEST,
+    DETERMINISTIC_VERIFIER_ID,
+    DETERMINISTIC_VERIFIER_MODEL,
+    verify_deterministic_entity_matches,
+)
 from nemo_skills.utils import nested_dataclass
 
 OFFICIAL_REVISION = "af309592118b83fdf9b0ad896b564a142657aac8"
@@ -219,7 +227,7 @@ def _load_official_package(data_dir: str) -> tuple[ModuleType, ModuleType, str]:
 
 @nested_dataclass(kw_only=True)
 class VoiceCodeBenchEvaluatorConfig(BaseEvaluatorConfig):
-    entity_verifier_mode: str = "live-fill"
+    entity_verifier_mode: str = "deterministic"
     verifier_id: str = "openai_gpt_5_5_v1"
     verifier_cache_path: str | None = None
     verifier_concurrency: int = 10
@@ -231,8 +239,11 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
     def __init__(self, config: dict[str, Any], num_parallel_requests: int = 10):
         super().__init__(config, num_parallel_requests)
         self.eval_config = VoiceCodeBenchEvaluatorConfig(**config)
-        if self.eval_config.entity_verifier_mode not in {"off", "live", "replay", "live-fill"}:
-            raise ValueError("entity_verifier_mode must be off, live, replay, or live-fill")
+        modes = {"off", "deterministic", "live", "replay", "live-fill"}
+        if self.eval_config.entity_verifier_mode not in modes:
+            raise ValueError(
+                "entity_verifier_mode must be off, deterministic, live, replay, or live-fill"
+            )
 
     async def eval_full(self) -> None:
         if not self.eval_config.input_file or not self.eval_config.data_dir:
@@ -240,7 +251,7 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
         official_root = str(_official_root(self.eval_config.data_dir))
         official_verifier: ModuleType | None = None
         verifier_config = None
-        if self.eval_config.entity_verifier_mode != "off":
+        if self.eval_config.entity_verifier_mode in {"live", "replay", "live-fill"}:
             _, official_verifier, official_root = _load_official_package(self.eval_config.data_dir)
             verifier_config = official_verifier.load_verifier_config(self.eval_config.verifier_id)
         input_path = Path(self.eval_config.input_file)
@@ -249,7 +260,7 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
             or f"{self.eval_config.input_file}.voice-code-verifier-cache.json"
         )
         cache = None
-        if self.eval_config.entity_verifier_mode in {"replay", "live-fill"}:
+        if official_verifier is not None and self.eval_config.entity_verifier_mode in {"replay", "live-fill"}:
             cache = official_verifier.VerifierCache(cache_path)
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if self.eval_config.entity_verifier_mode in {"live", "live-fill"} and not api_key:
@@ -309,17 +320,25 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
             updates["is_correct"] = wer.wer == 0.0
             return {**row, **updates}
 
-        if official_verifier is None or verifier_config is None:
-            raise RuntimeError("VoiceCodeBench entity verifier was not initialized")
-
-        matches = official_verifier.verify_entity_matches(
-            datapoint,
-            generation,
-            verifier_config,
-            {"OPENAI_API_KEY": api_key} if api_key else {},
-            cache=cache,
-            cache_mode=self.eval_config.entity_verifier_mode,
-        )
+        if self.eval_config.entity_verifier_mode == "deterministic":
+            matches = verify_deterministic_entity_matches(datapoint, generation)
+            verifier_id = DETERMINISTIC_VERIFIER_ID
+            verifier_model = DETERMINISTIC_VERIFIER_MODEL
+            verifier_digest = DETERMINISTIC_VERIFIER_DIGEST
+        else:
+            if official_verifier is None or verifier_config is None:
+                raise RuntimeError("VoiceCodeBench entity verifier was not initialized")
+            matches = official_verifier.verify_entity_matches(
+                datapoint,
+                generation,
+                verifier_config,
+                {"OPENAI_API_KEY": api_key} if api_key else {},
+                cache=cache,
+                cache_mode=self.eval_config.entity_verifier_mode,
+            )
+            verifier_id = verifier_config.id
+            verifier_model = verifier_config.model
+            verifier_digest = verifier_config.digest
         correct_by_type: dict[str, int] = {}
         total_by_type: dict[str, int] = {}
         for entity, match in zip(datapoint["entities"], matches, strict=True):
@@ -331,9 +350,9 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
         updates.update(
             {
                 "voice_code_entity_verifier_status": "complete",
-                "voice_code_verifier_id": verifier_config.id,
-                "voice_code_verifier_model": verifier_config.model,
-                "voice_code_verifier_config_digest": verifier_config.digest,
+                "voice_code_verifier_id": verifier_id,
+                "voice_code_verifier_model": verifier_model,
+                "voice_code_verifier_config_digest": verifier_digest,
                 "voice_code_entity_matches": matches,
                 "voice_code_correct_entities": correct,
                 "voice_code_total_entities": total,

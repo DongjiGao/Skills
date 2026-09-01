@@ -16,6 +16,11 @@ from nemo_skills.evaluation.evaluator.voice_code_bench import (
     _load_official_package,
     compute_format_invariant_wer,
 )
+from nemo_skills.evaluation.evaluator.voice_code_bench_deterministic import (
+    DETERMINISTIC_VERIFIER_DIGEST,
+    DETERMINISTIC_VERIFIER_ID,
+    verify_deterministic_entity_matches,
+)
 from nemo_skills.evaluation.metrics.voice_code_bench_metrics import VoiceCodeBenchMetrics
 
 
@@ -96,6 +101,87 @@ def test_wer_only_evaluator_does_not_import_official_python_311_package(tmp_path
     assert result["voice_code_wer_reference"] == "acoustic_or_canonical_entity_lattice"
     assert result["voice_code_wer_errors"] == 0
     assert result["voice_code_entity_verifier_status"] == "off"
+
+
+def test_deterministic_verifier_accepts_canonical_and_spoken_phone_forms():
+    datapoint = _phone_datapoint()
+    for transcript in (
+        "Call area code 212-555-0100 tomorrow",
+        "Call area code two one two five five five oh one zero zero tomorrow",
+    ):
+        match = verify_deterministic_entity_matches(datapoint, transcript)[0]
+        assert match["present"] is True
+        assert match["canonical"] == "(212) 555-0100"
+
+    changed = verify_deterministic_entity_matches(
+        datapoint, "Call area code 212-555-0199 tomorrow"
+    )[0]
+    assert changed["present"] is False
+
+
+def test_deterministic_spelled_sequence_requires_explicit_exact_letters():
+    datapoint = {
+        "entities": [
+            {
+                "id": "name_e01",
+                "type": "spelled_sequence",
+                "role": "requester_name_spelling",
+                "acoustic": "T A R A V O S S",
+                "canonical": "T A R A V O S S",
+            }
+        ]
+    }
+    assert verify_deterministic_entity_matches(
+        datapoint, "The spelling is T-A-R-A-V-O-S-S."
+    )[0]["present"]
+    assert not verify_deterministic_entity_matches(
+        datapoint, "The caller is Tara Voss."
+    )[0]["present"]
+    assert not verify_deterministic_entity_matches(
+        datapoint, "The caller is Tara Voss; spelling T-A-K-R-A-V-O-S-S."
+    )[0]["present"]
+
+
+def test_deterministic_evaluator_emits_complete_ctem_inputs_without_api_key(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "voice-code-bench"
+    root.mkdir()
+    (root / "NEMO_SKILLS_REVISION").write_text(OFFICIAL_REVISION, encoding="utf-8")
+    datapoint = _phone_datapoint()
+    input_path = tmp_path / "predictions.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "audio_id": "phone",
+                "generation": "Call area code 212-555-0100 tomorrow",
+                "voice_code_bench_revision": OFFICIAL_REVISION,
+                "voice_code_bench": datapoint,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_INFERENCE_HUB_API_KEY", raising=False)
+
+    evaluator = VoiceCodeBenchEvaluator(
+        {
+            "input_file": str(input_path),
+            "data_dir": str(tmp_path),
+            "entity_verifier_mode": "deterministic",
+        }
+    )
+    asyncio.run(evaluator.eval_full())
+
+    result = json.loads(input_path.read_text(encoding="utf-8"))
+    assert result["voice_code_entity_verifier_status"] == "complete"
+    assert result["voice_code_verifier_id"] == DETERMINISTIC_VERIFIER_ID
+    assert result["voice_code_verifier_config_digest"] == DETERMINISTIC_VERIFIER_DIGEST
+    assert result["voice_code_correct_entities"] == 1
+    assert result["voice_code_total_entities"] == 1
+    assert result["voice_code_task_success"] is True
+    assert result["is_correct"] is True
 
 
 def test_official_loader_installs_not_required_compatibility(monkeypatch):
