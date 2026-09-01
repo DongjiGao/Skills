@@ -53,6 +53,8 @@ SPLIT = "test"
 SAMPLING_RATE = 16000
 EXPECTED_ROWS = 772
 MINIMUM_AUDIO_SAMPLES = 320
+PREPARATION_SCHEMA_VERSION = 2
+DURATION_POLICY = "decoded_wav_frames_divided_by_16000"
 
 PROMPT_CONTEXTLESS = "Transcribe the English audio into text, ensuring all punctuation marks are included."
 PROMPT_LOCAL = (
@@ -216,12 +218,10 @@ def download_and_extract_audio(data_dir: Path) -> int:
             _write_wav(wav_path, arr, sr)
             written += 1
         frames = _validate_wav(wav_path)
+        decoded_duration = frames / SAMPLING_RATE
         source_duration = float(row["duration"])
-        if abs(frames / SAMPLING_RATE - source_duration) > 0.11:
-            raise ValueError(
-                f"Contextual Earnings22 audio duration drift for sample {idx}: "
-                f"metadata={source_duration}, WAV={frames / SAMPLING_RATE}"
-            )
+        if not np.isfinite(source_duration) or source_duration <= 0:
+            raise ValueError(f"Contextual Earnings22 sample {idx} has invalid source duration metadata")
 
         samples.append(
             {
@@ -229,7 +229,13 @@ def download_and_extract_audio(data_dir: Path) -> int:
                 "audio_filename": wav_name,
                 "audio_start": audio_start,
                 "audio_end": float(row["audio_end"]),
-                "duration": source_duration,
+                # Inference consumes the materialized WAV, so request duration
+                # describes its decoded frame closure.  The pinned source's
+                # nominal window duration remains explicit provenance below.
+                "duration": decoded_duration,
+                "source_duration": source_duration,
+                "duration_policy": DURATION_POLICY,
+                "preparation_schema_version": PREPARATION_SCHEMA_VERSION,
                 "text": row["text"],
                 "norm_text": row["norm_text"],
                 "transcript_tokens": list(row["transcript"]),
@@ -283,11 +289,14 @@ def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: boo
     required = {
         "audio_filename",
         "duration",
+        "duration_policy",
         "expected_rows",
+        "preparation_schema_version",
         "source_repo",
         "source_revision",
         "source_row_id",
         "source_split",
+        "source_duration",
     }
     seen_audio: set[str] = set()
     seen_ids: set[str] = set()
@@ -300,6 +309,8 @@ def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: boo
             or sample["source_revision"] != HF_REVISION
             or sample["source_split"] != SPLIT
             or sample["expected_rows"] != EXPECTED_ROWS
+            or sample["preparation_schema_version"] != PREPARATION_SCHEMA_VERSION
+            or sample["duration_policy"] != DURATION_POLICY
         ):
             raise ValueError(f"Contextual Earnings22 row {index} does not match the pinned source contract")
         audio_filename = str(sample["audio_filename"])
@@ -308,13 +319,19 @@ def _validate_samples(samples: list[dict], data_dir: Path, *, require_audio: boo
             raise ValueError(f"Contextual Earnings22 duplicate row/audio identity at row {index}")
         seen_audio.add(audio_filename)
         seen_ids.add(source_row_id)
-        if float(sample["duration"]) <= 0:
+        duration = float(sample["duration"])
+        source_duration = float(sample["source_duration"])
+        if not np.isfinite(duration) or duration <= 0 or not np.isfinite(source_duration) or source_duration <= 0:
             raise ValueError(f"Contextual Earnings22 row {index} has invalid duration")
 
         if not require_audio:
             continue
         audio_path = data_dir / "audio" / audio_filename
-        _validate_wav(audio_path)
+        frames = _validate_wav(audio_path)
+        if abs(duration * SAMPLING_RATE - frames) > 0.5:
+            raise ValueError(
+                f"Contextual Earnings22 row {index} duration does not match decoded WAV frames"
+            )
 
 
 def build_messages(prompt_text: str, audio_path: str, duration: float) -> list[dict]:
@@ -361,12 +378,16 @@ def format_entry(sample: dict, mode: str, audio_prefix: str) -> dict:
         "file_id": sample["file_id"],
         "audio_start": sample["audio_start"],
         "duration": float(sample["duration"]),
+        "source_duration": float(sample["source_duration"]),
+        "duration_policy": sample["duration_policy"],
         "audio_filepath": audio_path,
         "source_provenance": {
             "repo_id": HF_REPO_ID,
             "revision": HF_REVISION,
             "split": SPLIT,
             "expected_rows": EXPECTED_ROWS,
+            "preparation_schema_version": PREPARATION_SCHEMA_VERSION,
+            "duration_policy": DURATION_POLICY,
         },
     }
 

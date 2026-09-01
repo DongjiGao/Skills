@@ -13,10 +13,13 @@ import os
 import re
 import tempfile
 from dataclasses import asdict, dataclass
+from math import gcd
 from pathlib import Path
 
 import numpy as np
+import scipy
 import soundfile as sf
+from scipy.signal import resample_poly
 
 BENCHMARK_NAME = "voicearena-monsoon"
 SOURCE_LICENSE = "CC-BY-4.0"
@@ -27,6 +30,9 @@ EXPECTED_SUBTYPE = "PCM_16"
 MINIMUM_AUDIO_SAMPLES = 320
 PROVENANCE_FILENAME = "provenance.json"
 PROMPT = "Transcribe the following:"
+RESAMPLER_BACKEND = "scipy.signal.resample_poly"
+RESAMPLER_WINDOW = ("kaiser", 5.0)
+RESAMPLER_PADTYPE = "constant"
 _SAFE_ID = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -148,8 +154,33 @@ def _validate_metadata(rows: list[dict], contract: SourceContract) -> list[dict]
     return validated
 
 
+def _resample_to_output_rate(samples: np.ndarray, source_rate: int) -> np.ndarray:
+    if source_rate <= 0:
+        raise ValueError(f"Monsoon source audio has invalid sample rate: {source_rate}")
+    source_frames = samples.size
+    expected_frames = source_frames
+    if source_rate != EXPECTED_SAMPLE_RATE:
+        divisor = gcd(source_rate, EXPECTED_SAMPLE_RATE)
+        samples = resample_poly(
+            samples,
+            up=EXPECTED_SAMPLE_RATE // divisor,
+            down=source_rate // divisor,
+            window=RESAMPLER_WINDOW,
+            padtype=RESAMPLER_PADTYPE,
+        )
+        expected_frames = (source_frames * EXPECTED_SAMPLE_RATE + source_rate - 1) // source_rate
+    samples = np.asarray(samples, dtype=np.float32)
+    if samples.shape != (expected_frames,):
+        raise ValueError(
+            f"Monsoon deterministic resampler produced {samples.size} frames; expected {expected_frames}"
+        )
+    if samples.size < MINIMUM_AUDIO_SAMPLES or not np.isfinite(samples).all():
+        raise ValueError(f"Monsoon canonical audio is invalid: shape={samples.shape}")
+    return samples
+
+
 def _decode_audio(value: object) -> tuple[np.ndarray, int]:
-    """Decode raw Hugging Face audio with libsndfile, without TorchCodec."""
+    """Decode raw HF audio and deterministically canonicalize it to mono 16 kHz."""
     if not isinstance(value, dict):
         raise TypeError(f"Monsoon raw audio must be a mapping, found {type(value).__name__}")
     encoded = value.get("bytes")
@@ -170,14 +201,12 @@ def _decode_audio(value: object) -> tuple[np.ndarray, int]:
         if samples.shape[1] != 1:
             raise ValueError(f"Monsoon source audio must be mono; got shape={samples.shape}")
         samples = samples[:, 0]
-    if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
+    if samples.ndim != 1 or samples.size == 0:
         raise ValueError(f"Monsoon source audio must be nonempty mono; got shape={samples.shape}")
     if not np.isfinite(samples).all():
         raise ValueError("Monsoon source audio contains non-finite samples")
     sample_rate = int(sample_rate)
-    if sample_rate != EXPECTED_SAMPLE_RATE:
-        raise ValueError(f"Monsoon source audio sample-rate drift: expected 16000, got {sample_rate}")
-    return samples.astype(np.float32, copy=False), sample_rate
+    return _resample_to_output_rate(samples, sample_rate), EXPECTED_SAMPLE_RATE
 
 
 def _validate_wav(path: Path, expected_duration: float) -> None:
@@ -322,6 +351,12 @@ def prepare_profile(contract: SourceContract, data_root: Path, no_audio: bool = 
             "subtype": EXPECTED_SUBTYPE,
             "minimum_samples": MINIMUM_AUDIO_SAMPLES,
             "complete_closure": True,
+            "resampling": {
+                "backend": RESAMPLER_BACKEND,
+                "scipy_version": scipy.__version__,
+                "window": list(RESAMPLER_WINDOW),
+                "padtype": RESAMPLER_PADTYPE,
+            },
         },
         "quality_scoring_contract": {
             "official_metric": contract.official_metric,

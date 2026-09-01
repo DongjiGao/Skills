@@ -36,6 +36,8 @@ def _source_artifact(locale: str) -> dict:
         "tsv_sha256": hashlib.sha256(f"tsv-{locale}".encode()).hexdigest(),
         "audio_tar_sha256": hashlib.sha256(f"tar-{locale}".encode()).hexdigest(),
         "wav_inventory_sha256": prepare._inventory_sha256([f"{locale}.wav"]),
+        "source_id_inventory_sha256": prepare._inventory_sha256([1]),
+        "unique_source_ids": 1,
     }
 
 
@@ -70,16 +72,41 @@ def test_fleurs_product_source_is_revision_pinned_and_inventory_closed(tmp_path,
     assert len(rows) == artifact["rows"] == 1
     assert rows[0]["wav_filename"] == "en_us.wav"
     assert artifact["wav_inventory_sha256"] == prepare._inventory_sha256(["en_us.wav"])
+    assert artifact["source_id_inventory_sha256"] == prepare._inventory_sha256([1])
+    assert artifact["unique_source_ids"] == 1
+
+
+def test_fleurs_product_source_preserves_repeated_sentence_ids_and_every_wav(tmp_path):
+    tsv_path = tmp_path / "test.tsv"
+    tsv_path.write_text(
+        "1715\tfirst.wav\traw\ttext\tph\t320\tFEMALE\n"
+        "1715\tsecond.wav\traw\ttext\tph\t320\tMALE\n",
+        encoding="utf-8",
+    )
+    rows = prepare._parse_tsv_rows(tsv_path, "bg_bg")
+    assert [row["id"] for row in rows] == [1715, 1715]
+    assert [row["wav_filename"] for row in rows] == ["first.wav", "second.wav"]
+    assert prepare.index_by_id(rows)[1715] is rows[0]
 
 
 def test_fleurs_product_source_rejects_duplicate_wav_identity(tmp_path):
     tsv_path = tmp_path / "test.tsv"
     tsv_path.write_text(
-        "1\tduplicate.wav\traw-1\ttext-1\tph\t320\tFEMALE\n2\tduplicate.wav\traw-2\ttext-2\tph\t320\tMALE\n",
+        "1\tduplicate.wav\traw-1\ttext-1\tph\t320\tFEMALE\n"
+        "2\tduplicate.wav\traw-2\ttext-2\tph\t320\tMALE\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="duplicate source id or WAV filename"):
+    with pytest.raises(ValueError, match="duplicate WAV filename"):
         prepare._parse_tsv_rows(tsv_path, "en_us")
+
+
+def test_fleurs_product_repeated_sentence_id_requires_identical_translation_text():
+    rows = [
+        {"id": 1715, "raw_transcription": "raw", "transcription": "text"},
+        {"id": 1715, "raw_transcription": "different", "transcription": "text"},
+    ]
+    with pytest.raises(ValueError, match="conflicting translation text"):
+        prepare.index_by_id(rows)
 
 
 def _patch_mini_product(monkeypatch, *, expected_st_rows: int = 2) -> None:

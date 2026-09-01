@@ -16,8 +16,10 @@ def _sample() -> dict:
         "file_id": "call-1",
         "audio_filename": "call-1__000000.00__0.wav",
         "audio_start": 0.0,
-        "audio_end": 1.0,
-        "duration": 1.0,
+        "audio_end": 0.02,
+        "duration": 0.02,
+        "source_duration": 0.02,
+        "duration_policy": prepare.DURATION_POLICY,
         "text": "NVIDIA Corporation",
         "norm_text": "nvidia corporation",
         "transcript_tokens": ["NVIDIA", "Corporation"],
@@ -29,6 +31,7 @@ def _sample() -> dict:
         "source_revision": prepare.HF_REVISION,
         "source_split": prepare.SPLIT,
         "expected_rows": prepare.EXPECTED_ROWS,
+        "preparation_schema_version": prepare.PREPARATION_SCHEMA_VERSION,
     }
 
 
@@ -121,6 +124,52 @@ def test_contextual_earnings22_download_forces_raw_audio_and_atomic_outputs(tmp_
     prepare._validate_wav(tmp_path / "audio" / metadata[0]["audio_filename"])
 
 
+def test_contextual_earnings22_publishes_decoded_duration_and_preserves_nominal_source_duration(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
+    decoded_frames = 232_319
+    raw_row = {
+        "audio": {"bytes": _encoded_wav(samples=decoded_frames), "path": None},
+        "file_id": "call-73",
+        "audio_start": 0.0,
+        "audio_end": 15.0,
+        "duration": 15.0,
+        "text": "NVIDIA Corporation",
+        "norm_text": "nvidia corporation",
+        "transcript": ["NVIDIA", "Corporation"],
+        "dictionary": ["NVIDIA"],
+        "keywords": ["NVIDIA", "Corporation"],
+        "is_flagged": False,
+    }
+
+    class RawDataset:
+        def __len__(self):
+            return 1
+
+        def cast_column(self, name, feature):
+            assert name == "audio"
+            assert feature.decode is False
+            return self
+
+        def __iter__(self):
+            return iter([raw_row])
+
+    monkeypatch.setattr("datasets.load_dataset", lambda *args, **kwargs: RawDataset())
+    assert prepare.download_and_extract_audio(tmp_path) == 1
+    sample = json.loads((tmp_path / "samples.jsonl").read_text().strip())
+    assert sample["duration"] == 14.5199375
+    assert sample["source_duration"] == 15.0
+    assert sample["duration_policy"] == "decoded_wav_frames_divided_by_16000"
+    assert sample["preparation_schema_version"] == 2
+    prepare._validate_samples([sample], tmp_path, require_audio=True)
+
+    record = prepare.format_entry(sample, "contextless", "/data/ce22")
+    assert record["messages"][0]["audio"]["duration"] == 14.5199375
+    assert record["duration"] == 14.5199375
+    assert record["source_duration"] == 15.0
+
+
 def test_contextual_earnings22_validates_all_audio_and_provenance(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare, "EXPECTED_ROWS", 1)
     sample = _sample()
@@ -174,5 +223,7 @@ def test_contextual_earnings22_records_unique_mode_id_and_source_provenance(
         "revision": "59d7f94771cc197984d8038e494c83abeff87282",
         "split": "test",
         "expected_rows": 1,
+        "preparation_schema_version": 2,
+        "duration_policy": "decoded_wav_frames_divided_by_16000",
     }
     assert row["messages"][0]["audio"]["path"].startswith("/data/ce22/audio/")

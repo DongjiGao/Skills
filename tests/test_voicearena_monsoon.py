@@ -150,13 +150,20 @@ def test_raw_audio_decode_uses_libsndfile_for_bytes_and_path(tmp_path):
     assert path_rate == sample_rate
 
 
-def test_raw_audio_decode_fails_closed_on_missing_stereo_or_wrong_rate():
+def test_raw_audio_decode_resamples_44k1_source_to_canonical_output():
+    samples, sample_rate = prepare._decode_audio(
+        {"bytes": _encoded_wav(sample_rate=44100, samples=44100), "path": None}
+    )
+    assert samples.shape == (16000,)
+    assert samples.dtype == np.float32
+    assert sample_rate == 16000
+
+
+def test_raw_audio_decode_fails_closed_on_missing_or_stereo():
     with pytest.raises(ValueError, match="neither bytes nor path"):
         prepare._decode_audio({"bytes": None, "path": None})
     with pytest.raises(ValueError, match="must be mono"):
         prepare._decode_audio({"bytes": _encoded_wav(channels=2), "path": None})
-    with pytest.raises(ValueError, match="sample-rate drift"):
-        prepare._decode_audio({"bytes": _encoded_wav(sample_rate=8000), "path": None})
 
 
 def test_materialize_audio_revalidates_and_skips_complete_wav(tmp_path):
@@ -174,6 +181,24 @@ def test_materialize_audio_revalidates_and_skips_complete_wav(tmp_path):
             raise AssertionError("completed audio must be skipped without re-decoding")
 
     prepare._materialize_audio(ExistingOnlyDataset(), [row], contract, tmp_path, no_audio=False)
+    prepare._validate_wav(path, 1.0)
+
+
+def test_materialize_audio_writes_resampled_pcm16_output(tmp_path):
+    contract = _contract("en-in.public", rows=1, speakers=1)
+    row = _english_row()
+
+    class Raw44k1Dataset:
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, _index):
+            return {"audio": {"bytes": _encoded_wav(sample_rate=44100, samples=44100), "path": None}}
+
+    prepare._materialize_audio(Raw44k1Dataset(), [row], contract, tmp_path, no_audio=False)
+    path = tmp_path / "en-in" / "public" / "audio" / "clip-1.wav"
+    with sf.SoundFile(path) as stream:
+        assert (stream.samplerate, stream.channels, stream.subtype, stream.frames) == (16000, 1, "PCM_16", 16000)
     prepare._validate_wav(path, 1.0)
 
 
@@ -216,6 +241,12 @@ def test_prepare_profile_forces_raw_hf_audio_before_row_access(tmp_path, monkeyp
     receipt = json.loads((tmp_path / "manifest" / prepare.PROVENANCE_FILENAME).read_text())
     assert receipt["audio_contract"]["hf_audio_decode"] is False
     assert receipt["audio_contract"]["decode_backend"] == "libsndfile via soundfile"
+    assert receipt["audio_contract"]["resampling"] == {
+        "backend": "scipy.signal.resample_poly",
+        "padtype": "constant",
+        "scipy_version": prepare.scipy.__version__,
+        "window": ["kaiser", 5.0],
+    }
 
 
 def test_english_scorer_uses_open_asr_normalizer_and_exact_counts():

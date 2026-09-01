@@ -142,7 +142,23 @@ def load_fleurs(locale: str, split: str, local_dir: str) -> list[dict]:
 
 
 def index_by_id(rows: list[dict]) -> dict[int, dict]:
-    return {row["id"]: row for row in rows}
+    """Index translation text by sentence id without treating recordings as duplicates.
+
+    FLEURS sentence ids are deliberately non-unique: a sentence may have
+    multiple independently recorded WAVs.  All recordings for one id must carry
+    identical text, so selecting one as the translation reference is lossless.
+    Source rows themselves remain row/WAV aligned and are never deduplicated.
+    """
+    indexed: dict[int, dict] = {}
+    for row in rows:
+        source_id = row["id"]
+        previous = indexed.get(source_id)
+        if previous is not None and any(
+            previous.get(field) != row.get(field) for field in ("raw_transcription", "transcription")
+        ):
+            raise ValueError(f"FLEURS source id {source_id} has conflicting translation text")
+        indexed.setdefault(source_id, row)
+    return indexed
 
 
 def build_translation_pairs(languages: list[str]) -> list[tuple[str, str]]:
@@ -349,8 +365,10 @@ def _inventory_sha256(filenames: list[str] | set[str]) -> str:
 
 def _parse_tsv_rows(tsv_path: Path, locale: str) -> list[dict]:
     rows: list[dict] = []
-    seen_ids: set[int] = set()
     seen_wavs: set[str] = set()
+    # A FLEURS id identifies a sentence, not an audio row.  The pinned bg_bg
+    # test TSV, for example, has 658 real rows/WAVs but only 344 sentence ids.
+    # WAV filename is the unique row/audio identity; repeated ids are retained.
     with tsv_path.open(encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
             line = line.rstrip("\r\n")
@@ -372,9 +390,8 @@ def _parse_tsv_rows(tsv_path: Path, locale: str) -> list[dict]:
                 raise ValueError(
                     f"FLEURS {locale} TSV row {line_number} has non-integer source id {row_id!r}"
                 ) from error
-            if parsed_id in seen_ids or wav_filename in seen_wavs:
-                raise ValueError(f"FLEURS {locale} TSV has duplicate source id or WAV filename at row {line_number}")
-            seen_ids.add(parsed_id)
+            if wav_filename in seen_wavs:
+                raise ValueError(f"FLEURS {locale} TSV has duplicate WAV filename at row {line_number}")
             seen_wavs.add(wav_filename)
             rows.append(
                 {
@@ -470,6 +487,8 @@ def _load_product_locale_source(locale: str, split: str, cache_dir: Path) -> tup
         "tsv_sha256": _sha256_file(tsv_path),
         "audio_tar_sha256": _sha256_file(tar_path),
         "wav_inventory_sha256": _inventory_sha256(metadata_wavs),
+        "source_id_inventory_sha256": _inventory_sha256([row["id"] for row in metadata]),
+        "unique_source_ids": len({row["id"] for row in metadata}),
     }
     return rows, artifact
 
@@ -559,7 +578,7 @@ def _load_product_locale_shard(data_dir: Path, split: str, locale: str) -> dict:
     except Exception as error:
         raise ValueError(f"FLEURS {locale} has an unreadable shard receipt") from error
     expected_receipt = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": "fleurs",
         "locale": locale,
         "split": split,
@@ -578,11 +597,10 @@ def _load_product_locale_shard(data_dir: Path, split: str, locale: str) -> dict:
     source_artifact = receipt.get("source_artifact")
     if not isinstance(source_artifact, dict):
         raise TypeError(f"FLEURS {locale} source-artifact receipt is missing")
-    for field in ("tsv_sha256", "audio_tar_sha256", "wav_inventory_sha256"):
+    for field in ("tsv_sha256", "audio_tar_sha256", "wav_inventory_sha256", "source_id_inventory_sha256"):
         _require_sha256(source_artifact.get(field), f"{locale} source_artifact.{field}")
 
     rows: list[dict] = []
-    seen_ids: set[int] = set()
     seen_wavs: set[str] = set()
     with shard_path.open(encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
@@ -604,7 +622,6 @@ def _load_product_locale_shard(data_dir: Path, split: str, locale: str) -> dict:
             if (
                 isinstance(source_id, bool)
                 or not isinstance(source_id, int)
-                or source_id in seen_ids
                 or not isinstance(filename, str)
                 or PurePosixPath(filename).name != filename
                 or not filename.endswith(".wav")
@@ -614,10 +631,10 @@ def _load_product_locale_shard(data_dir: Path, split: str, locale: str) -> dict:
                 or duration <= 0
             ):
                 raise ValueError(f"FLEURS {locale} shard row {line_number} violates its identity contract")
-            seen_ids.add(source_id)
             seen_wavs.add(filename)
             _validate_materialized_audio(data_dir / "audio" / locale / filename, locale, float(duration))
             rows.append(row)
+    index_by_id(rows)
 
     expected_count = EXPECTED_TEST_LOCALE_COUNTS.get(locale) if split == "test" else None
     if expected_count is not None and len(rows) != expected_count:
@@ -625,11 +642,20 @@ def _load_product_locale_shard(data_dir: Path, split: str, locale: str) -> dict:
     if receipt.get("rows") != len(rows) or source_artifact.get("rows") != len(rows):
         raise ValueError(f"FLEURS {locale} shard receipt row-count drift")
     inventory_sha256 = _inventory_sha256(seen_wavs)
+    source_id_inventory_sha256 = _inventory_sha256([row["id"] for row in rows])
+    unique_source_ids = len({row["id"] for row in rows})
     if (
         receipt.get("wav_inventory_sha256") != inventory_sha256
         or source_artifact.get("wav_inventory_sha256") != inventory_sha256
     ):
         raise ValueError(f"FLEURS {locale} shard WAV inventory drift")
+    if (
+        receipt.get("source_id_inventory_sha256") != source_id_inventory_sha256
+        or source_artifact.get("source_id_inventory_sha256") != source_id_inventory_sha256
+        or receipt.get("unique_source_ids") != unique_source_ids
+        or source_artifact.get("unique_source_ids") != unique_source_ids
+    ):
+        raise ValueError(f"FLEURS {locale} shard source-ID inventory drift")
     return {
         "rows": rows,
         "manifest_sha256": manifest_sha256,
@@ -679,7 +705,7 @@ def _prepare_product_locale_shard(
             output.flush()
             os.fsync(output.fileno())
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "dataset": "fleurs",
             "locale": locale,
             "split": split,
@@ -689,6 +715,8 @@ def _prepare_product_locale_shard(
             "source_revision": HF_REVISION,
             "rows": len(source_rows),
             "wav_inventory_sha256": source_artifact["wav_inventory_sha256"],
+            "source_id_inventory_sha256": source_artifact["source_id_inventory_sha256"],
+            "unique_source_ids": source_artifact["unique_source_ids"],
             "audio_mode": "validated-existing" if no_audio else "materialized-or-verified",
             "source_artifact": source_artifact,
         }
@@ -842,7 +870,7 @@ def prepare_fleurs(
                 f"got {asr_count}/{st_count}"
             )
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "dataset": "fleurs",
             "source_repo": HF_REPO_ID,
             "source_revision": HF_REVISION,
