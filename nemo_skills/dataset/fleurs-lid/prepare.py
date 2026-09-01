@@ -398,6 +398,35 @@ def _write_json_atomic(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _publish_final_output(
+    output_path: Path,
+    provenance_path: Path,
+    temporary_output: Path,
+    receipt: dict,
+) -> None:
+    """Publish the merged pair once, or exactly revalidate an existing pair."""
+    if output_path.exists():
+        if not output_path.is_file() or output_path.read_bytes() != temporary_output.read_bytes():
+            raise ValueError(f"Existing FLEURS-LID manifest fails deterministic closure: {output_path}")
+        if provenance_path.exists():
+            try:
+                existing_receipt = json.loads(provenance_path.read_text(encoding="utf-8"))
+            except Exception as error:
+                raise ValueError("Existing FLEURS-LID provenance is unreadable") from error
+            if existing_receipt != receipt:
+                raise ValueError("Existing FLEURS-LID provenance fails deterministic closure")
+            return
+        # Recover only the safe half-published state: the already-visible
+        # manifest must be byte-identical to the fully validated candidate.
+        _write_json_atomic(provenance_path, receipt)
+        return
+    if provenance_path.exists():
+        raise ValueError("FLEURS-LID provenance exists without its merged manifest")
+
+    os.replace(temporary_output, output_path)
+    _write_json_atomic(provenance_path, receipt)
+
+
 def _validate_static_contract() -> None:
     labels = set(CANONICAL_LABELS)
     if labels != set(FLEURS_LANGUAGES):
@@ -588,7 +617,7 @@ def _prepare_locale_shard(data_dir: Path, cache_dir: Path, locale: str, no_audio
     return _load_locale_shard(data_dir, locale)
 
 
-def _resolve_num_workers(num_workers: int | None) -> int:
+def _resolve_num_workers(num_workers: int | None, num_locales: int | None = None) -> int:
     if num_workers is None:
         raw_value = os.getenv("NEMO_SKILLS_FLEURS_LID_NUM_WORKERS", str(DEFAULT_NUM_WORKERS))
         try:
@@ -597,11 +626,48 @@ def _resolve_num_workers(num_workers: int | None) -> int:
             raise ValueError("NEMO_SKILLS_FLEURS_LID_NUM_WORKERS must be an integer") from error
     if num_workers < 1 or num_workers > 32:
         raise ValueError("FLEURS-LID num_workers must be between 1 and 32")
-    return min(num_workers, len(CANONICAL_LABELS))
+    return min(num_workers, num_locales if num_locales is not None else len(CANONICAL_LABELS))
 
 
-def prepare_fleurs_lid(data_dir: Path, no_audio: bool = False, num_workers: int | None = None) -> Path:
+def _resolve_locale_shard(locale_shard_count: int | None, locale_shard_index: int | None) -> tuple[str, ...]:
+    """Return one deterministic contiguous locale partition."""
+    if locale_shard_count is None and locale_shard_index is None:
+        return tuple(CANONICAL_LABELS)
+    if locale_shard_count is None or locale_shard_index is None:
+        raise ValueError("FLEURS-LID locale shard count and index must be provided together")
+    if locale_shard_count < 1 or locale_shard_count > len(CANONICAL_LABELS):
+        raise ValueError(
+            f"FLEURS-LID locale_shard_count must be between 1 and {len(CANONICAL_LABELS)}"
+        )
+    if locale_shard_index < 0 or locale_shard_index >= locale_shard_count:
+        raise ValueError(
+            f"FLEURS-LID locale_shard_index must be in [0, {locale_shard_count}); got {locale_shard_index}"
+        )
+    start = len(CANONICAL_LABELS) * locale_shard_index // locale_shard_count
+    stop = len(CANONICAL_LABELS) * (locale_shard_index + 1) // locale_shard_count
+    selected = tuple(CANONICAL_LABELS[start:stop])
+    if not selected:
+        raise ValueError("FLEURS-LID locale shard resolved to an empty locale set")
+    return selected
+
+
+def prepare_fleurs_lid(
+    data_dir: Path,
+    no_audio: bool = False,
+    num_workers: int | None = None,
+    *,
+    locale_shard_count: int | None = None,
+    locale_shard_index: int | None = None,
+    shard_only: bool = False,
+    finalize_only: bool = False,
+) -> Path:
     _validate_static_contract()
+    if finalize_only and (shard_only or locale_shard_count is not None or locale_shard_index is not None):
+        raise ValueError("FLEURS-LID finalize_only cannot be combined with locale sharding")
+    if shard_only and locale_shard_count is None:
+        raise ValueError("FLEURS-LID shard_only requires locale_shard_count and locale_shard_index")
+    if not shard_only and (locale_shard_count is not None or locale_shard_index is not None):
+        raise ValueError("FLEURS-LID locale sharding requires shard_only")
 
     data_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = data_dir / "hf-fleurs"
@@ -616,20 +682,31 @@ def prepare_fleurs_lid(data_dir: Path, no_audio: bool = False, num_workers: int 
     locale_wavs: set[tuple[str, str]] = set()
     total_rows = 0
     try:
-        worker_count = _resolve_num_workers(num_workers)
         summaries: dict[str, dict] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(_prepare_locale_shard, data_dir, cache_dir, locale, no_audio): locale
-                for locale in CANONICAL_LABELS
-            }
-            for future in tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc="FLEURS-LID locales",
-            ):
-                locale = futures[future]
-                summaries[locale] = future.result()
+        worker_count = 0
+        if not finalize_only:
+            selected_locales = _resolve_locale_shard(locale_shard_count, locale_shard_index)
+            worker_count = _resolve_num_workers(num_workers, len(selected_locales))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(_prepare_locale_shard, data_dir, cache_dir, locale, no_audio): locale
+                    for locale in selected_locales
+                }
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="FLEURS-LID locales",
+                ):
+                    locale = futures[future]
+                    summaries[locale] = future.result()
+            if shard_only:
+                return data_dir / LOCALE_SHARDS_DIRNAME
+
+        # Finalization is deliberately single-process and bounded to the exact
+        # 102 authenticated locale receipts. It performs no source downloads.
+        for locale in CANONICAL_LABELS:
+            if locale not in summaries:
+                summaries[locale] = _load_locale_shard(data_dir, locale)
 
         with temporary_output.open("wb") as output:
             for locale in CANONICAL_LABELS:
@@ -691,8 +768,7 @@ def prepare_fleurs_lid(data_dir: Path, no_audio: bool = False, num_workers: int 
             "resumable_locale_shards": True,
             "preparation_workers": worker_count,
         }
-        os.replace(temporary_output, output_path)
-        _write_json_atomic(provenance_path, receipt)
+        _publish_final_output(output_path, provenance_path, temporary_output, receipt)
     finally:
         temporary_output.unlink(missing_ok=True)
     return output_path
@@ -715,11 +791,43 @@ def main() -> None:
         default=None,
         help="Concurrent per-locale workers (default: NEMO_SKILLS_FLEURS_LID_NUM_WORKERS or 8).",
     )
+    parser.add_argument(
+        "--locale-shard-count",
+        type=int,
+        default=None,
+        help="Partition the canonical 102-locale list into this many contiguous shards.",
+    )
+    parser.add_argument(
+        "--locale-shard-index",
+        type=int,
+        default=None,
+        help="Zero-based locale shard to prepare; requires --locale-shard-count.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--shard-only",
+        action="store_true",
+        help="Publish and strictly revalidate only the selected locale receipts; do not write the merged manifest.",
+    )
+    mode.add_argument(
+        "--finalize-only",
+        action="store_true",
+        help="Download nothing; require all 102 locale receipts, then validate and atomically publish the merged manifest.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir) / "fleurs-lid" if args.data_dir else Path(__file__).parent
-    output_path = prepare_fleurs_lid(data_dir, no_audio=args.no_audio, num_workers=args.num_workers)
-    print(f"FLEURS-LID prepared at {output_path}")
+    output_path = prepare_fleurs_lid(
+        data_dir,
+        no_audio=args.no_audio,
+        num_workers=args.num_workers,
+        locale_shard_count=args.locale_shard_count,
+        locale_shard_index=args.locale_shard_index,
+        shard_only=args.shard_only,
+        finalize_only=args.finalize_only,
+    )
+    action = "locale shards prepared" if args.shard_only else "prepared"
+    print(f"FLEURS-LID {action} at {output_path}")
 
 
 if __name__ == "__main__":

@@ -221,6 +221,131 @@ def test_fleurs_lid_parallel_locale_shards_merge_in_canonical_order(tmp_path, mo
     assert list(receipt["locale_shards"]) == ["en_us", "fr_fr"]
 
 
+def _patch_four_locale_contract(monkeypatch):
+    locales = ("en_us", "fr_fr", "de_de", "ja_jp")
+    filenames = {locale: f"{locale}.wav" for locale in locales}
+    monkeypatch.setattr(prepare, "CANONICAL_LABELS", locales)
+    monkeypatch.setattr(prepare, "FLEURS_LANGUAGES", {locale: FLEURS_LANGUAGES[locale] for locale in locales})
+    monkeypatch.setattr(prepare, "EXPECTED_LOCALE_COUNTS", {locale: 1 for locale in locales})
+    monkeypatch.setattr(prepare, "EXPECTED_TOTAL_ROWS", len(locales))
+    monkeypatch.setattr(
+        prepare,
+        "EXPECTED_WAV_INVENTORY_SHA256",
+        prepare._inventory_sha256({locale: [filename] for locale, filename in filenames.items()}),
+    )
+    loaded = []
+
+    def fake_load(locale, _cache):
+        loaded.append(locale)
+        filename = filenames[locale]
+        return [_source_row(filename)], _source_artifact(filenames=[filename])
+
+    monkeypatch.setattr(prepare, "_load_locale", fake_load)
+    return locales, loaded
+
+
+def test_fleurs_lid_locale_partitions_are_exact_disjoint_and_contiguous(monkeypatch):
+    locales, _loaded = _patch_four_locale_contract(monkeypatch)
+    shards = [prepare._resolve_locale_shard(3, index) for index in range(3)]
+    assert shards == [("en_us",), ("fr_fr",), ("de_de", "ja_jp")]
+    assert tuple(locale for shard in shards for locale in shard) == locales
+    assert len(set().union(*map(set, shards))) == len(locales)
+
+    with pytest.raises(ValueError, match="provided together"):
+        prepare._resolve_locale_shard(3, None)
+    with pytest.raises(ValueError, match="must be in"):
+        prepare._resolve_locale_shard(3, 3)
+    with pytest.raises(ValueError, match="must be between"):
+        prepare._resolve_locale_shard(5, 0)
+    with pytest.raises(ValueError, match="requires shard_only"):
+        prepare.prepare_fleurs_lid(Path("unused"), locale_shard_count=2, locale_shard_index=0)
+
+
+def test_fleurs_lid_shard_only_jobs_resume_and_finalize_without_source_reload(tmp_path, monkeypatch):
+    locales, loaded = _patch_four_locale_contract(monkeypatch)
+
+    first = prepare.prepare_fleurs_lid(
+        tmp_path,
+        num_workers=2,
+        locale_shard_count=2,
+        locale_shard_index=0,
+        shard_only=True,
+    )
+    second = prepare.prepare_fleurs_lid(
+        tmp_path,
+        num_workers=2,
+        locale_shard_count=2,
+        locale_shard_index=1,
+        shard_only=True,
+    )
+    assert first == second == tmp_path / prepare.LOCALE_SHARDS_DIRNAME
+    assert sorted(loaded) == sorted(locales)
+    assert not (tmp_path / "test.jsonl").exists()
+    assert not (tmp_path / prepare.PROVENANCE_FILENAME).exists()
+
+    loaded.clear()
+    output_path = prepare.prepare_fleurs_lid(tmp_path, finalize_only=True)
+    records = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+    receipt = json.loads((tmp_path / prepare.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+    assert loaded == []
+    assert [record["expected_answer"] for record in records] == list(locales)
+    assert receipt["total_rows"] == len(locales)
+    assert receipt["preparation_workers"] == 0
+    first_output = output_path.read_bytes()
+    first_receipt = (tmp_path / prepare.PROVENANCE_FILENAME).read_bytes()
+
+    def fail_if_source_is_reloaded(*_args, **_kwargs):
+        raise AssertionError("completed locale shard must be revalidated without source reload")
+
+    monkeypatch.setattr(prepare, "_load_locale", fail_if_source_is_reloaded)
+    prepare.prepare_fleurs_lid(tmp_path, finalize_only=True)
+    assert output_path.read_bytes() == first_output
+    assert (tmp_path / prepare.PROVENANCE_FILENAME).read_bytes() == first_receipt
+
+    def fail_if_final_receipt_is_rewritten(*_args, **_kwargs):
+        raise AssertionError("an exact completed final receipt must be reused")
+
+    monkeypatch.setattr(prepare, "_write_json_atomic", fail_if_final_receipt_is_rewritten)
+    prepare.prepare_fleurs_lid(tmp_path, finalize_only=True)
+    prepare.prepare_fleurs_lid(
+        tmp_path,
+        num_workers=2,
+        locale_shard_count=2,
+        locale_shard_index=0,
+        shard_only=True,
+    )
+
+
+def test_fleurs_lid_finalize_only_fails_closed_on_missing_locale_receipt(tmp_path, monkeypatch):
+    _patch_four_locale_contract(monkeypatch)
+    with pytest.raises(FileNotFoundError, match="has no complete resumable shard"):
+        prepare.prepare_fleurs_lid(tmp_path, finalize_only=True)
+    assert not (tmp_path / "test.jsonl").exists()
+    assert not (tmp_path / prepare.PROVENANCE_FILENAME).exists()
+
+
+def test_fleurs_lid_finalize_only_fails_closed_on_duplicate_locale_rows(tmp_path, monkeypatch):
+    _patch_mini_contract(monkeypatch)
+    prepare.prepare_fleurs_lid(
+        tmp_path,
+        num_workers=1,
+        locale_shard_count=1,
+        locale_shard_index=0,
+        shard_only=True,
+    )
+    shard_path, receipt_path = prepare._locale_shard_paths(tmp_path, "en_us")
+    row = shard_path.read_bytes()
+    shard_path.write_bytes(row + row)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["manifest_sha256"] = hashlib.sha256(shard_path.read_bytes()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate record id"):
+        prepare.prepare_fleurs_lid(tmp_path, finalize_only=True)
+    assert not (tmp_path / "test.jsonl").exists()
+    assert not (tmp_path / prepare.PROVENANCE_FILENAME).exists()
+
+
 def test_fleurs_lid_bootstraps_interrupted_audio_only_after_exact_source_validation(tmp_path, monkeypatch):
     _patch_mini_contract(monkeypatch)
     audio_path = tmp_path / "audio" / "en_us" / "123.wav"
