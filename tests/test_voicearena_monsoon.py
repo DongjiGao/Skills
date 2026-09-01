@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 
 import importlib
+import io
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -125,6 +127,95 @@ def test_pcm16_audio_contract_requires_16k_mono_and_minimum_samples(tmp_path):
     sf.write(path, np.zeros(319, dtype=np.float32), 16000, format="WAV", subtype="PCM_16")
     with pytest.raises(ValueError, match="audio contract failed"):
         prepare._validate_wav(path, 319 / 16000)
+
+
+def _encoded_wav(*, sample_rate=16000, channels=1, samples=16000):
+    payload = io.BytesIO()
+    shape = (samples,) if channels == 1 else (samples, channels)
+    sf.write(payload, np.zeros(shape, dtype=np.float32), sample_rate, format="WAV", subtype="PCM_16")
+    return payload.getvalue()
+
+
+def test_raw_audio_decode_uses_libsndfile_for_bytes_and_path(tmp_path):
+    encoded = _encoded_wav()
+    samples, sample_rate = prepare._decode_audio({"bytes": encoded, "path": None})
+    assert samples.shape == (16000,)
+    assert samples.dtype == np.float32
+    assert sample_rate == 16000
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(encoded)
+    from_path, path_rate = prepare._decode_audio({"bytes": None, "path": str(source)})
+    np.testing.assert_array_equal(from_path, samples)
+    assert path_rate == sample_rate
+
+
+def test_raw_audio_decode_fails_closed_on_missing_stereo_or_wrong_rate():
+    with pytest.raises(ValueError, match="neither bytes nor path"):
+        prepare._decode_audio({"bytes": None, "path": None})
+    with pytest.raises(ValueError, match="must be mono"):
+        prepare._decode_audio({"bytes": _encoded_wav(channels=2), "path": None})
+    with pytest.raises(ValueError, match="sample-rate drift"):
+        prepare._decode_audio({"bytes": _encoded_wav(sample_rate=8000), "path": None})
+
+
+def test_materialize_audio_revalidates_and_skips_complete_wav(tmp_path):
+    contract = _contract("en-in.public", rows=1, speakers=1)
+    row = _english_row()
+    path = tmp_path / "en-in" / "public" / "audio" / "clip-1.wav"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(_encoded_wav())
+
+    class ExistingOnlyDataset:
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, _index):
+            raise AssertionError("completed audio must be skipped without re-decoding")
+
+    prepare._materialize_audio(ExistingOnlyDataset(), [row], contract, tmp_path, no_audio=False)
+    prepare._validate_wav(path, 1.0)
+
+
+def test_prepare_profile_forces_raw_hf_audio_before_row_access(tmp_path, monkeypatch):
+    rows = [_english_row("clip-1", 1), _english_row("clip-2", 2)]
+
+    class RawDataset:
+        def __init__(self):
+            self.raw_audio = False
+            self.column_names = ["audio", "id", "text", "speaker_id", "language", "audio_length_s"]
+
+        def cast_column(self, name, feature):
+            assert name == "audio"
+            assert feature.decode is False
+            self.raw_audio = True
+            return self
+
+        def remove_columns(self, name):
+            assert name == "audio"
+            assert self.raw_audio
+            return rows
+
+    source = RawDataset()
+    monkeypatch.setattr("datasets.load_dataset", lambda *args, **kwargs: source)
+    monkeypatch.setattr(prepare, "_manifest_dir", lambda _contract: tmp_path / "manifest")
+
+    observed = []
+
+    def fake_materialize(dataset, validated_rows, contract, data_root, no_audio):
+        assert dataset is source
+        assert dataset.raw_audio
+        assert validated_rows == rows
+        observed.append((contract.profile, data_root, no_audio))
+
+    monkeypatch.setattr(prepare, "_materialize_audio", fake_materialize)
+    output = prepare.prepare_profile(_contract("en-in.public"), tmp_path / "data")
+    assert output == tmp_path / "manifest" / "test.jsonl"
+    assert observed == [("en-in.public", tmp_path / "data", False)]
+    assert output.read_text().count("\n") == 2
+    receipt = json.loads((tmp_path / "manifest" / prepare.PROVENANCE_FILENAME).read_text())
+    assert receipt["audio_contract"]["hf_audio_decode"] is False
+    assert receipt["audio_contract"]["decode_backend"] == "libsndfile via soundfile"
 
 
 def test_english_scorer_uses_open_asr_normalizer_and_exact_counts():

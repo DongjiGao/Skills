@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -148,18 +149,32 @@ def _validate_metadata(rows: list[dict], contract: SourceContract) -> list[dict]
 
 
 def _decode_audio(value: object) -> tuple[np.ndarray, int]:
-    if isinstance(value, dict):
-        samples = np.asarray(value["array"])
-        sample_rate = int(value["sampling_rate"])
-    elif hasattr(value, "get_all_samples"):
-        decoded = value.get_all_samples()
-        samples = np.asarray(decoded.data)
-        sample_rate = int(decoded.sample_rate)
+    """Decode raw Hugging Face audio with libsndfile, without TorchCodec."""
+    if not isinstance(value, dict):
+        raise TypeError(f"Monsoon raw audio must be a mapping, found {type(value).__name__}")
+    encoded = value.get("bytes")
+    path = value.get("path")
+    if encoded is not None:
+        source = io.BytesIO(encoded)
+    elif path:
+        source = str(path)
     else:
-        raise TypeError(f"Unsupported Hugging Face audio value: {type(value)!r}")
-    samples = np.squeeze(samples)
+        raise ValueError("Monsoon raw audio has neither bytes nor path")
+
+    try:
+        samples, sample_rate = sf.read(source, dtype="float32", always_2d=False)
+    except (RuntimeError, TypeError, ValueError) as error:
+        raise ValueError("Monsoon raw audio could not be decoded by libsndfile") from error
+    samples = np.asarray(samples)
+    if samples.ndim == 2:
+        if samples.shape[1] != 1:
+            raise ValueError(f"Monsoon source audio must be mono; got shape={samples.shape}")
+        samples = samples[:, 0]
     if samples.ndim != 1 or samples.size < MINIMUM_AUDIO_SAMPLES:
         raise ValueError(f"Monsoon source audio must be nonempty mono; got shape={samples.shape}")
+    if not np.isfinite(samples).all():
+        raise ValueError("Monsoon source audio contains non-finite samples")
+    sample_rate = int(sample_rate)
     if sample_rate != EXPECTED_SAMPLE_RATE:
         raise ValueError(f"Monsoon source audio sample-rate drift: expected 16000, got {sample_rate}")
     return samples.astype(np.float32, copy=False), sample_rate
@@ -188,6 +203,9 @@ def _materialize_audio(dataset, rows: list[dict], contract: SourceContract, data
         raise ValueError("Monsoon decoded/metadata row counts diverged")
     for index, metadata in enumerate(rows):
         path = audio_dir / f"{metadata['id']}.wav"
+        if not no_audio and path.is_file():
+            _validate_wav(path, float(metadata["audio_length_s"]))
+            continue
         if not no_audio:
             samples, sample_rate = _decode_audio(dataset[index]["audio"])
             temporary = path.with_name(f".{path.name}.partial")
@@ -255,13 +273,14 @@ def _atomic_json(path: Path, value: dict) -> None:
 
 
 def prepare_profile(contract: SourceContract, data_root: Path, no_audio: bool = False) -> Path:
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     dataset = load_dataset(contract.repo, split=OFFICIAL_SPLIT, revision=contract.revision)
     required = {"audio", "id", contract.reference_field, "speaker_id", "language", "audio_length_s"}
     missing = required.difference(dataset.column_names)
     if missing:
         raise ValueError(f"Monsoon {contract.language} source fields missing: {sorted(missing)}")
+    dataset = dataset.cast_column("audio", Audio(decode=False))
     metadata_dataset = dataset.remove_columns("audio")
     rows = _validate_metadata([dict(row) for row in metadata_dataset], contract)
     _materialize_audio(dataset, rows, contract, data_root, no_audio)
@@ -298,6 +317,8 @@ def prepare_profile(contract: SourceContract, data_root: Path, no_audio: bool = 
         "audio_contract": {
             "sample_rate": EXPECTED_SAMPLE_RATE,
             "channels": EXPECTED_CHANNELS,
+            "hf_audio_decode": False,
+            "decode_backend": "libsndfile via soundfile",
             "subtype": EXPECTED_SUBTYPE,
             "minimum_samples": MINIMUM_AUDIO_SAMPLES,
             "complete_closure": True,
