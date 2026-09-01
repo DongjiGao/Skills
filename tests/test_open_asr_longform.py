@@ -191,7 +191,7 @@ def test_prepare_source_materializes_validated_audio_and_deterministic_prompt(tm
     assert len(rows) == 1
     row = rows[0]
     assert row["subset_for_metrics"] == "earnings22"
-    assert row["messages"][1]["content"] == "Transcribe the following audio."
+    assert row["messages"][1]["content"] == "Produce a verbatim transcript of the audio."
     assert row["messages"][1]["audio"]["duration"] == pytest.approx(0.02)
     assert row["source_revision"] == spec.revision
     assert row["extra_fields"]["official_aggregation"].startswith("macro(earnings21")

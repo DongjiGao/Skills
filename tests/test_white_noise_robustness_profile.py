@@ -88,7 +88,7 @@ def test_manifest_records_every_reproduction_choice():
     )
 
     assert row["expected_answer"] == "HELLO WORLD"
-    assert row["messages"][0]["content"] == "Transcribe the following audio."
+    assert row["messages"][0]["content"] == "Produce a verbatim transcript of the audio."
     assert row["subset_for_metrics"] == "test-clean_white-noise_0db"
     assert row["target_snr_db"] == 0.0
     assert row["noise_distribution"] == "uniform[-0.5,0.5)"

@@ -83,7 +83,7 @@ def test_zero_db_manifest_records_full_reproduction_recipe():
         digest_hex="ab" * 32,
         mix_metadata=metadata,
     )
-    assert row["messages"][0]["content"] == "Transcribe the following audio."
+    assert row["messages"][0]["content"] == "Produce a verbatim transcript of the audio."
     assert row["expected_answer"] == "HELLO WORLD"
     assert row["task_type"] == "ASR"
     assert row["target_snr_db"] == 0.0

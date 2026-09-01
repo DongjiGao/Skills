@@ -56,7 +56,7 @@ PROFILE_SEED = 20260829
 TARGET_SNR_DB = 0.0
 SAMPLE_RATE = 16000
 PEAK_LIMIT = 0.999
-PROMPT = "Transcribe the following audio."
+PROMPT = "Produce a verbatim transcript of the audio."
 
 LIBRISPEECH_URL = "https://www.openslr.org/resources/12/test-clean.tar.gz"
 LIBRISPEECH_MD5 = "32fa31d27d2e1cad72775fee3f4849a9"

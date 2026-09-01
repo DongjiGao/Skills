@@ -67,7 +67,7 @@ SUBSETS: dict[str, tuple[str, str]] = {
     "xtts-test2": ("xtts", "test2"),
 }
 
-ASR_INSTRUCTION = "Transcribe the following audio."
+ASR_INSTRUCTION = "Produce a verbatim transcript of the audio."
 
 
 def _validate_metadata(metadata_path: Path, subset: str) -> list[dict]:

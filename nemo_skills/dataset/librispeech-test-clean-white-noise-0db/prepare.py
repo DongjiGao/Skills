@@ -53,7 +53,7 @@ PROFILE_SEED = 20260829
 TARGET_SNR_DB = 0.0
 SAMPLE_RATE = 16000
 PEAK_AMPLITUDE = 0.999
-PROMPT = "Transcribe the following audio."
+PROMPT = "Produce a verbatim transcript of the audio."
 
 WHISPER_PAPER_URL = "https://cdn.openai.com/papers/whisper.pdf"
 WHISPER_PROTOCOL_SECTION = "3.7 / Figure 5"

@@ -194,7 +194,7 @@ def get_st_instruction(target_locale: str) -> str:
 
 
 def get_asr_instruction() -> str:
-    return "Transcribe the following audio."
+    return "Produce a verbatim transcript of the audio."
 
 
 def _build_record(

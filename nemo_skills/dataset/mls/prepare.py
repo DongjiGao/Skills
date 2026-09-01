@@ -56,7 +56,7 @@ ENGLISH_REVISION = "faf6604dcf0bb9ec0d9c280a140ad74da9c931b0"
 EXPECTED_SAMPLE_RATE = 16000
 EXPECTED_CHANNELS = 1
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
-USER_MESSAGE = "Transcribe the following audio."
+USER_MESSAGE = "Produce a verbatim transcript of the audio."
 PROVENANCE_FILENAME = "provenance.json"
 
 
