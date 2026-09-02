@@ -210,6 +210,8 @@ def load_pinned_pedant(pedant_module=None, portable_dir: Path | None = None):
 @nested_dataclass(kw_only=True)
 class VoiceBenchEvaluatorConfig(BaseEvaluatorConfig):
     openai_api_key_env: str = "OPENAI_API_KEY"
+    openai_base_url: str | None = None
+    judge_model: str = JUDGE_MODEL
     judge_max_retries: int = 25
     judge_error_sleep_seconds: float = 30.0
     judge_success_sleep_seconds: float = 0.5
@@ -233,11 +235,15 @@ class VoiceBenchEvaluator(BaseEvaluator):
             api_key = os.environ.get(self.config.openai_api_key_env)
             if not api_key:
                 raise RuntimeError(f"VoiceBench judge requires {self.config.openai_api_key_env}")
-            self._client = OpenAI(api_key=api_key)
+            client_kwargs = {"api_key": api_key}
+            if self.config.openai_base_url is not None:
+                client_kwargs["base_url"] = self.config.openai_base_url
+            self._client = OpenAI(**client_kwargs)
         return self._client
 
     def _judge_sync(self, prompt: str) -> list[str]:
         request = dict(JUDGE_REQUEST_KWARGS)
+        request["model"] = self.config.judge_model
         request["messages"] = judge_messages(prompt)
         error = None
         for _ in range(self.config.judge_max_retries):
