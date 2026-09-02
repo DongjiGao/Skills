@@ -166,9 +166,18 @@ NEMOTRON_ASR_LOCALES: tuple[str, ...] = (
     "vi_vn",
 )
 
+# Release LID reporting is the exact intersection of the HR7 training
+# languages and the currently available FLEURS locales. Armenian and
+# Norwegian remain valid FLEURS product-ASR locales but are not HR7 LID
+# training languages, so they are deliberately excluded here.
+HR7_LID_LOCALES: tuple[str, ...] = tuple(
+    locale for locale in NEMOTRON_ASR_LOCALES if locale not in {"hy_am", "nb_no"}
+)
+
 LANGUAGE_SETS: dict[str, tuple[str, ...]] = {
     "all": tuple(sorted(LOCALES)),
     "nemotron-asr": NEMOTRON_ASR_LOCALES,
+    "hr7-lid": HR7_LID_LOCALES,
 }
 
 # Locales evaluated with Character Error Rate instead of Word Error Rate

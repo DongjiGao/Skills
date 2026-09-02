@@ -20,6 +20,43 @@ pytest.importorskip("whisper_normalizer")
 from nemo_skills.evaluation.evaluator.audio import evaluate_asr, preprocess_asr_text
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("kinda", "kinda"),
+        ("sorta", "sorta"),
+        ("dunno", "dunno"),
+        ("'cause", "cause"),
+        ("EBITDA's", "ebitda is"),
+        ("I kinda sorta dunno 'cause EBITDA's up.", "i kinda sorta dunno cause ebitda is up"),
+        ("We, um, reported 10 dollars [noise].", "we reported $ten"),
+    ],
+)
+def test_audiobench_earnings_normalizer_matches_pinned_upstream_goldens(text, expected):
+    assert preprocess_asr_text(text, mode="audiobench_earnings") == expected
+
+
+def test_historical_audiobench_mode_is_not_changed_by_earnings_protocol():
+    assert (
+        preprocess_asr_text("I kinda sorta dunno 'cause EBITDA's up.", mode="audiobench")
+        == "i kind of sort of do not know because ebitda is up"
+    )
+
+
+def test_audiobench_earnings_empty_generation_is_a_full_reference_error():
+    result = evaluate_asr(
+        "Revenue increased by twenty percent.",
+        "",
+        normalization_mode="audiobench_earnings",
+    )
+
+    # Soft generation failures stay in the corpus and contribute one error for
+    # every normalized reference word, rather than disappearing from WER.
+    assert result["wer"] == 1.0
+    assert result["wer_errors"] == result["wer_ref_words"] == 4
+    assert result["wer_ref_words"] == len(result["text"].split())
+
+
 def test_apptek_callcenter_normalization_matches_dataset_specific_mappings():
     """End-to-end: prediction-only ``oh`` removal, reference-only ``~`` half-word
     cleanup, Whisper number normalization, and the AppTek word_mappings all line

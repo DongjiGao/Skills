@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 from nemo_skills.pipeline.utils.commands import sandbox_command
 from nemo_skills.pipeline.utils.scripts.base import BaseJobScript
-from nemo_skills.pipeline.utils.server import get_free_port, get_server_command
+from nemo_skills.pipeline.utils.server import SlurmJobPort, get_free_port, get_server_command
 from nemo_skills.utils import get_logger_name
 
 LOG = logging.getLogger(get_logger_name(__file__))
@@ -66,7 +66,7 @@ class ServerScript(BaseJobScript):
     num_nodes: int = 1
     server_args: str = ""
     server_entrypoint: Optional[str] = None
-    port: Optional[int | str] = None
+    port: Optional[int | str | SlurmJobPort] = None
     allocate_port: bool = True
 
     # Server spans all group nodes (e.g., for distributed inference)
@@ -75,6 +75,7 @@ class ServerScript(BaseJobScript):
     # Computed fields (set in __post_init__)
     num_tasks: int = field(init=False, repr=False)
     log_prefix: str = field(default="server", init=False)
+    _runtime_port: Optional[SlurmJobPort] = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         if self.port is None and self.allocate_port:
@@ -82,6 +83,10 @@ class ServerScript(BaseJobScript):
             LOG.debug(f"Allocated port {self.port} for {self.server_type} server")
         if self.port is None:
             raise ValueError("ServerScript requires `port` when allocate_port=False")
+
+        if isinstance(self.port, SlurmJobPort):
+            self._runtime_port = self.port
+            self.port = str(self.port)
 
         cmd, self.num_tasks = get_server_command(
             server_type=self.server_type,
@@ -96,6 +101,36 @@ class ServerScript(BaseJobScript):
 
         self.set_inline(cmd)
         super().__post_init__()
+
+    def configure_runtime_port(self, state_dir: str) -> None:
+        """Replace a Slurm-derived port with server/client handoff expressions."""
+        if self._runtime_port is None:
+            return
+        het_group = self.het_group_index or 0
+        allocation_command = self._runtime_port.server_allocation_command(state_dir, het_group)
+        server_port = '"${NEMO_SKILLS_RUNTIME_PORT}"'
+        client_port = self._runtime_port.client_expression(state_dir, het_group)
+        cmd, self.num_tasks = get_server_command(
+            server_type=self.server_type,
+            num_gpus=self.num_gpus,
+            num_nodes=self.num_nodes,
+            model_path=self.model_path,
+            cluster_config=self.cluster_config,
+            server_port=server_port,
+            server_args=self.server_args,
+            server_entrypoint=self.server_entrypoint,
+        )
+        # A failed command substitution otherwise becomes a bare ``--port``
+        # and obscures the allocator failure behind the server CLI's parser.
+        # Assignment commands inherit the substitution's exit status, so the
+        # ``&&`` chain fails before the server starts if allocation fails.
+        cmd = (
+            f'NEMO_SKILLS_RUNTIME_PORT="$({allocation_command})" '
+            f'&& test -n "$NEMO_SKILLS_RUNTIME_PORT" && {cmd}'
+        )
+        self.set_inline(cmd)
+        self.port = client_port
+        self._runtime_port = None
 
     def get_address(self) -> str:
         """Get server address for client connections (hostname:port)."""

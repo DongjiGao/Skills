@@ -26,8 +26,10 @@ Usage:
 
 import argparse
 import copy
+import io
 import json
 import os
+import random
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -106,6 +108,85 @@ NONJUDGE_DATASETS = [
     "tedlium3_long_form_test",
 ]
 
+AUDIOBENCH_OFFICIAL_REVISION = "85dcdb88c41e6ebb2bcb3ce19b15d061dfef9dba"
+SPOKEN_MQA_SOURCE_REVISION = "a1f9ec6143c6ce12966d7c6b3283905d679645c9"
+SPOKEN_MQA_DATASETS = {
+    "spoken-mqa_short_digit": {
+        "leaf": "short_digit",
+        "split": "short_digit",
+        "protocol": "arithmetic",
+        "rows": 100,
+    },
+    "spoken-mqa_long_digit": {
+        "leaf": "long_digit",
+        "split": "long_digit",
+        "protocol": "arithmetic",
+        "rows": 173,
+    },
+    "spoken-mqa_single_step_reasoning": {
+        "leaf": "single_step_reasoning",
+        "split": "single_step_reasoning",
+        "protocol": "reasoning",
+        "rows": 594,
+    },
+    "spoken-mqa_multi_step_reasoning": {
+        "leaf": "multi_step_reasoning",
+        "split": "multi_step_reasoning",
+        "protocol": "reasoning",
+        "rows": 1402,
+    },
+}
+EARNINGS_LONGFORM_DATASETS = {
+    "earnings21_test": {
+        "leaf": "earnings21",
+        "repo": "AudioLLMs/earnings21_test",
+        "revision": "1edcc0d56dc6cdb6d21420f3155936e48485928d",
+        "rows": 44,
+        "paper": "arxiv:2104.11348",
+    },
+    "earnings22_test": {
+        "leaf": "earnings22",
+        "repo": "AudioLLMs/earnings22_test",
+        "revision": "19da542f94ac74d603b9cb5eed0e13792517ccf4",
+        "rows": 125,
+        "paper": "arxiv:2203.15591",
+    },
+}
+AUDIOBENCH_ASR_INSTRUCTIONS = (
+    "Please help me transcribe the speech into text.",
+    "Transcribe the spoken words into written form.",
+    "Listen to the speech and provide the text version.",
+    "Transform the speech into a text document as transcriptions.",
+    "Please give me the written transcription of the speech content.",
+    "Recognize the verbal content in the speech and transcribe it into text.",
+    "Turn the speech input into a text transcription.",
+    "Process the speech and provide the text output.",
+    "Transcribe the spoken conversation into written text.",
+)
+AUDIOBENCH_EARNINGS_PROMPT_SEED = 42
+
+
+def _earnings_instruction(sample_id: int) -> str:
+    """Choose from the pinned official prompt list with a reproducible seed."""
+    rng = random.Random(AUDIOBENCH_EARNINGS_PROMPT_SEED)
+    for _ in range(sample_id + 1):
+        instruction = rng.choice(AUDIOBENCH_ASR_INSTRUCTIONS)
+    return instruction
+
+
+def _spoken_mqa_reference(sample: Dict, dataset_name: str, sample_id: int) -> list[str]:
+    answer = sample.get("answer")
+    if not isinstance(answer, dict) or not isinstance(answer.get("text"), list):
+        raise ValueError(f"Spoken-MQA answer.text must be a list for {dataset_name} sample {sample_id}: {answer!r}")
+    return [str(value) for value in answer["text"]]
+
+
+def _validate_pinned_row_contract(dataset_name: str, rows: int) -> None:
+    """Fail closed when a pinned benchmark source changes its full-test row count."""
+    spec = SPOKEN_MQA_DATASETS.get(dataset_name) or EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    if spec is not None and rows != spec["rows"]:
+        raise ValueError(f"Pinned row contract failed for {dataset_name}: expected {spec['rows']}, found {rows}")
+
 
 def get_audio_duration(audio_array: np.ndarray, sampling_rate: int) -> float:
     """Compute audio duration in seconds from array and sampling rate."""
@@ -134,6 +215,37 @@ def extract_audio_dict(sample: Dict) -> Dict | None:
     return None
 
 
+def decode_audio_dict(audio_dict: Dict) -> tuple[np.ndarray, int]:
+    """Decode HF Audio data without requiring TorchCodec or FFmpeg.
+
+    Existing AudioBench sources may already expose ``array`` and
+    ``sampling_rate``. Spoken-MQA is explicitly cast to ``Audio(decode=False)``
+    and exposes encoded bytes/path, which SoundFile decodes reproducibly.
+    """
+    audio_array = audio_dict.get("array")
+    if audio_array is not None:
+        return np.asarray(audio_array), int(audio_dict.get("sampling_rate", 16000))
+
+    encoded_bytes = audio_dict.get("bytes")
+    encoded_path = audio_dict.get("path")
+    if encoded_bytes is not None:
+        source = io.BytesIO(encoded_bytes)
+    elif encoded_path:
+        source = encoded_path
+    else:
+        raise ValueError("Encoded audio must contain non-null bytes or path")
+
+    audio_array, sampling_rate = sf.read(source, dtype="float32", always_2d=False)
+    audio_array = np.asarray(audio_array)
+    if audio_array.ndim == 2:
+        # SoundFile returns [frames, channels]. Spoken-MQA is mono, but keep
+        # preparation safe if a future source revision contains stereo audio.
+        audio_array = audio_array.mean(axis=1)
+    if audio_array.ndim != 1:
+        raise ValueError(f"Expected mono audio after decoding, got shape {audio_array.shape}")
+    return audio_array, int(sampling_rate)
+
+
 def create_manifest_entry(
     sample: Dict,
     audio_filename: str,
@@ -155,7 +267,12 @@ def create_manifest_entry(
     Returns:
         Manifest entry dict with proper format for nemo-skills
     """
-    instruction = sample.get("instruction", sample.get("text", "Process the audio"))
+    earnings_spec = EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    instruction = (
+        _earnings_instruction(sample_id)
+        if earnings_spec is not None
+        else sample.get("instruction", sample.get("text", "Process the audio"))
+    )
     if isinstance(instruction, dict):
         try:
             instruction = instruction["text"]
@@ -165,8 +282,16 @@ def create_manifest_entry(
             ) from exc
     if not isinstance(instruction, str):
         raise ValueError(f"Instruction must be a string for {dataset_name} sample {sample_id}: {instruction!r}")
-    reference = sample.get("reference", sample.get("answer", ""))
-    task_type = sample.get("task_type", "unknown")
+    spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
+    if spoken_mqa_spec is not None:
+        reference = _spoken_mqa_reference(sample, dataset_name, sample_id)
+        task_type = "MathQA"
+    elif dataset_name in EARNINGS_LONGFORM_DATASETS:
+        reference = sample.get("reference", sample.get("answer", ""))
+        task_type = "ASR"
+    else:
+        reference = sample.get("reference", sample.get("answer", ""))
+        task_type = sample.get("task_type", "unknown")
 
     # Paths are resolved relative to the manifest directory by the inference code.
     # The combined category manifest lives at audiobench/{category}/test.jsonl.
@@ -197,6 +322,29 @@ def create_manifest_entry(
         "question": instruction,
     }
 
+    if spoken_mqa_spec is not None:
+        entry["spoken_mqa_protocol"] = spoken_mqa_spec["protocol"]
+        entry["source_provenance"] = {
+            "benchmark": "AudioBench",
+            "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+            "dataset": "amao0o0/spoken-mqa",
+            "dataset_revision": SPOKEN_MQA_SOURCE_REVISION,
+            "split": spoken_mqa_spec["split"],
+        }
+
+    elif earnings_spec is not None:
+        entry["source_provenance"] = {
+            "benchmark": "AudioBench",
+            "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+            "dataset": earnings_spec["repo"],
+            "dataset_revision": earnings_spec["revision"],
+            "split": "test",
+            "paper": earnings_spec["paper"],
+            "metric": "wer",
+            "normalization": "audiobench_earnings",
+            "prompt_contract": "official_prompt_list_deterministic_seed",
+            "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
+        }
     for key in [
         "choices",
         "options",
@@ -237,6 +385,96 @@ def make_dataset_manifest_entry(entry: Dict) -> Dict:
     return entry
 
 
+def make_spoken_mqa_manifest_entry(entry: Dict) -> Dict:
+    """Rewrite legacy nonjudge-relative audio paths for a Spoken-MQA leaf."""
+    entry = copy.deepcopy(entry)
+
+    def rewrite(path: str) -> str:
+        if path.startswith("audio/"):
+            return f"../../nonjudge/{path}"
+        return path
+
+    if isinstance(entry.get("audio_path"), list):
+        entry["audio_path"] = [rewrite(path) for path in entry["audio_path"]]
+    elif isinstance(entry.get("audio_path"), str):
+        entry["audio_path"] = rewrite(entry["audio_path"])
+
+    for message in entry.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        if "audio" in message and isinstance(message["audio"], dict) and "path" in message["audio"]:
+            message["audio"]["path"] = rewrite(message["audio"]["path"])
+        for audio in message.get("audios", []):
+            if isinstance(audio, dict) and "path" in audio:
+                audio["path"] = rewrite(audio["path"])
+
+    return entry
+
+
+def make_earnings_manifest_entry(entry: Dict) -> Dict:
+    """Rewrite category-relative paths for a standalone AudioBench Earnings leaf."""
+    entry = copy.deepcopy(entry)
+
+    def rewrite(path: str) -> str:
+        return f"../nonjudge/{path}" if path.startswith("audio/") else path
+
+    if isinstance(entry.get("audio_path"), list):
+        entry["audio_path"] = [rewrite(path) for path in entry["audio_path"]]
+    elif isinstance(entry.get("audio_path"), str):
+        entry["audio_path"] = rewrite(entry["audio_path"])
+
+    for message in entry.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        if "audio" in message and isinstance(message["audio"], dict) and "path" in message["audio"]:
+            message["audio"]["path"] = rewrite(message["audio"]["path"])
+        for audio in message.get("audios", []):
+            if isinstance(audio, dict) and "path" in audio:
+                audio["path"] = rewrite(audio["path"])
+
+    return entry
+
+
+def write_spoken_mqa_provenance(output_dir: Path) -> None:
+    provenance_path = output_dir / "spoken-mqa" / "provenance.json"
+    provenance_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "benchmark": "AudioBench",
+        "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+        "dataset": "amao0o0/spoken-mqa",
+        "dataset_revision": SPOKEN_MQA_SOURCE_REVISION,
+        "leaves": SPOKEN_MQA_DATASETS,
+    }
+    with open(provenance_path, "w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def write_earnings_provenance(output_dir: Path) -> None:
+    """Record immutable AudioBench source/protocol contracts for both long-form leaves."""
+    provenance_path = output_dir / "earnings" / "provenance.json"
+    provenance_path.parent.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "benchmark": "AudioBench",
+        "benchmark_revision": AUDIOBENCH_OFFICIAL_REVISION,
+        "metric": "wer",
+        "normalization": "audiobench_earnings",
+        "prompt_contract": "official_prompt_list_deterministic_seed",
+        "prompt_seed": AUDIOBENCH_EARNINGS_PROMPT_SEED,
+        "prompt_list": AUDIOBENCH_ASR_INSTRUCTIONS,
+        "leaves": EARNINGS_LONGFORM_DATASETS,
+        "comparability_note": (
+            "These leaves use AudioBench's pinned ASR prompt list, exact pinned normalization, and overall corpus WER; "
+            "the upstream adapter chooses prompts without a seed, so this reproduction pins seed 42. Both canonical "
+            "Rev Earnings-21 and Earnings-22 papers use FSTAlign and are not numerically interchangeable; Earnings-22 "
+            "paper region breakdowns additionally require metadata absent from the AudioBench HF schema."
+        ),
+    }
+    with open(provenance_path, "w", encoding="utf-8") as f:
+        json.dump(provenance, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
 def process_dataset(
     dataset_name: str,
     output_dir: Path,
@@ -261,7 +499,7 @@ def process_dataset(
     print(f"{'=' * 60}")
 
     try:
-        from datasets import load_dataset
+        from datasets import Audio, load_dataset
     except Exception as e:
         raise ImportError(
             f"Failed to import HuggingFace 'datasets'. Please ensure it is installed.\nOriginal error: {e}"
@@ -272,6 +510,10 @@ def process_dataset(
         # AudioBench mapping for datasets that are not 1:1 AudioLLMs/<dataset_name>.
         hf_map = {
             # AudioLLMs org aliases
+            **{
+                name: {"repo": spec["repo"], "split": "test", "revision": spec["revision"]}
+                for name, spec in EARNINGS_LONGFORM_DATASETS.items()
+            },
             "aishell_asr_zh_test": {"repo": "AudioLLMs/aishell_1_zh_test", "split": "test"},
             "muchomusic_test": {"repo": "AudioLLMs/mu_chomusic_test", "split": "test"},
             "openhermes_audio_test": {"repo": "AudioLLMs/openhermes_instruction_test", "split": "test"},
@@ -286,10 +528,26 @@ def process_dataset(
             "gigaspeech2_thai": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "th-test"},
             "gigaspeech2_indo": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "id-test"},
             "gigaspeech2_viet": {"repo": "AudioLLMs/gigaspeech2-test", "split": "train", "data_dir": "vi-test"},
-            "spoken-mqa_short_digit": {"repo": "amao0o0/spoken-mqa", "split": "short_digit"},
-            "spoken-mqa_long_digit": {"repo": "amao0o0/spoken-mqa", "split": "long_digit"},
-            "spoken-mqa_single_step_reasoning": {"repo": "amao0o0/spoken-mqa", "split": "single_step_reasoning"},
-            "spoken-mqa_multi_step_reasoning": {"repo": "amao0o0/spoken-mqa", "split": "multi_step_reasoning"},
+            "spoken-mqa_short_digit": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "short_digit",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_long_digit": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "long_digit",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_single_step_reasoning": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "single_step_reasoning",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
+            "spoken-mqa_multi_step_reasoning": {
+                "repo": "amao0o0/spoken-mqa",
+                "split": "multi_step_reasoning",
+                "revision": SPOKEN_MQA_SOURCE_REVISION,
+            },
             "imda_part1_asr_test": {
                 "repo": "MERaLiON/Multitask-National-Speech-Corpus-v1",
                 "split": "train",
@@ -390,11 +648,21 @@ def process_dataset(
         else:
             hf_repo = spec["repo"]
             hf_split = spec.get("split", split)
+            revision = spec.get("revision")
             data_dir = spec.get("data_dir")
+            load_kwargs = {"split": hf_split}
+            if revision:
+                load_kwargs["revision"] = revision
             if data_dir:
-                hf_ds = load_dataset(hf_repo, data_dir=data_dir, split=hf_split)
-            else:
-                hf_ds = load_dataset(hf_repo, split=hf_split)
+                load_kwargs["data_dir"] = data_dir
+            hf_ds = load_dataset(hf_repo, **load_kwargs)
+
+            is_pinned_audio = dataset_name in SPOKEN_MQA_DATASETS or dataset_name in EARNINGS_LONGFORM_DATASETS
+            if is_pinned_audio and not (max_samples is not None and int(max_samples) > 0):
+                _validate_pinned_row_contract(dataset_name, len(hf_ds))
+
+            if is_pinned_audio:
+                hf_ds = hf_ds.cast_column("context", Audio(decode=False))
 
             fallback_repo = spec.get("fallback_repo")
             if fallback_repo:
@@ -457,17 +725,12 @@ def process_dataset(
                 continue
 
             # Extract audio array and sampling rate
-            audio_array = audio_dict.get("array")
-            sampling_rate = audio_dict.get("sampling_rate", 16000)
+            audio_array, sampling_rate = decode_audio_dict(audio_dict)
 
             if audio_array is None or len(audio_array) == 0:
                 print(f"Warning: Empty audio at sample {idx}, skipping")
                 failed += 1
                 continue
-
-            # Convert to numpy array if needed
-            if isinstance(audio_array, list):
-                audio_array = np.array(audio_array)
 
             # Compute duration
             duration = get_audio_duration(audio_array, sampling_rate)
@@ -503,6 +766,26 @@ def process_dataset(
             failed += 1
             continue
 
+    spoken_mqa_spec = SPOKEN_MQA_DATASETS.get(dataset_name)
+    if spoken_mqa_spec is not None and not (max_samples is not None and int(max_samples) > 0):
+        expected_rows = spoken_mqa_spec["rows"]
+        if successful != expected_rows or failed:
+            raise RuntimeError(
+                f"Spoken-MQA preparation contract failed for {dataset_name}: "
+                f"expected {expected_rows} successful rows and no failures; got {successful} successful, {failed} failed"
+            )
+    earnings_spec = EARNINGS_LONGFORM_DATASETS.get(dataset_name)
+    if (
+        earnings_spec is not None
+        and not (max_samples is not None and int(max_samples) > 0)
+        and (successful != earnings_spec["rows"] or failed)
+    ):
+        raise RuntimeError(
+            f"AudioBench Earnings preparation contract failed for {dataset_name}: "
+            f"expected {earnings_spec['rows']} successful rows and no failures; "
+            f"got {successful} successful, {failed} failed"
+        )
+
     # Save dataset-specific manifest to dataset directory
     manifest_path = dataset_dir / f"{split}.jsonl"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -510,6 +793,23 @@ def process_dataset(
             f.write(json.dumps(make_dataset_manifest_entry(entry), ensure_ascii=False) + "\n")
 
     print(f"✓ Saved {successful} samples to {manifest_path}")
+    if spoken_mqa_spec is not None:
+        leaf_dir = output_dir / "spoken-mqa" / spoken_mqa_spec["leaf"]
+        leaf_dir.mkdir(parents=True, exist_ok=True)
+        leaf_manifest_path = leaf_dir / f"{split}.jsonl"
+        with open(leaf_manifest_path, "w", encoding="utf-8") as f:
+            for entry in manifest_entries:
+                leaf_entry = make_spoken_mqa_manifest_entry(entry)
+                f.write(json.dumps(leaf_entry, ensure_ascii=False) + "\n")
+        print(f"✓ Saved official Spoken-MQA leaf with {successful} samples to {leaf_manifest_path}")
+    if earnings_spec is not None:
+        leaf_dir = output_dir / earnings_spec["leaf"]
+        leaf_dir.mkdir(parents=True, exist_ok=True)
+        leaf_manifest_path = leaf_dir / f"{split}.jsonl"
+        with open(leaf_manifest_path, "w", encoding="utf-8") as f:
+            for entry in manifest_entries:
+                f.write(json.dumps(make_earnings_manifest_entry(entry), ensure_ascii=False) + "\n")
+        print(f"✓ Saved AudioBench {earnings_spec['leaf']} leaf with {successful} samples to {leaf_manifest_path}")
     if failed > 0:
         print(f"✗ Failed to process {failed} samples")
 
@@ -587,6 +887,11 @@ def main():
         else:  # all
             target_datasets = all_datasets
 
+    if any(name in SPOKEN_MQA_DATASETS for name in target_datasets):
+        write_spoken_mqa_provenance(output_dir)
+
+    if any(name in EARNINGS_LONGFORM_DATASETS for name in target_datasets):
+        write_earnings_provenance(output_dir)
     # Initialize category folders with __init__.py for nemo-skills to find dataset defaults
     for category in ["judge", "nonjudge"]:
         category_dir = output_dir / category

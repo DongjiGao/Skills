@@ -17,6 +17,7 @@ import os
 import shlex
 import tempfile
 import time
+from dataclasses import dataclass
 from enum import Enum
 
 from nemo_skills.pipeline.utils.mounts import check_if_mounted
@@ -27,6 +28,58 @@ LOG = logging.getLogger(get_logger_name(__file__))
 _ALLOCATED_RANDOM_PORTS: set[int] = set()
 DEFAULT_PORT_RESERVATION_TTL = 3600
 _SLURM_JOB_PORT_OFFSET = 0
+
+
+RUNTIME_PORT_SCRIPT = "/nemo_run/code/nemo_skills/pipeline/utils/runtime_port.py"
+
+
+@dataclass(frozen=True)
+class SlurmJobPort:
+    """A port selected on the allocated server node and shared with clients."""
+
+    offset: int
+
+    def base_expression(self, het_group: int | None = None) -> str:
+        group = "${SLURM_HET_GROUP:-0}" if het_group is None else str(het_group)
+        return (
+            "$((20000+(${SLURM_JOB_ID:-0}*7919"
+            f"+{group}*1543"
+            "+${SLURM_ARRAY_TASK_ID:-0}*3137"
+            f"+{self.offset}*6151)%45000))"
+        )
+
+    def __str__(self) -> str:
+        # Keep the previous shell representation for callers that only render
+        # the return value. ServerScript upgrades it to runtime coordination.
+        return self.base_expression()
+
+    def _state_file(self, state_dir: str, het_group: int) -> str:
+        root = f"{shlex.quote(state_dir)}/.nemo-skills-ports"
+        return (
+            f"{root}/port-${{SLURM_ARRAY_JOB_ID:-${{SLURM_JOB_ID%%+*}}}}"
+            f"-${{SLURM_ARRAY_TASK_ID:-0}}"
+            f"-${{SLURM_RESTART_COUNT:-0}}-{het_group}-{self.offset}"
+        )
+
+    def server_allocation_command(self, state_dir: str, het_group: int) -> str:
+        """Return a standalone allocator command safe in minimal server images.
+
+        Execute the staged file directly rather than importing it with ``-m``.
+        Minimal serving images can contain ``nemo-skills-core``, whose package
+        guard intentionally rejects importing ``nemo_skills.pipeline``.
+        """
+        state_file = self._state_file(state_dir, het_group)
+        return (
+            f"python3 {RUNTIME_PORT_SCRIPT} allocate"
+            f" --state-file {state_file} --base-port {self.base_expression(het_group)}"
+        )
+
+    def client_expression(self, state_dir: str, het_group: int) -> str:
+        state_file = self._state_file(state_dir, het_group)
+        return (
+            f"$(python3 {RUNTIME_PORT_SCRIPT} wait"
+            f" --state-file {state_file})"
+        )
 
 
 class SupportedServersSelfHosted(str, Enum):
@@ -52,7 +105,9 @@ class SupportedServers(str, Enum):
     generic = "generic"
 
 
-def get_free_port(exclude: list[int] | None = None, strategy: int | str = 5000) -> int | str:
+def get_free_port(
+    exclude: list[int] | None = None, strategy: int | str = 5000
+) -> int | str | SlurmJobPort:
     """Will return a free port on the host."""
     exclude = exclude or []
     if isinstance(strategy, int):
@@ -69,11 +124,7 @@ def get_free_port(exclude: list[int] | None = None, strategy: int | str = 5000) 
 
             offset = _SLURM_JOB_PORT_OFFSET
             _SLURM_JOB_PORT_OFFSET += 1
-            # Expanded inside the SLURM job, not at submit time. This keeps
-            # ports stable between the co-scheduled server and client, while
-            # making concurrent jobs on the same node overwhelmingly unlikely
-            # to collide.
-            return f"$((20000+(${{SLURM_JOB_ID:-0}}+{offset})%45000))"
+            return SlurmJobPort(offset=offset)
 
         # These ports are embedded into SLURM scripts before the jobs land on
         # worker nodes. A plain random draw can assign the same port to many

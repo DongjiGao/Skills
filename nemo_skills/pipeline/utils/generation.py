@@ -410,6 +410,73 @@ def separate_hydra_args(extra_arguments: str) -> tuple[str, str]:
     return hydra_config_args, override_args
 
 
+def _shell_word_spans(value: str):
+    """Yield shell-word spans without rewriting their raw quoting or expansions."""
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index >= len(value):
+            return
+
+        start = index
+        quote = None
+        command_depth = 0
+        while index < len(value):
+            char = value[index]
+            if quote == "'":
+                index += 1
+                if char == "'":
+                    quote = None
+                continue
+            if quote == '"':
+                if char == "\\" and index + 1 < len(value):
+                    index += 2
+                    continue
+                index += 1
+                if char == '"':
+                    quote = None
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            if char == "\\" and index + 1 < len(value):
+                index += 2
+                continue
+            if value.startswith("$(", index):
+                command_depth += 1
+                index += 2
+                continue
+            if command_depth and char == "(":
+                command_depth += 1
+            elif command_depth and char == ")":
+                command_depth -= 1
+            elif not command_depth and char.isspace():
+                break
+            index += 1
+        yield start, index
+
+
+def replace_server_endpoint_overrides(extra_arguments: str, *, host: str, port: int | str) -> str:
+    """Replace endpoint tokens while preserving every retained raw shell token."""
+    endpoint_keys = {"server.host", "server.port", "server.base_url"}
+    pieces = []
+    retained_from = 0
+    for start, end in _shell_word_spans(extra_arguments):
+        raw_argument = extra_arguments[start:end]
+        key = raw_argument.split("=", 1)[0].lstrip("+")
+        if key in endpoint_keys:
+            pieces.append(extra_arguments[retained_from:start])
+            retained_from = end
+    pieces.append(extra_arguments[retained_from:])
+    retained = "".join(pieces).strip()
+
+    # Keep Slurm variables and runtime command substitutions expandable.
+    separator = " " if retained else ""
+    return f"{retained}{separator}++server.host={host} ++server.port={port}"
+
+
 def get_generation_cmd(
     output_dir,
     input_file=None,

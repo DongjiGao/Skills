@@ -28,6 +28,42 @@ For the public multilingual leaderboard, use `asr-leaderboard-multilingual`. It 
 - Benchmark is defined in [`nemo_skills/dataset/asr-leaderboard/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/asr-leaderboard/__init__.py)
 - Original datasets are hosted on HuggingFace (downloaded automatically during preparation)
 
+### Multilingual LibriSpeech (MLS)
+
+`mls` is the standalone public MLS ASR benchmark, distinct from the four MLS
+configs embedded in `asr-leaderboard-multilingual`. It evaluates the official
+MLS `test` split for all eight languages in the primary paper's Table 6:
+English (`en`), German (`de`), Dutch (`nl`), French (`fr`), Spanish (`es`),
+Italian (`it`), Portuguese (`pt`), and Polish (`pl`).
+
+The source contract is immutable and fail-closed. Preparation downloads only
+the eight test Parquets, verifies their pinned repository revisions, byte sizes,
+SHA-256 hashes, and exact row counts, and then writes a manifest and a hashed
+`provenance.json` receipt. The seven non-English languages come from Meta's
+streamable [`facebook/multilingual_librispeech`](https://huggingface.co/datasets/facebook/multilingual_librispeech)
+release. English comes from the public [`parler-tts/mls_eng`](https://huggingface.co/datasets/parler-tts/mls_eng)
+streamable mirror of the OpenSLR English archive; this avoids downloading the
+651-GiB full compressed archive merely to extract its test split.
+
+Scoring uses language-aware normalization, preserves diacritics, and does not
+forgive compound-boundary differences. Every language receives its own corpus
+WER. The headline `mls` WER is the unweighted mean of the eight language WERs;
+the sample/word-weighted combined statistic is retained only as the explicitly
+named `wer_corpus`, not used as the headline. The MLS paper does not define a
+SpeechLM chat prompt, so the stored transcription prompt is a disclosed
+generative-ASR adapter rather than part of the paper protocol.
+
+Prepare the complete benchmark:
+
+```bash
+ns prepare_data mls --data_dir=/path/to/data --cluster=<cluster>
+```
+
+The prepared inventory contains 17,702 utterances: `en=3769`, `de=3394`,
+`nl=3075`, `fr=2426`, `es=2385`, `it=1262`, `pt=871`, and `pl=520`.
+The benchmark definition and pins live in
+[`nemo_skills/dataset/mls/`](https://github.com/NVIDIA-NeMo/Skills/tree/main/nemo_skills/dataset/mls).
+
 ### AppTek Call-Center Dialogues
 
 AppTek Call-Center Dialogues is a long-form English ASR benchmark of role-played agent-customer calls across 14 accent groups and 16 service domains. It contains 1,746 split-channel WAV files, totaling 128.6 hours. Many calls run several minutes long (the longest exceeds 20 minutes), so a model's generation budget and long-audio settings often need tuning before evaluation.
@@ -962,7 +998,9 @@ SALM output with <spk:N> tags
 - Benchmark group: [`nemo_skills/dataset/multispeaker-sot/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/multispeaker-sot/__init__.py)
 - Evaluator: [`nemo_skills/evaluation/evaluator/audio.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/evaluator/audio.py) (`evaluate_msasr`)
 - cpWER engine: [`nemo_skills/evaluation/metrics/cpwer_utils.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/metrics/cpwer_utils.py)
-- Source manifests: cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
+- Source manifests: IAD/ORD cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
+- Pinned under-20s AMI IHM dev source: `under20s_eval_set/ami_ihm_dev_10-20s.json`, 476 rows, SHA-256 `e8ebe7f8e5c285f6b3e3ef3961c3ecf9c8766bb32c294c86bead1c0ee74250c9`
+- DFW has no default raw manifest/audio mirror; cross-cluster preparation must follow the immutable-closure procedure below.
 
 ### Supported Benchmarks
 
@@ -1026,6 +1064,28 @@ Manifests are converted from the shared multispeaker eval manifest root. Audio s
 
 ```bash
 ns prepare_data multispeaker-sot --cluster=iad --data_dir=/path/to/data
+```
+
+DFW must not fall back to the IAD path. Copying only
+`under20s_eval_set/ami_ihm_dev_10-20s.json` is insufficient because its rows
+reference the raw AMI audio tree. The safe cross-cluster contract is:
+
+1. Prepare into a new immutable data root on IAD, where both the pinned source
+   manifests and referenced raw audio are authoritative.
+2. Seal every prepared leaf/group manifest hash and row count, plus the exact
+   closure of referenced, readable, non-empty audio files.
+3. Mirror that self-contained prepared closure directly from IAD durable storage
+   to a fresh DFW durable-storage destination. Do not stage through a home directory.
+4. Recompute the same hashes/counts on DFW before publishing a READY receipt or
+   launching evaluation.
+
+A site may instead expose a complete, hash-verified raw mirror on DFW. Both the
+manifest and every referenced source audio file must be present; pass its root
+explicitly (there is intentionally no DFW default):
+
+```bash
+ns prepare_data multispeaker-sot --cluster=dfw \
+    --manifest-root=/lustre/.../verified/eval_manifests --data_dir=/path/to/data
 ```
 
 The merged group benchmarks above need one extra step, which concatenates the already-prepared member `test.jsonl` files (no audio is touched). Group membership is read from the dataset package, so the data dir only needs the prepared member sets:

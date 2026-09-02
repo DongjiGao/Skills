@@ -53,6 +53,15 @@ def test_parse_sot_speaker_streams_default_spk_tags():
     assert streams["s1"] == "good morning"
 
 
+def test_canonical_tagless_hypothesis_becomes_one_speaker_stream():
+    streams = parse_sot_speaker_streams(
+        "hello without a speaker tag",
+        mode="canonical",
+        strict_tag_style="spk",
+    )
+    assert streams == {"s0": "hello without a speaker tag"}
+
+
 def test_chime8_normalizer_is_idempotent():
     text = "Hello, Dr. Smith said 10 dollars."
     once = normalize_chime8(text)
@@ -149,26 +158,30 @@ def test_cpwer_parity_with_meeteval_chime8(reference, hypothesis):
     normalized_hyp = {speaker: normalize_chime8(text) for speaker, text in hyp_streams.items()}
     skills_counts = session_cpwer_counts(normalized_ref, normalized_hyp)
 
-    ref_seglst = meeteval.io.SegLST([
-        meeteval.io.SegLSTSegment(
-            session_id="session",
-            speaker=speaker,
-            words=text,
-            start_time=float(idx),
-            end_time=float(idx + 1),
-        )
-        for idx, (speaker, text) in enumerate(normalized_ref.items())
-    ])
-    hyp_seglst = meeteval.io.SegLST([
-        meeteval.io.SegLSTSegment(
-            session_id="session",
-            speaker=speaker,
-            words=text,
-            start_time=float(idx),
-            end_time=float(idx + 1),
-        )
-        for idx, (speaker, text) in enumerate(normalized_hyp.items())
-    ])
+    ref_seglst = meeteval.io.SegLST(
+        [
+            meeteval.io.SegLSTSegment(
+                session_id="session",
+                speaker=speaker,
+                words=text,
+                start_time=float(idx),
+                end_time=float(idx + 1),
+            )
+            for idx, (speaker, text) in enumerate(normalized_ref.items())
+        ]
+    )
+    hyp_seglst = meeteval.io.SegLST(
+        [
+            meeteval.io.SegLSTSegment(
+                session_id="session",
+                speaker=speaker,
+                words=text,
+                start_time=float(idx),
+                end_time=float(idx + 1),
+            )
+            for idx, (speaker, text) in enumerate(normalized_hyp.items())
+        ]
+    )
 
     from chime_utils.text_norm import get_txt_norm
 

@@ -41,6 +41,50 @@ def _split_mount_spec(mount: str, allow_rw_mode: bool = True) -> tuple[str, str,
     return mount_source, mount_target, mount_mode
 
 
+def _is_path_prefix(path: str, prefix: str) -> bool:
+    """Return whether ``path`` is ``prefix`` or one of its descendants."""
+    prefix = prefix.rstrip("/") or "/"
+    if prefix == "/":
+        return path.startswith("/")
+    return path == prefix or path.startswith(f"{prefix}/")
+
+
+def _most_specific_mount_match(
+    cluster_config: dict,
+    path: str,
+    *,
+    source_first: bool,
+) -> tuple[str, str, str] | None:
+    """Find the longest source/destination prefix that contains ``path``.
+
+    Cluster configs commonly contain a broad compatibility mount plus an exact
+    child rebind. Selecting the first prefix rewrites the child through the
+    broad parent and can validate or mount a nonexistent host path. Longest
+    prefix matching gives the exact child precedence independently of config
+    order. ``source_first`` preserves the historical tie behavior of the two
+    public path-conversion helpers.
+    """
+    matches = []
+    for order, mount in enumerate(
+        get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]
+    ):
+        source, destination, _ = _split_mount_spec(mount)
+        candidates = (
+            ((source, "source"), (destination, "destination"))
+            if source_first
+            else ((destination, "destination"), (source, "source"))
+        )
+        for tie_order, (prefix, kind) in enumerate(candidates):
+            prefix = prefix.rstrip("/") or "/"
+            if _is_path_prefix(path, prefix):
+                matches.append((len(prefix), -order, -tie_order, source, destination, kind))
+
+    if not matches:
+        return None
+    _, _, _, source, destination, kind = max(matches)
+    return source, destination, kind
+
+
 def is_mounted_filepath(cluster_config: dict | None, path: str, mounts: Optional[list] = None) -> bool:
     """
     Check if the filepath is mounted using the cluster config. Does not raise an error if the filepath is not mounted.
@@ -57,7 +101,7 @@ def is_mounted_filepath(cluster_config: dict | None, path: str, mounts: Optional
     # Find which mount path matches the filepaths prefix
     for mount in mounts:
         _, mount_dest, _ = _split_mount_spec(mount)
-        if path.startswith(mount_dest):
+        if _is_path_prefix(path, mount_dest):
             return True
 
     return False
@@ -199,27 +243,16 @@ def get_mounted_path(cluster_config: dict, path: str):
     if path is None:
         return None
 
-    # Find which mount path matches the filepaths prefix
-    mount_path = None
-    for mount in get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]:
-        mount_source, mount_dest, _ = _split_mount_spec(mount)
-        mount_source = mount_source.rstrip("/")
-        if path.startswith(mount_source):
-            mount_path = mount
-            break
-
-        elif path.startswith(mount_dest):
-            # already mounted, return immediately
-            return path
-
-    if mount_path is None:
+    match = _most_specific_mount_match(cluster_config, path, source_first=True)
+    if match is None:
         raise ValueError(
             f"Could not find a mount path for the file path `{path}`. Check cluster config. Below paths are mounted: \n"
             f"{cluster_config['mounts']}"
         )
 
-    # replace the mount destination inside the filepath with the mount source
-    mount_source, mount_dest, _ = _split_mount_spec(mount_path)
+    mount_source, mount_dest, kind = match
+    if kind == "destination":
+        return path
     # append the rest of the path to the mount destination
     relative = path[len(mount_source) :].lstrip("/")
     filepath = os.path.join(mount_dest, relative)
@@ -248,26 +281,16 @@ def get_unmounted_path(cluster_config: dict, path: str):
     if path is None:
         return None
 
-    # Find which mount path matches the filepaths prefix
-    mount_path = None
-    for mount in get_mounts_from_config(cluster_config) + ["/nemo_run/code:/nemo_run/code"]:
-        mount_source, mount_dest, _ = _split_mount_spec(mount)
-        if path.startswith(mount_dest):
-            mount_path = mount
-            break
-
-        elif path.startswith(mount_source):
-            # already mounted, return immediately
-            return path
-
-    if mount_path is None:
+    match = _most_specific_mount_match(cluster_config, path, source_first=False)
+    if match is None:
         raise ValueError(
             f"Could not find a mount path for the file path `{path}`. Check cluster config. Below paths are mounted: \n"
             f"{cluster_config['mounts'] + ['/nemo_run/code:/nemo_run/code']}"
         )
 
-    # replace the mount destination inside the filepath with the mount source
-    mount_source, mount_dest, _ = _split_mount_spec(mount_path)
+    mount_source, mount_dest, kind = match
+    if kind == "source":
+        return path
 
     # append the rest of the path to the mount source
     filepath = mount_source + path[len(mount_dest) :]  # replace the mount destination with the mount source

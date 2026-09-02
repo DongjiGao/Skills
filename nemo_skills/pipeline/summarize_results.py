@@ -66,6 +66,11 @@ ASR_LEADERBOARD_MULTILINGUAL_LANGUAGE_DATASETS = {
     "pt": ("fleurs_pt", "mls_pt"),
 }
 
+ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS = ("earnings21", "earnings22", "tedlium")
+ASR_LEADERBOARD_LONGFORM_CORAAL_SUBSETS = tuple(
+    f"coraal_{config}" for config in ("ATL", "DCA", "DCB", "DTA", "LES", "PRV", "ROC", "VLD")
+)
+
 
 def _weighted_mean(metrics: list[dict], key: str):
     weighted_sum = 0.0
@@ -142,6 +147,111 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
 
         for language, language_metrics in language_metrics_by_code.items():
             metrics.setdefault(language, {})[eval_mode] = language_metrics
+
+
+MLS_LANGUAGE_CODES = ("en", "de", "nl", "fr", "es", "it", "pt", "pl")
+
+
+def _set_mls_language_macro_wer(metrics: dict):
+    """Make the unweighted language macro the MLS headline WER.
+
+    AudioMetrics naturally computes a corpus/micro WER for ``_all_``.  MLS has
+    strongly unequal language-set sizes, so that number must not masquerade as
+    the benchmark headline.  Preserve it under the explicit ``wer_corpus``
+    name, preserve the per-utterance mean separately, and expose the mean of
+    the eight per-language corpus WERs as both ``wer`` and ``wer_macro`` for
+    generic reporting compatibility.
+    """
+    if "_all_" not in metrics:
+        return
+
+    observed_languages = {name for name in metrics if name != "_all_"}
+    expected_languages = set(MLS_LANGUAGE_CODES)
+    if observed_languages != expected_languages:
+        raise ValueError(
+            "MLS language-macro WER requires the complete official eight-language test set: "
+            f"expected={sorted(expected_languages)}, observed={sorted(observed_languages)}"
+        )
+
+    for eval_mode, overall_metrics in metrics["_all_"].items():
+        language_wers = []
+        for language in MLS_LANGUAGE_CODES:
+            language_metrics = metrics[language].get(eval_mode)
+            if language_metrics is None or language_metrics.get("wer") is None:
+                raise ValueError(f"MLS {language} is missing corpus WER for evaluation mode {eval_mode!r}")
+            language_wers.append(language_metrics["wer"])
+
+        language_macro = round(sum(language_wers) / len(language_wers), 2)
+        if "wer" in overall_metrics:
+            overall_metrics["wer_corpus"] = overall_metrics["wer"]
+        if "wer_macro" in overall_metrics:
+            overall_metrics["wer_utterance_macro"] = overall_metrics["wer_macro"]
+        overall_metrics["wer_language_macro"] = language_macro
+        overall_metrics["wer_macro"] = language_macro
+        overall_metrics["wer"] = language_macro
+        overall_metrics["languages_scored"] = len(language_wers)
+
+def _set_asr_leaderboard_longform_macro_wer(metrics: dict):
+    """Apply the official English long-form hierarchical macro.
+
+    Open ASR first macro-averages the eight CORAAL subset WERs. Its headline
+    ``Average`` then macro-averages Earnings-21, Earnings-22, TED-LIUM, and
+    that CORAAL macro. Leaf WERs are already corpus WERs rounded to two
+    decimals, matching the pinned leaderboard scorer before this hierarchy.
+    """
+    if "_all_" not in metrics:
+        raise ValueError("Open ASR long-form metrics are missing the _all_ aggregate")
+
+    expected_subsets = set(ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS) | set(
+        ASR_LEADERBOARD_LONGFORM_CORAAL_SUBSETS
+    )
+    observed_subsets = set(metrics) - {"_all_"}
+    if observed_subsets != expected_subsets:
+        raise ValueError(
+            "Open ASR long-form leaf coverage drift: "
+            f"expected={sorted(expected_subsets)}, observed={sorted(observed_subsets)}"
+        )
+
+    coraal_metrics_by_mode = {}
+    for eval_mode, overall_metrics in metrics["_all_"].items():
+        leaf_metrics = {}
+        for subset in expected_subsets:
+            if eval_mode not in metrics[subset] or metrics[subset][eval_mode].get("wer") is None:
+                raise ValueError(f"Open ASR long-form {subset} is missing {eval_mode} WER")
+            leaf_metrics[subset] = metrics[subset][eval_mode]
+
+        coraal_items = [leaf_metrics[subset] for subset in ASR_LEADERBOARD_LONGFORM_CORAAL_SUBSETS]
+        coraal_wer = round(sum(item["wer"] for item in coraal_items) / len(coraal_items), 6)
+        without_coraal = round(
+            sum(leaf_metrics[subset]["wer"] for subset in ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS)
+            / len(ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS),
+            6,
+        )
+        official_average = round(
+            (
+                sum(leaf_metrics[subset]["wer"] for subset in ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS)
+                + coraal_wer
+            )
+            / (len(ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS) + 1),
+            6,
+        )
+        overall_metrics["coraal_wer"] = coraal_wer
+        overall_metrics["wer_without_coraal"] = without_coraal
+        overall_metrics["wer"] = official_average
+
+        total_entries = sum(item.get("num_entries", 0) for item in coraal_items)
+        coraal_metrics = {"wer": coraal_wer, "num_entries": total_entries}
+        for key in ("avg_tokens", "success_rate", "no_answer", "wer_macro"):
+            value = _weighted_mean(coraal_items, key)
+            if value is not None:
+                coraal_metrics[key] = round(value, 2)
+        for key in ("gen_seconds", "substitutions", "insertions", "deletions", "ref_words"):
+            value = _sum_present(coraal_items, key)
+            if value is not None:
+                coraal_metrics[key] = value
+        coraal_metrics_by_mode[eval_mode] = coraal_metrics
+
+    metrics["coraal_avg"] = coraal_metrics_by_mode
 
 
 def add_benchmark_groups(results, metrics_to_print, evaluations_to_print):
@@ -259,6 +369,8 @@ def summarize_results(
     max_samples: int = typer.Option(-1, help="Limit metric computation only to first `max_samples`"),
     metric_type: Optional[str] = typer.Option(
         None,
+        "--metric_type",
+        "--metric-type",
         help="Specify metric type to use a specific metric calculator.",
     ),
     max_seq_len: Optional[int] = typer.Option(
@@ -267,17 +379,27 @@ def summarize_results(
     ),
     save_metrics_path: Optional[str] = typer.Option(
         None,
+        "--save_metrics_path",
+        "--save-metrics-path",
         help="Path to save the metrics.json file. If not specified, will save to results_dir/metrics.json.",
     ),
     verbose: bool = typer.Option(True, help="Print download/upload progress"),
-    wandb_name: Optional[str] = typer.Option(None, help="Name of the wandb experiment to sync these results to"),
-    wandb_group: str = typer.Option(None, help="Name of the wandb group to sync results to."),
+    wandb_name: Optional[str] = typer.Option(
+        None, "--wandb_name", "--wandb-name", help="Name of the wandb experiment to sync these results to"
+    ),
+    wandb_group: str = typer.Option(
+        None, "--wandb_group", "--wandb-group", help="Name of the wandb group to sync results to."
+    ),
     wandb_project: str = typer.Option(
         "nemo-skills",
+        "--wandb_project",
+        "--wandb-project",
         help="Name of the wandb project to sync results to.",
     ),
     metrics_kwargs: str = typer.Option(
         "",
+        "--metrics_kwargs",
+        "--metrics-kwargs",
         help="Additional kwargs to pass to the metrics calculator. Values should be provided as a JSON string or as a `dict` if invoking from code.",
     ),
 ):
@@ -460,6 +582,10 @@ def summarize_results(
             _set_asr_leaderboard_macro_wer(metrics)
         if benchmark == "asr-leaderboard-multilingual" and len(metrics) > 1:
             _set_asr_leaderboard_multilingual_macro_wer(metrics)
+        if benchmark == "mls" and len(metrics) > 1:
+            _set_mls_language_macro_wer(metrics)
+        if benchmark == "asr-leaderboard-longform" and len(metrics) > 1:
+            _set_asr_leaderboard_longform_macro_wer(metrics)
         if len(metrics) > 1:  # has subsets
             for subset, subset_metrics in metrics.items():
                 results[get_subset_name(benchmark, subset)].update(subset_metrics)

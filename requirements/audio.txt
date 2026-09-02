@@ -12,6 +12,9 @@ sacrebleu[ja,ko]
 # Audio file I/O for dataset preparation
 soundfile
 
+# Deterministic high-quality resampling for pinned public ASR sources
+scipy==1.17.1
+
 # torchcodec requires FFmpeg shared libraries (not installable via pip).
 # Install via system package manager before running pip install:
 #   Linux: sudo apt install ffmpeg
@@ -23,3 +26,19 @@ whisper-normalizer==0.1.12
 
 # Open ASR compound-aware WER and NeMo-compatible cpWER edit distance
 kaldialign==0.12.0
+
+# Official ASCEND mixed-error-rate segmentation
+jieba==0.42.1
+
+# Official VoiceBench SD-QA PEDANT metric
+qa_metrics==0.2.17
+
+# VoiceBench's pinned local IFEval fork
+absl-py
+immutabledict
+langdetect
+nltk
+
+# Official lattice-aware Hindi scorer for VoiceArena Monsoon public ASR
+voi-oiwer==0.1.4
+indic-nlp-library==0.92
