@@ -329,6 +329,28 @@ def test_audio_as_path_shared_filesystem_server_opt_in():
     assert model.audio_as_path is True
 
 
+def test_shared_filesystem_server_allows_vllm_specific_request_params():
+    """A co-scheduled vLLM server supports native vLLM decode parameters."""
+    with _stub_vllm_base():
+        model = VLLMMultimodalModel(
+            base_url="http://pool0-node-123:5000/v1",
+            shared_filesystem_server=True,
+        )
+
+    assert model._build_request_body(
+        top_k=20,
+        min_p=0.05,
+        repetition_penalty=1.02,
+        extra_body={"skip_special_tokens": False},
+    ) == {
+        "min_p": 0.05,
+        "repetition_penalty": 1.02,
+        "top_k": 20,
+        "skip_special_tokens": False,
+        "spaces_between_special_tokens": False,
+    }
+
+
 def test_audio_as_path_rejected_for_input_audio_format():
     """audio_as_path=True with input_audio format must raise even when local."""
     with _stub_vllm_base():

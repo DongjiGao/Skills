@@ -218,7 +218,7 @@ class VLLMMultimodalModel(VLLMModel):
             ValueError: If vLLM-specific params are set to non-default values in external API mode.
         """
         # For external APIs, fail if user explicitly set vLLM-specific parameters
-        if self._external_api_mode:
+        if self._external_api_mode and not self.shared_filesystem_server:
             non_default_params = []
             if top_k != -1:
                 non_default_params.append(f"top_k={top_k}")
