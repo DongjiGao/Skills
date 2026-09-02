@@ -6,7 +6,10 @@
 REQUIRES_DATA_DIR = True
 METRICS_TYPE = "mandarin_meeting"
 EVAL_ARGS = (
-    "++eval_type=mandarin_meeting ++eval_config.speaker_token='<spk:*>' ++eval_config.normalization=aishell4-sot"
+    # The scorer maps the bare token ``spk`` to the same tag style. Keeping
+    # ``<spk:*>`` here is unsafe because nested generated shells can parse it
+    # as input redirection before Hydra receives the argument.
+    "++eval_type=mandarin_meeting ++eval_config.speaker_token=spk ++eval_config.normalization=aishell4-sot"
 )
 GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
 GENERATION_MODULE = "nemo_skills.inference.generate"
