@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Open-ended questions evaluated with LLM judge (Qwen)
+# Open-ended questions evaluated with the NVIDIA-hosted LLM judge.
 METRICS_TYPE = "mmau_pro_open_ended"
 SCORE_MODULE = "nemo_skills.evaluation.metrics.mmau_pro_metrics"
 GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
 
 # Judge configuration for open-ended evaluation using NVIDIA API
 JUDGE_PIPELINE_ARGS = {
-    "model": "qwen/qwen2.5-7b-instruct",
+    "model": "openai/openai/gpt-4o-mini",
     "server_type": "openai",
     "server_address": "https://inference-api.nvidia.com/v1",
 }

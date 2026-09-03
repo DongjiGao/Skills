@@ -71,6 +71,7 @@ def test_profile_name_is_separate_and_full_mmau_pro_is_unchanged():
 def test_open_ended_judge_uses_current_nvidia_inference_hub_contract():
     open_ended = importlib.import_module("nemo_skills.dataset.mmau-pro.open_ended")
     assert open_ended.JUDGE_PIPELINE_ARGS["server_address"] == ("https://inference-api.nvidia.com/v1")
+    assert open_ended.JUDGE_PIPELINE_ARGS["model"] == "openai/openai/gpt-4o-mini"
     assert "++server.api_key_env_var=NVIDIA_INFERENCE_HUB_API_KEY" in open_ended.JUDGE_ARGS
 
 
