@@ -263,15 +263,31 @@ def split_tokens(text: str) -> list[str]:
     return re.findall(r"\w+|[^\w\s]", text)
 
 
+# Han ideographs used by the han_adjacent CER whitespace predicate and by the
+# Han component of the scriptio-continua segmentation set.
+_HAN_RANGES = (
+    "〇"  # Ideographic number zero
+    "㐀-䶿"  # CJK Unified Ideographs Extension A
+    "一-鿿"  # CJK Unified Ideographs
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "\U00020000-\U0002A6DF"  # Extension B
+    "\U0002A700-\U0002B73F"  # Extension C
+    "\U0002B740-\U0002B81F"  # Extension D
+    "\U0002B820-\U0002CEAF"  # Extension E
+    "\U0002CEB0-\U0002EBEF"  # Extension F
+    "\U0002EBF0-\U0002EE5F"  # Extension I
+    "\U0002F800-\U0002FA1F"  # Compatibility Ideographs Supplement
+    "\U00030000-\U0003134F"  # Extension G
+    "\U00031350-\U000323AF"  # Extension H
+)
+_HAN_RE = re.compile(f"[{_HAN_RANGES}]")
+
 # Scriptio-continua scripts (no inter-word spaces) whose units are tokenized
 # individually for Mixed Error Rate, while space-delimited scripts (e.g. Latin)
 # keep their whitespace-delimited words. Covers every CER-style script that
 # occurs in CS-FLEURS plus the obvious siblings (Lao/Khmer).
 _CONTINUA_RANGES = (
-    "㐀-䶿"  # CJK Unified Ideographs Extension A
-    "一-鿿"  # CJK Unified Ideographs
-    "豈-﫿"  # CJK Compatibility Ideographs
-    "぀-ゟ"  # Hiragana
+    _HAN_RANGES + "぀-ゟ"  # Hiragana
     "゠-ヿ"  # Katakana
     "ㇰ-ㇿ"  # Katakana Phonetic Extensions
     "ᄀ-ᇿ"  # Hangul Jamo
@@ -284,6 +300,42 @@ _CONTINUA_RANGES = (
     "ក-៿"  # Khmer
 )
 _CONTINUA_RE = re.compile(f"[{_CONTINUA_RANGES}]")
+VALID_CER_WHITESPACE_MODES = frozenset({"keep", "all", "han_adjacent"})
+
+
+def normalize_cer_whitespace(text: str, mode: str = "keep") -> str:
+    """Normalize whitespace for CER without losing Latin word boundaries.
+
+    ``han_adjacent`` removes a whitespace run only when the nearest
+    non-whitespace character on either side belongs to the Han script. For
+    example, ``今 天 use AI`` becomes ``今天use AI``: formatting
+    spaces around Han are ignored, while the meaningful English word boundary
+    is retained.
+    """
+    if not isinstance(mode, str) or mode not in VALID_CER_WHITESPACE_MODES:
+        raise ValueError(f"Invalid CER whitespace mode {mode!r}; expected one of {sorted(VALID_CER_WHITESPACE_MODES)}")
+    if mode == "keep":
+        return text
+    if mode == "all":
+        return re.sub(r"\s+", "", text)
+
+    output: list[str] = []
+    index = 0
+    while index < len(text):
+        if not text[index].isspace():
+            output.append(text[index])
+            index += 1
+            continue
+
+        whitespace_end = index + 1
+        while whitespace_end < len(text) and text[whitespace_end].isspace():
+            whitespace_end += 1
+        left = text[index - 1] if index > 0 else ""
+        right = text[whitespace_end] if whitespace_end < len(text) else ""
+        if not (_HAN_RE.fullmatch(left) or _HAN_RE.fullmatch(right)):
+            output.append(text[index:whitespace_end])
+        index = whitespace_end
+    return "".join(output)
 
 
 def _grapheme_clusters(text: str) -> list[str]:
@@ -565,6 +617,58 @@ VALID_NORMALIZATION_MODES = (
     "lower_nopunct",
 )
 VALID_CPWER_NORMALIZATION_MODES = ("chime8", "none")
+
+
+def resolve_cer_whitespace_mode(override: bool | str | None = None) -> str:
+    """Resolve a validated CER whitespace mode.
+
+    A string override accepts ``keep``, ``all``, or ``han_adjacent``.
+    Boolean overrides are retained for compatibility with the old
+    ``cer_strip_whitespace`` metadata: ``True`` means ``all`` and ``False``
+    means ``keep``. Values such as the string ``"false"`` are rejected rather
+    than silently evaluating as truthy.
+    """
+    if override is None:
+        return "keep"
+    if isinstance(override, bool):
+        return "all" if override else "keep"
+    if not isinstance(override, str) or override not in VALID_CER_WHITESPACE_MODES:
+        raise ValueError(
+            f"Invalid CER whitespace override {override!r}; expected a boolean or one of "
+            f"{sorted(VALID_CER_WHITESPACE_MODES)}"
+        )
+    return override
+
+
+def resolve_sample_cer_whitespace_mode(extra_fields: dict[str, Any]) -> str:
+    """Resolve CER whitespace behavior from one dataset record.
+
+    New datasets should set ``cer_whitespace_mode``. The legacy Boolean
+    ``cer_strip_whitespace`` remains supported, but specifying both is an error.
+    CS-FLEURS keeps its paper-comparable all-whitespace CER by default; an
+    explicit record override always wins.
+    """
+    has_mode = "cer_whitespace_mode" in extra_fields
+    has_legacy = "cer_strip_whitespace" in extra_fields
+    if has_mode and has_legacy:
+        raise ValueError("Set only one of cer_whitespace_mode and cer_strip_whitespace")
+    if has_mode:
+        mode = extra_fields["cer_whitespace_mode"]
+        if not isinstance(mode, str):
+            raise ValueError(f"cer_whitespace_mode must be one of {sorted(VALID_CER_WHITESPACE_MODES)}")
+        return resolve_cer_whitespace_mode(mode)
+    if has_legacy:
+        strip_whitespace = extra_fields["cer_strip_whitespace"]
+        if not isinstance(strip_whitespace, bool):
+            raise ValueError("cer_strip_whitespace must be a boolean")
+        return resolve_cer_whitespace_mode(strip_whitespace)
+    # Code-switched MER records use paper-comparable all-whitespace CER in
+    # parallel with their boundary-preserving headline MER.
+    if extra_fields.get("use_mer", False):
+        return "all"
+    return "keep"
+
+
 TASKS_NEED_PARSING = {
     "ASR",
     "ASR-PC",
@@ -1065,15 +1169,29 @@ def evaluate_cer(
     normalization_mode: str = "none",
     key_prefix: str = "cer",
     normalize_compound: bool = False,
-    strip_whitespace: bool = False,
+    strip_whitespace: bool | None = None,
+    whitespace_mode: str = "keep",
     **kwargs,
 ) -> dict[str, Any]:
     """Evaluate CER: character-level edit distance.
 
-    strip_whitespace removes all whitespace before scoring, so CER is computed over
-    the bare character sequence (spaces not counted). This matches the CS-FLEURS
-    paper's character error rate; default False keeps spaces (existing behavior).
+    ``whitespace_mode`` controls how spaces are scored: ``keep`` preserves them,
+    ``all`` removes them globally, and ``han_adjacent`` removes only spaces
+    adjacent to Han characters. ``strip_whitespace`` is the legacy
+    Boolean spelling for ``all``/``keep``.
     """
+
+    # Validate the named mode before interpreting the legacy Boolean so an
+    # invalid mode is never hidden behind a misleading conflict error.
+    normalize_cer_whitespace("", mode=whitespace_mode)
+    if strip_whitespace is not None:
+        if not isinstance(strip_whitespace, bool):
+            raise ValueError("strip_whitespace must be a boolean when provided")
+        if whitespace_mode != "keep":
+            raise ValueError("Set only one of whitespace_mode and strip_whitespace")
+        whitespace_mode = "all" if strip_whitespace else "keep"
+    if normalize_compound and whitespace_mode == "han_adjacent":
+        raise ValueError("normalize_compound cannot be combined with han_adjacent CER whitespace mode")
 
     ref = preprocess_asr_text(reference, mode=normalization_mode, **kwargs)
     hyp = preprocess_asr_text(hypothesis, mode=normalization_mode, **kwargs)
@@ -1081,9 +1199,8 @@ def evaluate_cer(
     if normalize_compound:
         ref, hyp = normalize_compound_pairs(ref, hyp)
 
-    if strip_whitespace:
-        ref = re.sub(r"\s+", "", ref)
-        hyp = re.sub(r"\s+", "", hyp)
+    ref = normalize_cer_whitespace(ref, mode=whitespace_mode)
+    hyp = normalize_cer_whitespace(hyp, mode=whitespace_mode)
 
     # Mirror evaluate_asr: drop samples whose normalized reference is empty rather
     # than dividing by zero in the character edit distance.
@@ -1422,7 +1539,9 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         mode = resolve_asr_normalization_mode(config)
         extra_fields = sample.get("extra_fields", {})
         use_cer = extra_fields.get("use_cer", False)
+        use_mer = extra_fields.get("use_mer", False)
         src_lang = extra_fields.get("src_lang", None)
+        cer_whitespace_mode = resolve_sample_cer_whitespace_mode(extra_fields)
         if src_lang is not None and "_" in src_lang:
             src_lang = src_lang.split("_")[0]
         preprocess_kwargs = {
@@ -1433,13 +1552,18 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # the multilingual normalization so MER counts Thai/Myanmar vowels/tones (and so
         # grapheme-cluster segmentation is meaningful). num2words and other steps still
         # apply. Monolingual benchmarks keep the existing mark-stripping behavior.
-        if extra_fields.get("use_mer", False):
+        if use_mer:
             preprocess_kwargs["preserve_marks"] = True
         elif extra_fields.get("preserve_marks", False):
             preprocess_kwargs["preserve_marks"] = True
         # Only normalize compound pairs for non-English languages by default.
         normalize_compound = extra_fields.get("normalize_compound", src_lang not in [None, "en"])
         merge_compounds = extra_fields.get("merge_compounds", False)
+        # Non-keep whitespace semantics must not be undermined by the
+        # mismatch-region compound normalizer, which can join Latin words.
+        # Explicit keep and the legacy False value preserve pre-existing
+        # compound normalization behavior.
+        cer_normalize_compound = normalize_compound and not use_mer and cer_whitespace_mode == "keep"
 
         # Mixed WER column: CJK-style languages (use_cer) fold their CER into the WER
         # column (stored under wer* keys), all other languages contribute standard WER.
@@ -1447,12 +1571,15 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # scriptio-continua scripts by character and space-delimited scripts by word in
         # the same utterance; also stored under the wer* column. Monolingual benchmarks
         # (e.g. fleurs) never set use_mer, so their use_cer/WER behavior is unchanged.
-        if extra_fields.get("use_mer", False):
+        if use_mer:
             metrics = evaluate_mer(
                 expected_answer,
                 generation,
                 normalization_mode=mode,
-                normalize_compound=normalize_compound,
+                # mixed_segment already handles compact and spaced continua
+                # scripts. Compound normalization would erase English word
+                # boundaries before MER can score them.
+                normalize_compound=False,
                 grapheme=extra_fields.get("mer_grapheme", False),
                 **preprocess_kwargs,
             )
@@ -1462,7 +1589,8 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 generation,
                 normalization_mode=mode,
                 key_prefix="wer",  # fold CER into the mixed WER column
-                normalize_compound=normalize_compound,
+                normalize_compound=cer_normalize_compound,
+                whitespace_mode=cer_whitespace_mode,
                 **preprocess_kwargs,
             )
         else:
@@ -1480,16 +1608,17 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # reported separately (cer* keys) alongside the mixed WER column.
         # Code-switched benchmarks (use_mer, i.e. cs-fleurs) score this CER with
         # mark-preserving normalization (lowercase + unpunctuated, combining marks
-        # kept) so it matches the CS-FLEURS paper's CER; monolingual benchmarks keep
-        # the standard multilingual normalization unchanged.
-        cer_mode = "lower_nopunct" if extra_fields.get("use_mer", False) else mode
+        # kept) so it matches the CS-FLEURS paper's CER. Configured Mandarin and
+        # Cantonese benchmarks ignore Han-adjacent formatting spaces; Japanese,
+        # Korean, Vietnamese, and other CER languages retain whitespace by default.
+        cer_mode = "lower_nopunct" if use_mer else mode
         cer_metrics = evaluate_cer(
             expected_answer,
             generation,
             normalization_mode=cer_mode,
             key_prefix="cer",
-            normalize_compound=normalize_compound,
-            strip_whitespace=extra_fields.get("use_mer", False),
+            normalize_compound=cer_normalize_compound,
+            whitespace_mode=cer_whitespace_mode,
             **preprocess_kwargs,
         )
         # Merge only cer* keys so the mixed metric's is_correct/text/pred_text are preserved.
@@ -1505,7 +1634,14 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 updates[cer_key] = cer_metrics[cer_key]
 
     elif task_type == "CER":
-        metrics = evaluate_cer(expected_answer, generation, normalization_mode="none", key_prefix="cer")
+        extra_fields = sample.get("extra_fields", {})
+        metrics = evaluate_cer(
+            expected_answer,
+            generation,
+            normalization_mode="none",
+            key_prefix="cer",
+            whitespace_mode=resolve_sample_cer_whitespace_mode(extra_fields),
+        )
         updates.update(metrics)
 
     elif task_type == "MathQA":

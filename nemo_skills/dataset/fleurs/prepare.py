@@ -228,8 +228,8 @@ def _build_record(
     return record
 
 
-def _src_extra_fields(source_row: dict, src_locale: str) -> dict:
-    return {
+def _src_extra_fields(source_row: dict, src_locale: str, *, for_asr: bool = False) -> dict:
+    extra_fields = {
         "src_text": source_row["transcription"],
         "src_raw_text": source_row["raw_transcription"],
         "src_lang_name": get_lang_name(src_locale),
@@ -237,6 +237,12 @@ def _src_extra_fields(source_row: dict, src_locale: str) -> dict:
         "src_lang_group": get_lang_group(src_locale),
         "use_cer": src_locale in CER_LOCALES,
     }
+    # FLEURS Mandarin/Cantonese references may contain character-segmentation
+    # spaces. Ignore spaces around Han while preserving any embedded Latin word
+    # boundaries. Other CER locales keep their benchmark text unchanged.
+    if for_asr and src_locale in {"cmn_hans_cn", "yue_hant_hk"}:
+        extra_fields["cer_whitespace_mode"] = "han_adjacent"
+    return extra_fields
 
 
 def _collect_asr_records(
@@ -266,7 +272,7 @@ def _collect_asr_records(
                     duration=duration,
                     subset_for_metrics=src_locale,
                     task_type="ASR",
-                    extra_fields=_src_extra_fields(source_row, src_locale),
+                    extra_fields=_src_extra_fields(source_row, src_locale, for_asr=True),
                 )
             )
     return records
@@ -814,7 +820,7 @@ def prepare_fleurs(
                                 duration=float(row["duration"]),
                                 subset_for_metrics=locale,
                                 task_type="ASR",
-                                extra_fields=_src_extra_fields(row, locale),
+                                extra_fields=_src_extra_fields(row, locale, for_asr=True),
                             ),
                             ensure_ascii=False,
                         )
