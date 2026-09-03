@@ -21,6 +21,8 @@ GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"
 JUDGE_PIPELINE_ARGS = {
     "model": "qwen/qwen2.5-7b-instruct",
     "server_type": "openai",
-    "server_address": "https://integrate.api.nvidia.com/v1",
+    "server_address": "https://inference-api.nvidia.com/v1",
 }
-JUDGE_ARGS = "++prompt_config=judge/mmau-pro ++generation_key=judgement"
+JUDGE_ARGS = (
+    "++prompt_config=judge/mmau-pro ++generation_key=judgement ++server.api_key_env_var=NVIDIA_INFERENCE_HUB_API_KEY"
+)
