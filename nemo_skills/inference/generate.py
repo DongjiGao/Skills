@@ -1405,6 +1405,13 @@ class GenerationTask:
 
         if len(data) == 0:
             LOG.info("No data to process, skipping generation")
+            # Inline evaluators still consume the chunk output. Materialize an
+            # empty file so zero-row chunks can be evaluated and sealed.
+            if not self.cfg.dry_run:
+                output_path = Path(self.cfg.output_file)
+                if not self.cfg.skip_filled and output_path.exists():
+                    output_path.unlink()
+                output_path.touch(exist_ok=True)
         else:
             data = self.preprocess_data(data)
 
