@@ -243,20 +243,30 @@ class VoiceBenchEvaluator(BaseEvaluator):
 
     def _judge_sync(self, prompt: str) -> list[str]:
         request = dict(JUDGE_REQUEST_KWARGS)
+        target_outputs = int(request.get("n", 1))
         request["model"] = self.config.judge_model
         request["messages"] = judge_messages(prompt)
         error = None
+        outputs = []
         for _ in range(self.config.judge_max_retries):
+            request["n"] = target_outputs - len(outputs)
             try:
                 completion = self._get_client().chat.completions.create(**request)
-                outputs = [choice.message.content.strip() for choice in completion.choices]
+                batch = [choice.message.content.strip() for choice in completion.choices]
+                if not batch:
+                    raise RuntimeError("VoiceBench GPT judge returned no choices")
+                outputs.extend(batch[: target_outputs - len(outputs)])
                 if self.config.judge_success_sleep_seconds:
                     time.sleep(self.config.judge_success_sleep_seconds)
-                return outputs
+                if len(outputs) == target_outputs:
+                    return outputs
             except Exception as exc:  # noqa: BLE001 - official API helper retries every provider error
                 error = exc
-                time.sleep(self.config.judge_error_sleep_seconds)
-        raise RuntimeError("VoiceBench GPT judge exhausted retries") from error
+                if self.config.judge_error_sleep_seconds:
+                    time.sleep(self.config.judge_error_sleep_seconds)
+        raise RuntimeError(
+            f"VoiceBench GPT judge exhausted retries with {len(outputs)}/{target_outputs} choices"
+        ) from error
 
     def _pedant_sync(self, data_point: dict, response: str) -> bool:
         if self._pedant is None:
