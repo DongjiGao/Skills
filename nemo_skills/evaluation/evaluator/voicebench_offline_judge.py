@@ -155,7 +155,7 @@ def run(args: argparse.Namespace) -> None:
     missing = [index for index in range(len(source_rows)) if index not in completed]
     errors = Counter()
     partial_mode = "a" if partial_file.is_file() else "w"
-    with partial_file.open(partial_mode, encoding="utf-8") as partial_sink:
+    with partial_file.open(partial_mode, encoding="utf-8") as partial_sink:  # noqa: SIM117
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
             futures = {executor.submit(judge_one, index): index for index in missing}
             for ordinal, future in enumerate(as_completed(futures), start=1):
