@@ -108,6 +108,40 @@ def test_content_text_to_list_with_audio(mock_vllm_multimodal_model, tmp_path):
     assert result["content"][1]["type"] == "text"
 
 
+def test_content_text_to_list_deduplicates_compatible_audio_aliases(mock_vllm_multimodal_model, tmp_path):
+    """Prepared manifests may carry identical singular/plural compatibility aliases."""
+    audio_path = tmp_path / "test.wav"
+    with open(audio_path, "wb") as f:
+        f.write(b"RIFF" + b"\x00" * 100)
+
+    audio = {"path": "test.wav", "duration": 1.0}
+    message = {
+        "role": "user",
+        "content": "Describe this audio",
+        "audio": audio,
+        "audios": [audio],
+    }
+    result = mock_vllm_multimodal_model.content_text_to_list(message)
+
+    assert len(result["content"]) == 2
+    assert _is_valid_audio_content(result["content"][0])
+    assert "audio" not in result
+    assert "audios" not in result
+
+
+def test_content_text_to_list_rejects_conflicting_audio_aliases(mock_vllm_multimodal_model):
+    """Ambiguous singular/plural aliases must fail closed instead of dropping audio."""
+    message = {
+        "role": "user",
+        "content": "Describe this audio",
+        "audio": {"path": "first.wav"},
+        "audios": [{"path": "second.wav"}],
+    }
+
+    with pytest.raises(ValueError, match="Conflicting 'audio' and 'audios'"):
+        mock_vllm_multimodal_model.content_text_to_list(message)
+
+
 def test_content_text_to_list_with_audio_url_path_escapes_uri(mock_vllm_multimodal_model, tmp_path):
     """file:// audio URLs must be valid URIs even when local paths contain reserved characters."""
     audio_path = tmp_path / "test audio#1.wav"

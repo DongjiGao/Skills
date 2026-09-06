@@ -19,6 +19,13 @@ from nemo_skills.evaluation.evaluator.mandarin_meeting import evaluate_mandarin_
 ALIMEETING_PREPARE = import_module("nemo_skills.dataset.alimeeting-sot.prepare")
 AISHELL4_PREPARE = import_module("nemo_skills.dataset.aishell4-sot.prepare")
 
+
+@pytest.mark.parametrize("benchmark", ["alimeeting-sot", "aishell4-sot"])
+def test_mandarin_meeting_eval_args_are_shell_safe(benchmark):
+    eval_args = import_module(f"nemo_skills.dataset.{benchmark}").EVAL_ARGS
+    assert "speaker_token=spk" in eval_args
+    assert "<spk:*>" not in eval_args
+
 TEXTGRID = """File type = "ooTextFile"
 Object class = "TextGrid"
 

@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import random
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -258,6 +259,68 @@ def test_open_eval_sends_exact_chat_completion_request():
     assert request["messages"][0] == {"role": "system", "content": JUDGE_SYSTEM_PROMPT}
     assert result["score"] == ["5", "4", "5"]
     assert result["voicebench_open_ratings"] == [5.0, 4.0, 5.0]
+
+
+def test_open_eval_fills_underfilled_hosted_responses():
+    class UnderfilledCompletions:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **kwargs):
+            self.requests.append(kwargs.copy())
+            return type("Completion", (), {"choices": [_Choice("5")]})()
+
+    evaluator = VoiceBenchEvaluator(
+        {"judge_success_sleep_seconds": 0, "judge_error_sleep_seconds": 0}
+    )
+    evaluator._client = _FakeClient()
+    evaluator._client.chat.completions = UnderfilledCompletions()
+    point = {"voicebench_task": "commoneval", "prompt": "Question", "generation": "Answer"}
+
+    result = asyncio.run(evaluator.eval_single(point))
+
+    assert [request["n"] for request in evaluator._client.chat.completions.requests] == [3, 2, 1]
+    assert result["score"] == ["5", "5", "5"]
+    assert result["voicebench_open_ratings"] == [5.0, 5.0, 5.0]
+
+
+def test_open_eval_supports_configurable_judge_model():
+    evaluator = VoiceBenchEvaluator(
+        {
+            "judge_model": "openai/openai/gpt-4o-mini",
+            "judge_success_sleep_seconds": 0,
+            "judge_error_sleep_seconds": 0,
+        }
+    )
+    evaluator._client = _FakeClient()
+    point = {"voicebench_task": "commoneval", "prompt": "Question", "generation": "Answer"}
+    asyncio.run(evaluator.eval_single(point))
+
+    assert evaluator._client.chat.completions.request["model"] == "openai/openai/gpt-4o-mini"
+
+
+def test_judge_client_supports_configurable_hosted_route(monkeypatch):
+    observed = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setenv("NVIDIA_INFERENCE_HUB_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_FakeOpenAI))
+    evaluator = VoiceBenchEvaluator(
+        {
+            "openai_api_key_env": "NVIDIA_INFERENCE_HUB_API_KEY",
+            "openai_base_url": "https://inference-api.nvidia.com/v1",
+        }
+    )
+
+    evaluator._get_client()
+
+    assert observed == {
+        "api_key": "test-key",
+        "base_url": "https://inference-api.nvidia.com/v1",
+    }
 
 
 @pytest.mark.parametrize(
