@@ -24,7 +24,6 @@ pytest.importorskip("whisper_normalizer")
 from nemo_skills.evaluation.evaluator.audio import AudioEvaluatorConfig, evaluate_sample
 from nemo_skills.pipeline.summarize_results import _set_asr_leaderboard_multilingual_macro_wer
 
-
 prepare = import_module("nemo_skills.dataset.asr-leaderboard-multilingual.prepare")
 
 
@@ -83,6 +82,46 @@ def test_fleurs_default_multilingual_sample_still_strips_diacritics():
     assert result["text"] == "ete"
     assert result["pred_text"] == "ete"
     assert result["wer"] == 0
+
+
+@pytest.mark.parametrize("src_lang", ["cmn_hans_cn", "zh-CN"])
+def test_configured_chinese_cer_ignores_only_han_adjacent_whitespace(src_lang):
+    config = AudioEvaluatorConfig(normalization_mode="multilingual")
+    sample = {
+        "task_type": "Multilingual-ASR",
+        "expected_answer": "你 好 use AI",
+        "generation": "你好 use AI",
+        "extra_fields": {
+            "src_lang": src_lang,
+            "use_cer": True,
+            "cer_whitespace_mode": "han_adjacent",
+        },
+    }
+
+    result = evaluate_sample(sample, config)
+
+    # The mixed headline stores CJK CER under the historical wer* keys, while
+    # the parallel cer* detail uses the same dataset-configured character stream.
+    # Han-adjacent formatting spaces disappear, but the Latin word boundary stays.
+    assert result["wer"] == result["cer"] == 0
+    assert result["wer_errors"] == result["cer_errors"] == 0
+    assert result["text"] == result["pred_text"] == "你好use ai"
+
+
+def test_non_cer_multilingual_asr_preserves_word_boundaries():
+    config = AudioEvaluatorConfig(normalization_mode="multilingual")
+    sample = {
+        "task_type": "Multilingual-ASR",
+        "expected_answer": "alpha beta",
+        "generation": "alphabeta",
+        "extra_fields": {"src_lang": "en", "use_cer": False},
+    }
+
+    result = evaluate_sample(sample, config)
+
+    assert result["wer"] > 0
+    assert result["text"] == "alpha beta"
+    assert result["pred_text"] == "alphabeta"
 
 
 def test_open_asr_multilingual_sample_uses_kaldialign_compound_merging():

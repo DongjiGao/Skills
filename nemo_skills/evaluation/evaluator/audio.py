@@ -1552,9 +1552,7 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # the multilingual normalization so MER counts Thai/Myanmar vowels/tones (and so
         # grapheme-cluster segmentation is meaningful). num2words and other steps still
         # apply. Monolingual benchmarks keep the existing mark-stripping behavior.
-        if use_mer:
-            preprocess_kwargs["preserve_marks"] = True
-        elif extra_fields.get("preserve_marks", False):
+        if use_mer or extra_fields.get("preserve_marks", False):
             preprocess_kwargs["preserve_marks"] = True
         # Only normalize compound pairs for non-English languages by default.
         normalize_compound = extra_fields.get("normalize_compound", src_lang not in [None, "en"])
