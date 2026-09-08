@@ -354,16 +354,19 @@ class VLLMMultimodalModel(VLLMModel):
         elif not isinstance(content, list):
             raise TypeError(f"Unexpected content type: {type(content)}")
 
-        audio_items = []
+        audio = result.pop("audio", None)
+        audios = result.pop("audios", None)
+        if audio is not None:
+            if audios is not None and audios != [audio]:
+                raise ValueError("Conflicting 'audio' and 'audios' fields in one message")
+            audio_inputs = [audio]
+        else:
+            audio_inputs = audios or []
 
-        if "audio" in result:
-            audio = result.pop("audio")
+        audio_items = []
+        for audio in audio_inputs:
             audio_path = os.path.join(self.data_dir, audio["path"])
             audio_items.append(self._make_audio_input_block(audio_path))
-        elif "audios" in result:
-            for audio in result.pop("audios"):
-                audio_path = os.path.join(self.data_dir, audio["path"])
-                audio_items.append(self._make_audio_input_block(audio_path))
 
         if audio_items:
             result["content"] = audio_items + result["content"]
