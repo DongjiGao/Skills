@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from nemo_skills.evaluation.evaluator.audio import resolve_sample_cer_whitespace_mode
+
 languages = import_module("nemo_skills.dataset.cs-fleurs.languages")
 audio_score = import_module("nemo_skills.dataset.cs-fleurs.audio_score")
 prepare = import_module("nemo_skills.dataset.cs-fleurs.prepare")
@@ -91,6 +93,24 @@ class TestUsesGrapheme:
         # Han/kana/Hangul are precomposed (no combining marks); Latin is
         # space-delimited. None need grapheme-cluster segmentation.
         assert languages.uses_grapheme(matrix) is False
+
+
+class TestPrepareMetadata:
+    def test_parallel_cer_explicitly_removes_all_whitespace(self):
+        record = prepare._build_record(
+            {
+                "id": "cmn-eng-1",
+                "language": "cmn-eng",
+                "file_name": "audio/cmn/sample.wav",
+                "duration": 1.5,
+                "text": "今 天 use AI",
+            },
+            raw_subdir="read/test",
+            subset="read",
+        )
+
+        assert record["extra_fields"]["use_mer"] is True
+        assert resolve_sample_cer_whitespace_mode(record["extra_fields"]) == "all"
 
 
 class TestComputeScore:

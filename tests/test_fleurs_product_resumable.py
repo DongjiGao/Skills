@@ -151,6 +151,29 @@ def test_fleurs_product_parallel_shards_publish_deterministically(tmp_path, monk
     assert receipt["st_manifest_sha256"] == hashlib.sha256((tmp_path / "st" / "test.jsonl").read_bytes()).hexdigest()
 
 
+def test_fleurs_product_applies_han_whitespace_only_to_asr(tmp_path, monkeypatch):
+    languages = ["en_us", "cmn_hans_cn", "yue_hant_hk"]
+    monkeypatch.setattr(prepare, "OFFICIAL_PRODUCT_LANGUAGES", tuple(languages))
+    monkeypatch.setattr(prepare, "EXPECTED_TEST_LOCALE_COUNTS", {locale: 1 for locale in languages})
+    monkeypatch.setattr(prepare, "EXPECTED_TEST_ASR_ROWS", 3)
+    monkeypatch.setattr(prepare, "EXPECTED_TEST_ST_ROWS", 4)
+    monkeypatch.setattr(
+        prepare,
+        "_load_product_locale_source",
+        lambda locale, _split, _cache: ([_source_row(locale)], _source_artifact(locale)),
+    )
+
+    prepare.prepare_fleurs(tmp_path, "test", languages, no_audio=False, num_workers=2)
+
+    asr_rows = {row["subset_for_metrics"]: row for row in _read_jsonl(tmp_path / "asr" / "test.jsonl")}
+    assert "cer_whitespace_mode" not in asr_rows["en_us"]["extra_fields"]
+    assert asr_rows["cmn_hans_cn"]["extra_fields"]["cer_whitespace_mode"] == "han_adjacent"
+    assert asr_rows["yue_hant_hk"]["extra_fields"]["cer_whitespace_mode"] == "han_adjacent"
+
+    st_rows = _read_jsonl(tmp_path / "st" / "test.jsonl")
+    assert all("cer_whitespace_mode" not in row["extra_fields"] for row in st_rows)
+
+
 def test_fleurs_product_resume_revalidates_and_skips_completed_locales(tmp_path, monkeypatch):
     _patch_mini_product(monkeypatch)
     monkeypatch.setattr(

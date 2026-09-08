@@ -1534,6 +1534,12 @@ Output:
 
 CER (rather than WER) is used for these locales: `cmn_hans_cn`, `yue_hant_hk`, `ja_jp`, `th_th`, `lo_la`, `my_mm`, `km_kh`, `ko_kr`, `vi_vn`.
 
+Mandarin (`cmn_hans_cn`) and Cantonese (`yue_hant_hk`) ASR records explicitly
+set `cer_whitespace_mode: han_adjacent`. Their CER ignores character-segmentation
+spaces adjacent to Han while retaining word boundaries inside embedded Latin
+text. Other FLEURS locales and other datasets keep their existing whitespace
+behavior unless they opt in through their own record metadata.
+
 ### Dataset Location
 
 - Benchmark group is defined in [`nemo_skills/dataset/fleurs/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/fleurs/__init__.py); per-subtask config lives in `fleurs/asr/__init__.py` and `fleurs/st/__init__.py`.
@@ -1572,7 +1578,7 @@ Output:
 
 **Splits:** `test`
 
-**Scoring — Mixed Error Rate (MER).** Because each utterance mixes two scripts, a single per-utterance CER-or-WER choice mis-scores it (e.g. whole-utterance CER over a `cmn-eng` sentence scores the embedded English at the character level). Instead, records set `use_mer=true` and the audio evaluator computes a Mixed Error Rate: scriptio-continua scripts (Han / kana / Hangul / Thai / Lao / Myanmar / Khmer) are counted by character and space-delimited scripts (e.g. Latin) by word, within the same utterance, then scored with the standard word-level edit distance. This matches the standard MER used for Mandarin-English code-switching (e.g. SEAME). The mixed figure is reported in the headline `wer*` column. `subset_for_metrics` is the code-switched pair (e.g. `ara-eng`), giving a per-pair breakdown; the group score module adds a per-test-set and overall entry-weighted figure. MER only affects CS-FLEURS — it is gated behind `use_mer`, which monolingual benchmarks (including `fleurs`) never set, so their CER/WER behavior is unchanged.
+**Scoring — Mixed Error Rate (MER).** Because each utterance mixes two scripts, a single per-utterance CER-or-WER choice mis-scores it (e.g. whole-utterance CER over a `cmn-eng` sentence scores the embedded English at the character level). Instead, records set `use_mer=true` and the audio evaluator computes a Mixed Error Rate: scriptio-continua scripts (Han / kana / Hangul / Thai / Lao / Myanmar / Khmer) are counted by character and space-delimited scripts (e.g. Latin) by word, within the same utterance, then scored with the standard word-level edit distance. The mismatch-region compound normalizer is disabled for MER because it can erase meaningful Latin word boundaries before tokenization. Consequently, `eis creme` and `eiscreme`, for example, remain distinct. This matches the standard MER used for Mandarin-English code-switching (e.g. SEAME). The mixed figure is reported in the headline `wer*` column. `subset_for_metrics` is the code-switched pair (e.g. `ara-eng`), giving a per-pair breakdown; the group score module adds a per-test-set and overall entry-weighted figure. MER only affects CS-FLEURS — it is gated behind `use_mer`, which monolingual benchmarks never set.
 
 In addition, a parallel **CER** column (`cer*`) is emitted for direct comparison with the [CS-FLEURS paper](https://arxiv.org/abs/2509.14161), which reports *"case insensitive and unpunctuated character error rate"*. So each pair gets both a code-switching-aware MER (`wer*`) and a paper-comparable CER (`cer*`); see the note below for how the normalization keeps them faithful.
 
@@ -1580,9 +1586,13 @@ In addition, a parallel **CER** column (`cer*`) is emitted for direct comparison
     The shared `multilingual` normalization removes Unicode combining marks (category `Mn`, and turns `Mc` into spaces) as "diacritics" — correct for Latin accents, but it **destroys meaning-bearing vowel and tone marks in Thai/Myanmar** (e.g. `ที่` → `ท`). CS-FLEURS opts out of this so both metrics score those marks:
 
     - **MER (`wer*`)** uses `multilingual` normalization with the `preserve_marks` option (marks kept, `num2words` and other steps retained); `mer_grapheme` grapheme-clustering is therefore effective for Thai/Myanmar.
-    - **CER (`cer*`)** uses `lower_nopunct` (lowercase + unpunctuated, marks kept) plus `strip_whitespace` (spaces not counted), matching the paper's character-level CER.
+    - **CER (`cer*`)** uses `lower_nopunct` (lowercase + unpunctuated, marks kept); `use_mer` also selects the `all` whitespace mode (spaces not counted), matching the paper's character-level CER.
 
-    Both are gated on `use_mer`, so **monolingual benchmarks (`fleurs`, `covost2`) are unchanged** — they keep the default mark-stripping. Whether that shared default should itself become script-aware (preserve `Mn`/`Mc` for abugida scripts everywhere, which would change `fleurs` numbers) is a separate upstream question, left to maintainer guidance.
+    Both mark-preserving paths are gated on `use_mer`, so monolingual benchmarks
+    keep the default mark-stripping. FLEURS Mandarin/Cantonese separately opt in
+    to Han-adjacent whitespace handling as described above; CoVoST2 and other
+    datasets do not inherit it by language code. Whether shared mark handling
+    should itself become script-aware is a separate upstream question.
 
 ### Dataset Location
 
@@ -1614,6 +1624,10 @@ Output:
 ### Baseline results
 
 Reference numbers from **Whisper `large-v3`** (an external multilingual ASR model, *not* a SpeechLM/SALM model), transcribing the full `cs-fleurs.read` subset (5,818 utterances, greedy decoding) and scored through this benchmark's evaluator. Both the code-switching-aware **MER** (`wer` column, mark-preserving) and the paper-comparable **CER** (`cer` column) are shown per language pair (`subset_for_metrics`). These are a sanity-check baseline, not a tuned result.
+
+The table below predates the boundary-preserving MER change. Its CER values are
+still comparable because the all-whitespace CER is unaffected, but MER values
+may differ and should be refreshed before they are used as exact regressions.
 
 Example output:
 
