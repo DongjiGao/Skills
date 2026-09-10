@@ -5,26 +5,19 @@
 
 import logging
 import sys
-from dataclasses import field
 
 import hydra
 
 from nemo_skills.code_execution.sandbox import sandbox_params
 from nemo_skills.inference.generate import GenerationTask, GenerationTaskConfig
 from nemo_skills.inference.model import server_params
-from nemo_skills.utils import get_help_message, get_logger_name, nested_dataclass, setup_logging
+from nemo_skills.utils import get_help_message, get_logger_name, setup_logging
 
 LOG = logging.getLogger(get_logger_name(__file__))
 
 
-@nested_dataclass(kw_only=True)
-class PIIASRTwoStageGenerationConfig(GenerationTaskConfig):
-    prompt_format: str = "openai"
-    server: dict = field(default_factory=dict)
-
-
 hydra.core.config_store.ConfigStore.instance().store(
-    name="base_pii_asr_two_stage_generation_config", node=PIIASRTwoStageGenerationConfig
+    name="base_pii_asr_two_stage_generation_config", node=GenerationTaskConfig
 )
 
 
@@ -54,14 +47,14 @@ GENERATION_TASK_CLASS = PIIASRTwoStageGenerationTask
 
 
 @hydra.main(version_base=None, config_name="base_pii_asr_two_stage_generation_config")
-def generate(cfg: PIIASRTwoStageGenerationConfig):
-    cfg = PIIASRTwoStageGenerationConfig(_init_nested=True, **cfg)
+def generate(cfg: GenerationTaskConfig):
+    cfg = GenerationTaskConfig(_init_nested=True, **cfg)
     LOG.info("Config used: %s", cfg)
     PIIASRTwoStageGenerationTask(cfg).generate()
 
 
 HELP_MESSAGE = get_help_message(
-    PIIASRTwoStageGenerationConfig,
+    GenerationTaskConfig,
     server_params=server_params(),
     sandbox_params=sandbox_params(),
 )
