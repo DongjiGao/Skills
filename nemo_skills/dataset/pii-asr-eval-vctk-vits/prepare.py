@@ -49,7 +49,7 @@ USER_PROMPT = (
     "each redacted span with its lower-case hyphenated type in angle brackets, and return "
     "only the redacted transcript."
 )
-TRANSCRIBE_PROMPT = "Transcribe the following:"
+TRANSCRIBE_PROMPT = "Produce a verbatim transcript of the audio."
 REDACTION_FOLLOWUP_PROMPT = (
     "Now redact only high-risk private identifiers in the transcript: email and phone/fax; "
     "complete street addresses; payment cards and bank accounts; passwords, PINs, API keys, "
