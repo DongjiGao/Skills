@@ -25,6 +25,7 @@ import soundfile as sf
 BENCHMARK_NAME = "pii-asr-eval-vctk-vits"
 TWO_STAGE_BENCHMARK_NAME = "pii-asr-eval-vctk-vits-two-stage"
 TWO_STAGE_PII_AWARE_BENCHMARK_NAME = "pii-asr-eval-vctk-vits-two-stage-pii-aware"
+TWO_STAGE_PII_BRIEF_BENCHMARK_NAME = "pii-asr-eval-vctk-vits-two-stage-pii-brief"
 SCHEMA_VERSION = "pii-asr-eval-vctk-vits-v1"
 BUILD_ID = "pii-asr-eval-vctk-vits-20260831"
 SOURCE_METADATA_FILENAME = "metadata.jsonl"
@@ -51,6 +52,10 @@ USER_PROMPT = (
     "only the redacted transcript."
 )
 TRANSCRIBE_PROMPT = "Produce a verbatim transcript of the audio."
+PII_BRIEF_TRANSCRIBE_PROMPT = (
+    "Produce an exact, verbatim transcript of the audio. It may contain PII categories such as API key, "
+    "banking numbers, SSN, emails, IDs, phone numbers, card numbers, or PIN."
+)
 PII_AWARE_TRANSCRIBE_PROMPT = (
     "Produce an exact, verbatim transcript of the audio. The audio may contain PII that a later second pass "
     "must redact, so accurately preserve every spoken letter, digit, separator, and formatting word. Do not "
@@ -225,16 +230,22 @@ def _record(row: dict[str, Any], audio_prefix: str, scenario: str = "one-shot") 
         ]
         scenario_fields: dict[str, Any] = {}
         task_type = "PII-ASR-REDACTION"
-    elif scenario in {"two-stage", "two-stage-pii-aware"}:
-        transcribe_prompt = TRANSCRIBE_PROMPT if scenario == "two-stage" else PII_AWARE_TRANSCRIBE_PROMPT
+    elif scenario in {"two-stage", "two-stage-pii-aware", "two-stage-pii-brief"}:
+        transcribe_prompt = {
+            "two-stage": TRANSCRIBE_PROMPT,
+            "two-stage-pii-aware": PII_AWARE_TRANSCRIBE_PROMPT,
+            "two-stage-pii-brief": PII_BRIEF_TRANSCRIBE_PROMPT,
+        }[scenario]
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": transcribe_prompt, "audio": {"path": audio_path, "duration": row["duration"]}},
         ]
         scenario_fields = {"redaction_prompt": REDACTION_FOLLOWUP_PROMPT, "expected_asr": row["transcript"]}
-        task_type = (
-            "PII-ASR-TWO-STAGE-REDACTION" if scenario == "two-stage" else "PII-ASR-TWO-STAGE-PII-AWARE-REDACTION"
-        )
+        task_type = {
+            "two-stage": "PII-ASR-TWO-STAGE-REDACTION",
+            "two-stage-pii-aware": "PII-ASR-TWO-STAGE-PII-AWARE-REDACTION",
+            "two-stage-pii-brief": "PII-ASR-TWO-STAGE-PII-BRIEF-REDACTION",
+        }[scenario]
     else:
         raise ValueError(f"Unsupported PII-ASR scenario: {scenario!r}")
     return {
@@ -307,11 +318,13 @@ def prepare_dataset(
         "one-shot": BENCHMARK_NAME,
         "two-stage": TWO_STAGE_BENCHMARK_NAME,
         "two-stage-pii-aware": TWO_STAGE_PII_AWARE_BENCHMARK_NAME,
+        "two-stage-pii-brief": TWO_STAGE_PII_BRIEF_BENCHMARK_NAME,
     }[scenario]
     task = {
         "one-shot": "single-shot speech-to-redacted-transcript",
         "two-stage": "model-ASR-then-model-redaction",
         "two-stage-pii-aware": "PII-aware-model-ASR-then-model-redaction",
+        "two-stage-pii-brief": "brief-PII-aware-model-ASR-then-model-redaction",
     }[scenario]
     _write_json_atomic(
         output_dir / PROVENANCE_FILENAME,
@@ -351,7 +364,9 @@ def main(default_scenario: str = "one-shot") -> None:
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--data_dir", default=os.getenv("NEMO_SKILLS_DATA_DIR"))
     parser.add_argument(
-        "--scenario", choices=("one-shot", "two-stage", "two-stage-pii-aware"), default=default_scenario
+        "--scenario",
+        choices=("one-shot", "two-stage", "two-stage-pii-aware", "two-stage-pii-brief"),
+        default=default_scenario,
     )
     parser.add_argument("--audio-prefix")
     parser.add_argument("--skip-audio-copy", action="store_true")
@@ -362,6 +377,7 @@ def main(default_scenario: str = "one-shot") -> None:
         "one-shot": BENCHMARK_NAME,
         "two-stage": TWO_STAGE_BENCHMARK_NAME,
         "two-stage-pii-aware": TWO_STAGE_PII_AWARE_BENCHMARK_NAME,
+        "two-stage-pii-brief": TWO_STAGE_PII_BRIEF_BENCHMARK_NAME,
     }[args.scenario]
     audio_prefix = args.audio_prefix or f"/data/{dataset_name}"
     print(

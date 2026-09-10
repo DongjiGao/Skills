@@ -236,6 +236,30 @@ def test_prepare_two_stage_pii_aware_names_all_categories(tmp_path, monkeypatch)
     assert receipt["task"] == "PII-aware-model-ASR-then-model-redaction"
 
 
+def test_prepare_two_stage_pii_brief_uses_exact_prompt(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    audio = source / "audio"
+    audio.mkdir(parents=True)
+    payload = _wav_bytes()
+    row = _row(payload)
+    (audio / f"{row['id']}.wav").write_bytes(payload)
+    metadata = source / "metadata.jsonl"
+    metadata.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    _mini_contract(monkeypatch, metadata, row)
+    output = tmp_path / "prepared"
+    manifest = prepare.prepare_dataset(
+        source, output, "/data/pii-asr-eval-vctk-vits", scenario="two-stage-pii-brief", publish_audio=False
+    )
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["messages"][1]["content"] == (
+        "Produce an exact, verbatim transcript of the audio. It may contain PII categories such as API key, "
+        "banking numbers, SSN, emails, IDs, phone numbers, card numbers, or PIN."
+    )
+    receipt = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
+    assert receipt["dataset"] == prepare.TWO_STAGE_PII_BRIEF_BENCHMARK_NAME
+    assert receipt["task"] == "brief-PII-aware-model-ASR-then-model-redaction"
+
+
 def test_two_stage_generation_uses_model_asr_for_followup(monkeypatch):
     calls = []
     responses = [
