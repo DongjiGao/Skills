@@ -24,6 +24,7 @@ import soundfile as sf
 
 BENCHMARK_NAME = "pii-asr-eval-vctk-vits"
 TWO_STAGE_BENCHMARK_NAME = "pii-asr-eval-vctk-vits-two-stage"
+TWO_STAGE_PII_AWARE_BENCHMARK_NAME = "pii-asr-eval-vctk-vits-two-stage-pii-aware"
 SCHEMA_VERSION = "pii-asr-eval-vctk-vits-v1"
 BUILD_ID = "pii-asr-eval-vctk-vits-20260831"
 SOURCE_METADATA_FILENAME = "metadata.jsonl"
@@ -50,6 +51,28 @@ USER_PROMPT = (
     "only the redacted transcript."
 )
 TRANSCRIBE_PROMPT = "Produce a verbatim transcript of the audio."
+PII_AWARE_TRANSCRIBE_PROMPT = (
+    "Produce an exact, verbatim transcript of the audio. The audio may contain PII that a later second pass "
+    "must redact, so accurately preserve every spoken letter, digit, separator, and formatting word. Do not "
+    "redact, classify, normalize, or replace anything with placeholders in this pass. Possible PII categories "
+    "and synthetic spoken examples are: API key (test dash B V U Y dash zero zero two six dash N L Q); bank "
+    "account (test account zero zero zero zero three nine zero five one four); bank routing number (nine nine six "
+    "nine seven four nine three two); card security code or CVV (one zero one); certificate or license number "
+    "(test license B U H zero zero three nine); credit or debit card (nine nine nine nine, zero zero one five, "
+    "zero five five five, one zero six eight); customer ID (customer test J N zero zero zero three); spelled "
+    "email (D A H L dot amber at example dot org); spoken email (pebble dot lantern zero zero three four at "
+    "example dot com); employee ID (employee test J W zero zero zero two); fax number (eight zero eight five five "
+    "five zero one three nine); health-plan beneficiary number (H P B test H A zero zero two four); HTTP cookie "
+    "(session underscore test equals cedar dash zero zero two four); medical-record number (M R N test zero zero "
+    "three six N P); mixed identifiers (customer ID plus phone number plus email); national ID (test N I D Q N "
+    "zero zero three eight); password (river five cedar hash five); domestic phone (plus one five zero five five "
+    "five five zero one zero eight); international phone (plus nine nine nine seven zero zero zero zero zero zero "
+    "zero one seven); PIN (one seven seven seven); Social Security number or SSN (nine nine nine one one three "
+    "seven seven four); UK street address (flat two one eight Juniper Example Mews Sampleton Q Q zero zero Q Q); "
+    "US street address (one zero zero three two Juniper Archive Lane Testville Arcadia zero zero zero zero zero); "
+    "SWIFT or BIC (T E S T U S zero zero Z F Q); and tax ID (zero zero eight one nine seven six six four). Return "
+    "only the transcript."
+)
 REDACTION_FOLLOWUP_PROMPT = (
     "Now redact only high-risk private identifiers in the transcript: email and phone/fax; "
     "complete street addresses; payment cards and bank accounts; passwords, PINs, API keys, "
@@ -202,13 +225,16 @@ def _record(row: dict[str, Any], audio_prefix: str, scenario: str = "one-shot") 
         ]
         scenario_fields: dict[str, Any] = {}
         task_type = "PII-ASR-REDACTION"
-    elif scenario == "two-stage":
+    elif scenario in {"two-stage", "two-stage-pii-aware"}:
+        transcribe_prompt = TRANSCRIBE_PROMPT if scenario == "two-stage" else PII_AWARE_TRANSCRIBE_PROMPT
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": TRANSCRIBE_PROMPT, "audio": {"path": audio_path, "duration": row["duration"]}},
+            {"role": "user", "content": transcribe_prompt, "audio": {"path": audio_path, "duration": row["duration"]}},
         ]
         scenario_fields = {"redaction_prompt": REDACTION_FOLLOWUP_PROMPT, "expected_asr": row["transcript"]}
-        task_type = "PII-ASR-TWO-STAGE-REDACTION"
+        task_type = (
+            "PII-ASR-TWO-STAGE-REDACTION" if scenario == "two-stage" else "PII-ASR-TWO-STAGE-PII-AWARE-REDACTION"
+        )
     else:
         raise ValueError(f"Unsupported PII-ASR scenario: {scenario!r}")
     return {
@@ -277,8 +303,16 @@ def prepare_dataset(
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    dataset_name = BENCHMARK_NAME if scenario == "one-shot" else TWO_STAGE_BENCHMARK_NAME
-    task = "single-shot speech-to-redacted-transcript" if scenario == "one-shot" else "model-ASR-then-model-redaction"
+    dataset_name = {
+        "one-shot": BENCHMARK_NAME,
+        "two-stage": TWO_STAGE_BENCHMARK_NAME,
+        "two-stage-pii-aware": TWO_STAGE_PII_AWARE_BENCHMARK_NAME,
+    }[scenario]
+    task = {
+        "one-shot": "single-shot speech-to-redacted-transcript",
+        "two-stage": "model-ASR-then-model-redaction",
+        "two-stage-pii-aware": "PII-aware-model-ASR-then-model-redaction",
+    }[scenario]
     _write_json_atomic(
         output_dir / PROVENANCE_FILENAME,
         {
@@ -316,13 +350,19 @@ def main(default_scenario: str = "one-shot") -> None:
     parser = argparse.ArgumentParser(description="Prepare the fixed VCTK-VITS PII-ASR redaction benchmark")
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--data_dir", default=os.getenv("NEMO_SKILLS_DATA_DIR"))
-    parser.add_argument("--scenario", choices=("one-shot", "two-stage"), default=default_scenario)
+    parser.add_argument(
+        "--scenario", choices=("one-shot", "two-stage", "two-stage-pii-aware"), default=default_scenario
+    )
     parser.add_argument("--audio-prefix")
     parser.add_argument("--skip-audio-copy", action="store_true")
     args = parser.parse_args()
     if not args.data_dir:
         raise SystemExit("Missing --data_dir and NEMO_SKILLS_DATA_DIR; refusing to write into staged code")
-    dataset_name = BENCHMARK_NAME if args.scenario == "one-shot" else TWO_STAGE_BENCHMARK_NAME
+    dataset_name = {
+        "one-shot": BENCHMARK_NAME,
+        "two-stage": TWO_STAGE_BENCHMARK_NAME,
+        "two-stage-pii-aware": TWO_STAGE_PII_AWARE_BENCHMARK_NAME,
+    }[args.scenario]
     audio_prefix = args.audio_prefix or f"/data/{dataset_name}"
     print(
         f"Prepared {prepare_dataset(args.source_dir, Path(args.data_dir) / dataset_name, audio_prefix, scenario=args.scenario, publish_audio=not args.skip_audio_copy)}"
