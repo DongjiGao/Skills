@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import importlib
 import io
 import json
 import os
@@ -40,6 +41,7 @@ from datasets import Audio, load_dataset
 from tqdm import tqdm
 
 LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard-multilingual-datasets"
+LEADERBOARD_REVISION = "b791fc9151221e5b7e59c6c2dfa4dee09dda3cb7"
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 AUDIO_ROOT = os.environ.get("NEMO_SKILLS_AUDIO_ROOT", "/dataset").rstrip("/")
 TEXT_FIELDS = ("text", "sentence", "normalized_text", "transcript", "transcription")
@@ -50,10 +52,15 @@ ID_FIELDS = ("id", "audio_filepath", "path", "file", "file_name", "audio_id")
 class DatasetSpec:
     """A multilingual leaderboard dataset config and its scoring language."""
 
-    config: str
+    config: str | None
     language: str
     split: str = "test"
     repo: str = LEADERBOARD_REPO
+    revision: str | None = LEADERBOARD_REVISION
+
+
+_monsoon_prepare = importlib.import_module("nemo_skills.dataset.voicearena-monsoon.prepare")
+MONSOON_HINDI_CONTRACT = _monsoon_prepare.SOURCE_CONTRACTS["hi-in.public"]
 
 
 # Matches the official public multilingual evaluation matrix.
@@ -63,14 +70,23 @@ DATASET_CONFIGS = {
     "fleurs_it": DatasetSpec("fleurs_it", "it"),
     "fleurs_es": DatasetSpec("fleurs_es", "es"),
     "fleurs_pt": DatasetSpec("fleurs_pt", "pt"),
+    "fleurs_nl": DatasetSpec("fleurs_nl", "nl"),
     "mcv_de": DatasetSpec("mcv_de", "de"),
     "mcv_es": DatasetSpec("mcv_es", "es"),
     "mcv_fr": DatasetSpec("mcv_fr", "fr"),
     "mcv_it": DatasetSpec("mcv_it", "it"),
+    "mcv_nl": DatasetSpec("mcv_nl", "nl"),
     "mls_es": DatasetSpec("mls_es", "es"),
     "mls_fr": DatasetSpec("mls_fr", "fr"),
     "mls_it": DatasetSpec("mls_it", "it"),
     "mls_pt": DatasetSpec("mls_pt", "pt"),
+    "mls_nl": DatasetSpec("mls_nl", "nl"),
+    "monsoon_hi": DatasetSpec(
+        None,
+        "hi",
+        repo=MONSOON_HINDI_CONTRACT.repo,
+        revision=MONSOON_HINDI_CONTRACT.revision,
+    ),
 }
 
 LANGUAGE_DATASETS = {
@@ -79,6 +95,8 @@ LANGUAGE_DATASETS = {
     "it": ("fleurs_it", "mcv_it", "mls_it"),
     "es": ("fleurs_es", "mcv_es", "mls_es"),
     "pt": ("fleurs_pt", "mls_pt"),
+    "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
+    "hi": ("monsoon_hi",),
 }
 
 
@@ -119,19 +137,35 @@ def get_sample_id(entry, dataset_name: str, index: int) -> str:
 
 def format_entry(entry, index, dataset_name, audio_dir, spec, with_audio):
     """Format one dataset entry into the Skills audio JSONL schema."""
-    text = get_text(entry).strip()
+    reference_lattice = entry.get("lattice") if dataset_name == "monsoon_hi" else None
+    text = (
+        " ".join(slot[0] for slot in reference_lattice) if reference_lattice is not None else get_text(entry).strip()
+    )
     if not text:
         return None
 
     sample_id = get_sample_id(entry, dataset_name, index).replace("/", "_").replace(":", "_")
-    audio_filename = f"{Path(sample_id).stem}.flac"
+    audio_filename = f"{Path(sample_id).stem}{'.wav' if dataset_name == 'monsoon_hi' else '.flac'}"
 
-    audio_array, sampling_rate = extract_audio(entry.get("audio"))
+    if dataset_name == "monsoon_hi" and with_audio:
+        audio_array, sampling_rate = _monsoon_prepare._decode_audio(entry.get("audio"))
+    else:
+        audio_array, sampling_rate = extract_audio(entry.get("audio"))
     duration = None
     if audio_array is not None and sampling_rate is not None:
         duration = len(audio_array) / sampling_rate
         if with_audio:
-            sf.write(str(audio_dir / audio_filename), audio_array, sampling_rate)
+            if dataset_name == "monsoon_hi":
+                sf.write(
+                    str(audio_dir / audio_filename),
+                    audio_array,
+                    sampling_rate,
+                    format="WAV",
+                    subtype=_monsoon_prepare.EXPECTED_SUBTYPE,
+                )
+                _monsoon_prepare._validate_wav(audio_dir / audio_filename, duration)
+            else:
+                sf.write(str(audio_dir / audio_filename), audio_array, sampling_rate)
     elif entry.get("audio_length_s") is not None:
         duration = float(entry["audio_length_s"])
 
@@ -158,6 +192,15 @@ def format_entry(entry, index, dataset_name, audio_dir, spec, with_audio):
 
     if "speaker_id" in entry:
         formatted["speaker_id"] = entry["speaker_id"]
+    if reference_lattice is not None:
+        formatted["reference_lattice"] = reference_lattice
+        formatted["monsoon_language"] = "hi-in"
+        formatted["extra_fields"].update(
+            source_repo=spec.repo,
+            source_revision=spec.revision,
+            source_split=spec.split,
+            source_license=_monsoon_prepare.SOURCE_LICENSE,
+        )
 
     return formatted
 
@@ -170,9 +213,21 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     spec = DATASET_CONFIGS[dataset_name]
 
     print(f"Loading {dataset_name} from {spec.repo} (config={spec.config}, split={spec.split})...")
-    dataset = load_dataset(spec.repo, spec.config, split=spec.split)
-    if with_audio and "audio" in dataset.column_names:
+    load_kwargs = {"split": spec.split}
+    if spec.revision is not None:
+        load_kwargs["revision"] = spec.revision
+    if spec.config is None:
+        dataset = load_dataset(spec.repo, **load_kwargs)
+    else:
+        dataset = load_dataset(spec.repo, spec.config, **load_kwargs)
+    if (with_audio or dataset_name == "monsoon_hi") and "audio" in dataset.column_names:
         dataset = dataset.cast_column("audio", Audio(decode=False))
+
+    if dataset_name == "monsoon_hi":
+        metadata_rows = [dict(row) for row in dataset.remove_columns("audio")]
+        validated_rows = _monsoon_prepare._validate_metadata(metadata_rows, MONSOON_HINDI_CONTRACT)
+    else:
+        validated_rows = None
 
     output_file = output_dir / f"{dataset_name}.jsonl"
     audio_dir = output_dir / "data" / dataset_name
@@ -183,6 +238,8 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     count = 0
     with open(output_file, "w", encoding="utf-8") as fout:
         for index, entry in enumerate(tqdm(dataset, desc=dataset_name)):
+            if validated_rows is not None:
+                entry = {**validated_rows[index], "audio": entry.get("audio")}
             formatted = format_entry(entry, index, dataset_name, audio_dir, spec, with_audio)
             if formatted is None:
                 continue
