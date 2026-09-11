@@ -39,13 +39,30 @@ class OpenASRLeaderboardMetrics(AudioMetrics):
         self._chunk_groups: dict[tuple[str, str], list[list[dict]]] = defaultdict(list)
         self._chunks_finalized = False
 
+    @staticmethod
+    def _add_audiobench_earnings_metrics(prediction: dict) -> dict:
+        """Score Earnings under AudioBench normalization without another generation."""
+        subset = str(prediction.get("subset_for_metrics", "")).lower()
+        if subset not in {"earnings21", "earnings22"}:
+            return prediction
+
+        reference = str(prediction.get("expected_answer", ""))
+        generation = str(prediction.get("generation") or "")
+        audiobench = evaluate_asr(reference, generation, normalization_mode="audiobench_earnings")
+        for name, value in audiobench.items():
+            if name == "wer" or name.startswith("wer_"):
+                prediction[f"audiobench_{name}"] = value
+        return prediction
+
     def update(self, predictions):
         if self._chunks_finalized:
             raise RuntimeError("Cannot update OpenASRLeaderboardMetrics after get_metrics()")
 
         chunk_flags = [prediction.get("parent_id") is not None for prediction in predictions]
         if not any(chunk_flags):
-            return super().update(predictions)
+            return super().update(
+                [self._add_audiobench_earnings_metrics(prediction.copy()) for prediction in predictions]
+            )
         if not all(chunk_flags):
             raise ValueError("All generations for one sample must agree on chunk metadata")
 
@@ -115,6 +132,7 @@ class OpenASRLeaderboardMetrics(AudioMetrics):
             merged["generation"] = generation
             merged["predicted_answer"] = generation
             merged.update(evaluate_asr(reference, generation, normalization_mode="hf_leaderboard"))
+            self._add_audiobench_earnings_metrics(merged)
 
             for field in ("num_generated_tokens", "num_reasoning_tokens", "num_answer_tokens", "audio_duration"):
                 value = self._sum_field(chunks, field)
