@@ -163,6 +163,31 @@ def test_chunked_and_regular_rows_share_corpus_wer_accumulators():
     assert result["num_entries"] == 2
 
 
+def test_earnings_hypotheses_are_reused_for_audiobench_normalization():
+    metrics = OpenASRLeaderboardMetrics(max_k=1)
+    prediction = {
+        "id": "earnings-1",
+        "subset_for_metrics": "earnings21",
+        "task_type": "ASR",
+        "expected_answer": "Revenue was $10.",
+        "generation": "Revenue was ten dollars.",
+    }
+    prediction.update(
+        evaluate_asr(prediction["expected_answer"], prediction["generation"], normalization_mode="hf_leaderboard")
+    )
+
+    metrics.update([prediction])
+    result = metrics.get_metrics()["pass@1"]
+
+    expected = evaluate_asr(
+        prediction["expected_answer"], prediction["generation"], normalization_mode="audiobench_earnings"
+    )
+    assert result["audiobench_wer"] == round(100.0 * expected["wer_errors"] / expected["wer_ref_words"], 2)
+    assert result["audiobench_wer_ref_words"] == expected["wer_ref_words"]
+    assert result["audiobench_wer::earnings21"] == result["audiobench_wer"]
+    assert result["audiobench_wer::earnings21_num_entries"] == 1
+
+
 def test_benchmark_uses_session_aware_metrics():
     benchmark = import_module("nemo_skills.dataset.asr-leaderboard")
     assert benchmark.METRICS_TYPE == "open_asr_leaderboard"

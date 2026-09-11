@@ -177,6 +177,7 @@ class AudioMetrics(BaseMetrics):
         # Structured ASR scoring exposes strict/canonical/content WERs as separate streams.
         self.structured_wer_scores: dict[str, list[float]] = {}
         self.structured_wer_totals: dict[str, dict[str, int]] = {}
+        self.structured_wer_subset_totals: dict[str, dict[str, dict[str, int]]] = {}
 
         # Spoken-MQA's official metric name is accuracy (``acc`` upstream).
         self.has_spoken_mqa = False
@@ -354,7 +355,7 @@ class AudioMetrics(BaseMetrics):
             if "cpwer" in pred and pred["cpwer"] is not None:
                 self.cpwer_scores.append(pred["cpwer"])
 
-            for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+            for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
                 if wer_name in pred and pred[wer_name] is not None:
                     self.structured_wer_scores.setdefault(wer_name, []).append(pred[wer_name])
 
@@ -376,6 +377,25 @@ class AudioMetrics(BaseMetrics):
                     totals["substitutions"] += pred.get(f"{wer_name}_substitutions", 0)
                     totals["insertions"] += pred.get(f"{wer_name}_insertions", 0)
                     totals["deletions"] += pred.get(f"{wer_name}_deletions", 0)
+                    subset = pred.get("subset_for_metrics")
+                    if subset:
+                        subset_totals = self.structured_wer_subset_totals.setdefault(wer_name, {}).setdefault(
+                            str(subset),
+                            {
+                                "errors": 0,
+                                "ref_words": 0,
+                                "substitutions": 0,
+                                "insertions": 0,
+                                "deletions": 0,
+                                "num_entries": 0,
+                            },
+                        )
+                        subset_totals["errors"] += pred.get(errors_key, 0)
+                        subset_totals["ref_words"] += pred.get(ref_words_key, 0)
+                        subset_totals["substitutions"] += pred.get(f"{wer_name}_substitutions", 0)
+                        subset_totals["insertions"] += pred.get(f"{wer_name}_insertions", 0)
+                        subset_totals["deletions"] += pred.get(f"{wer_name}_deletions", 0)
+                        subset_totals["num_entries"] += 1
             if "wer_c" in pred and pred["wer_c"] is not None:
                 self.wer_c_scores.append(pred["wer_c"])
             if "wer_pc" in pred and pred["wer_pc"] is not None:
@@ -575,6 +595,18 @@ class AudioMetrics(BaseMetrics):
                     agg_metrics[f"{wer_name}_insertions"] = totals.get("insertions", 0)
                     agg_metrics[f"{wer_name}_deletions"] = totals.get("deletions", 0)
                     agg_metrics[f"{wer_name}_ref_words"] = ref_words
+            for wer_name, subsets in self.structured_wer_subset_totals.items():
+                for subset, totals in sorted(subsets.items()):
+                    ref_words = totals.get("ref_words", 0)
+                    if ref_words > 0:
+                        prefix = f"{wer_name}::{subset}"
+                        agg_metrics[prefix] = round(100.0 * totals.get("errors", 0) / ref_words, 2)
+                        agg_metrics[f"{prefix}_errors"] = totals.get("errors", 0)
+                        agg_metrics[f"{prefix}_ref_words"] = ref_words
+                        agg_metrics[f"{prefix}_substitutions"] = totals.get("substitutions", 0)
+                        agg_metrics[f"{prefix}_insertions"] = totals.get("insertions", 0)
+                        agg_metrics[f"{prefix}_deletions"] = totals.get("deletions", 0)
+                        agg_metrics[f"{prefix}_num_entries"] = totals.get("num_entries", 0)
             for wer_name, values in self.structured_wer_scores.items():
                 if values:
                     agg_metrics[f"{wer_name}_macro"] = round(100.0 * sum(values) / len(values), 2)
@@ -709,11 +741,14 @@ class AudioMetrics(BaseMetrics):
             for subset, totals in sorted(self.cpwer_subset_totals.items()):
                 if totals["ref_words"] > 0:
                     base_metrics[f"cpwer::{subset}"] = as_percentage
-        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
             if wer_name in self.structured_wer_scores:
                 base_metrics[f"{wer_name}_macro"] = as_percentage
             if wer_name in self.structured_wer_totals and self.structured_wer_totals[wer_name].get("ref_words", 0) > 0:
                 base_metrics[wer_name] = as_percentage
+            for subset, totals in sorted(self.structured_wer_subset_totals.get(wer_name, {}).items()):
+                if totals.get("ref_words", 0) > 0:
+                    base_metrics[f"{wer_name}::{subset}"] = as_percentage
         if self.cer_scores:
             base_metrics["cer_macro"] = as_percentage
         if self.cer_total_ref_chars > 0:
@@ -724,7 +759,7 @@ class AudioMetrics(BaseMetrics):
             base_metrics["insertions"] = as_int
             base_metrics["deletions"] = as_int
             base_metrics["ref_words"] = as_int
-        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
             totals = self.structured_wer_totals.get(wer_name)
             if totals and totals.get("ref_words", 0) > 0:
                 base_metrics[f"{wer_name}_errors"] = as_int
