@@ -64,6 +64,8 @@ ASR_LEADERBOARD_MULTILINGUAL_LANGUAGE_DATASETS = {
     "it": ("fleurs_it", "mcv_it", "mls_it"),
     "es": ("fleurs_es", "mcv_es", "mls_es"),
     "pt": ("fleurs_pt", "mls_pt"),
+    "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
+    "hi": ("monsoon_hi",),
 }
 
 ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS = ("earnings21", "earnings22", "tedlium")
@@ -96,7 +98,7 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
     """Add language averages and set _all_ WER to the official language mean.
 
     The HF multilingual leaderboard first averages dataset-level WER within each
-    language, then averages the five language scores. Dataset-specific entries
+    language, then averages the seven language scores. Dataset-specific entries
     are retained and synthetic language entries are added for reporting.
     """
     if "_all_" not in metrics:

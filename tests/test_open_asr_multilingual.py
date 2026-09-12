@@ -21,6 +21,7 @@ pytest.importorskip("kaldialign")
 pytest.importorskip("num2words")
 pytest.importorskip("whisper_normalizer")
 
+from nemo_skills.evaluation.evaluator import get_evaluator_class
 from nemo_skills.evaluation.evaluator.audio import AudioEvaluatorConfig, evaluate_sample
 from nemo_skills.pipeline.summarize_results import _set_asr_leaderboard_multilingual_macro_wer
 
@@ -34,22 +35,93 @@ def test_multilingual_leaderboard_config_matrix_matches_official_public_set():
         "fleurs_it",
         "fleurs_es",
         "fleurs_pt",
+        "fleurs_nl",
         "mcv_de",
         "mcv_es",
         "mcv_fr",
         "mcv_it",
+        "mcv_nl",
         "mls_es",
         "mls_fr",
         "mls_it",
         "mls_pt",
+        "mls_nl",
+        "monsoon_hi",
     }
+    assert {spec.revision for name, spec in prepare.DATASET_CONFIGS.items() if name != "monsoon_hi"} == {
+        prepare.LEADERBOARD_REVISION
+    }
+    assert prepare.DATASET_CONFIGS["monsoon_hi"].revision == prepare.MONSOON_HINDI_CONTRACT.revision
     assert prepare.LANGUAGE_DATASETS == {
         "de": ("fleurs_de", "mcv_de"),
         "fr": ("fleurs_fr", "mcv_fr", "mls_fr"),
         "it": ("fleurs_it", "mcv_it", "mls_it"),
         "es": ("fleurs_es", "mcv_es", "mls_es"),
         "pt": ("fleurs_pt", "mls_pt"),
+        "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
+        "hi": ("monsoon_hi",),
     }
+
+
+def test_hindi_monsoon_format_preserves_lattice_and_pinned_provenance(tmp_path):
+    spec = prepare.DATASET_CONFIGS["monsoon_hi"]
+    row = {
+        "id": "clip-1",
+        "lattice": [["नमस्ते"], ["दुनिया", "विश्व"]],
+        "speaker_id": 7,
+        "audio_length_s": 1.25,
+        "audio": None,
+    }
+
+    result = prepare.format_entry(row, 0, "monsoon_hi", tmp_path, spec, with_audio=False)
+
+    assert result["expected_answer"] == "नमस्ते दुनिया"
+    assert result["reference_lattice"] == row["lattice"]
+    assert result["monsoon_language"] == "hi-in"
+    assert result["subset_for_metrics"] == "monsoon_hi"
+    assert result["messages"][1]["audio"] == {
+        "path": "/dataset/asr-leaderboard-multilingual/data/monsoon_hi/clip-1.wav",
+        "duration": 1.25,
+    }
+    assert result["extra_fields"]["source_repo"] == spec.repo
+    assert result["extra_fields"]["source_revision"] == spec.revision
+
+
+def test_multilingual_profile_registers_mixed_wer_oiwer_evaluator():
+    benchmark = import_module("nemo_skills.dataset.asr-leaderboard-multilingual")
+    assert "OpenASRMultilingualEvaluator" in benchmark.EVAL_ARGS
+    evaluator = get_evaluator_class(
+        "nemo_skills.dataset.asr-leaderboard-multilingual.scorer::OpenASRMultilingualEvaluator",
+        {"normalization_mode": "multilingual"},
+    )
+    assert evaluator.eval_config.normalization_mode == "multilingual"
+
+
+def test_hindi_monsoon_row_uses_official_lattice_oiwer(monkeypatch):
+    scorer = import_module("nemo_skills.dataset.voicearena-monsoon.scorer")
+    mixed = import_module("nemo_skills.dataset.asr-leaderboard-multilingual.scorer")
+    monkeypatch.setattr(
+        scorer,
+        "_official_oiwer",
+        lambda: (
+            lambda hypothesis, reference_lists, input_language: (50.0, [], [], [], (1, 0, 0), 2, [], reference_lists)
+        ),
+    )
+    evaluator = mixed.OpenASRMultilingualEvaluator({"normalization_mode": "multilingual"})
+    result = __import__("asyncio").run(
+        evaluator.eval_single(
+            {
+                "monsoon_language": "hi-in",
+                "reference_lattice": [["नमस्ते"], ["दुनिया", "विश्व"]],
+                "expected_answer": "नमस्ते दुनिया",
+                "generation": "नमस्ते",
+            }
+        )
+    )
+    assert result["monsoon_metric"] == "oiwer"
+    assert result["wer"] == 0.5
+    assert result["wer_errors"] == 1
+    assert result["wer_ref_words"] == 2
 
 
 def test_open_asr_multilingual_sample_preserves_diacritics():
@@ -178,6 +250,10 @@ def test_multilingual_leaderboard_summary_adds_language_and_overall_means():
         "fleurs_fr": {"pass@1": {"wer": 30.0, "num_entries": 10}},
         "mcv_fr": {"pass@1": {"wer": 60.0, "num_entries": 10}},
         "mls_fr": {"pass@1": {"wer": 90.0, "num_entries": 10}},
+        "fleurs_nl": {"pass@1": {"wer": 7.0, "num_entries": 10}},
+        "mcv_nl": {"pass@1": {"wer": 8.0, "num_entries": 10}},
+        "mls_nl": {"pass@1": {"wer": 9.0, "num_entries": 10}},
+        "monsoon_hi": {"pass@1": {"wer": 12.0, "num_entries": 10}},
     }
 
     _set_asr_leaderboard_multilingual_macro_wer(metrics)
@@ -190,4 +266,6 @@ def test_multilingual_leaderboard_summary_adds_language_and_overall_means():
     assert metrics["de"]["pass@1"]["substitutions"] == 5
     assert metrics["de"]["pass@1"]["ref_words"] == 40
     assert metrics["fr"]["pass@1"]["wer"] == 60.0
-    assert metrics["_all_"]["pass@1"]["wer"] == 37.5
+    assert metrics["nl"]["pass@1"]["wer"] == 8.0
+    assert metrics["hi"]["pass@1"]["wer"] == 12.0
+    assert metrics["_all_"]["pass@1"]["wer"] == 23.75
