@@ -69,11 +69,13 @@ LOG = logging.getLogger(get_logger_name(__file__))
 
 _SIMPLE_TEMPLATE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ROUTER_CONTROL_FIELD = "_speechlm_router"
-_PROHIBITED_ASR_PROMPT = "Transcribe the " "following:"
+_PROHIBITED_ASR_PROMPT = "Transcribe the following:"
 
 
-def _validate_effective_prompt(prompt: Any) -> None:
+def _validate_effective_prompt(prompt: Any, allow_legacy_asr_prompt: bool = False) -> None:
     """Reject the legacy ASR instruction after all row/CLI overrides resolve."""
+    if allow_legacy_asr_prompt:
+        return
     pending = [prompt]
     while pending:
         value = pending.pop()
@@ -87,6 +89,7 @@ def _validate_effective_prompt(prompt: Any) -> None:
             pending.extend(value.values())
         elif isinstance(value, (list, tuple, ListConfig)):
             pending.extend(value)
+
 
 # Row-level inference overrides intentionally expose only prediction knobs that
 # are already explicit arguments of BaseModel.generate_async. Transport,
@@ -389,6 +392,7 @@ class GenerationTaskConfig:
 
     # Audio configuration - set by benchmarks that need audio processing (mmau-pro, audiobench, etc.)
     enable_audio: bool = False  # Enable audio preprocessing (set by benchmark configs)
+    allow_legacy_asr_prompt: bool = False
     enable_audio_chunking: bool = True
     audio_chunk_task_types: list[str] | None = None  # If None, chunk all task types; if specified, only chunk these
     chunk_audio_threshold_sec: int = 30  # Duration in seconds for each audio chunk
@@ -477,14 +481,10 @@ class GenerationTaskConfig:
                     raise TypeError(f"prompt override for subset {subset!r} must be a mapping")
                 unknown = set(override) - {"system_message", "user_message"}
                 if unknown:
-                    raise ValueError(
-                        f"prompt override for subset {subset!r} has unsupported keys {sorted(unknown)}"
-                    )
+                    raise ValueError(f"prompt override for subset {subset!r} has unsupported keys {sorted(unknown)}")
                 for role, value in override.items():
                     if value is not None and not isinstance(value, str):
-                        raise TypeError(
-                            f"prompt override {subset!r}.{role} must be a string or None"
-                        )
+                        raise TypeError(f"prompt override {subset!r}.{role} must be a string or None")
 
     def _post_init_deprecated_params(self):
         if self.use_completions_api:
@@ -1116,7 +1116,7 @@ class GenerationTask:
                 )
                 if self.cfg.prompt_suffix:
                     GenerationTask._append_message_text_suffix(messages[-1], self.cfg.prompt_suffix)
-                _validate_effective_prompt(messages)
+                _validate_effective_prompt(messages, self.cfg.allow_legacy_asr_prompt)
                 return messages
 
             # OpenAI path with prompt_config template -- build prompt from template, merge audio from data.
@@ -1138,7 +1138,7 @@ class GenerationTask:
                     GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
                 else:
                     filled_prompt += self.cfg.prompt_suffix
-            _validate_effective_prompt(filled_prompt)
+            _validate_effective_prompt(filled_prompt, self.cfg.allow_legacy_asr_prompt)
             return filled_prompt
 
         # NS path -- always uses prompt template
@@ -1162,7 +1162,7 @@ class GenerationTask:
                 GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
             elif isinstance(filled_prompt, str):
                 filled_prompt += self.cfg.prompt_suffix
-        _validate_effective_prompt(filled_prompt)
+        _validate_effective_prompt(filled_prompt, self.cfg.allow_legacy_asr_prompt)
         return filled_prompt
 
     def dump_outputs(self, outputs, data_points, fout):
