@@ -111,6 +111,13 @@ def build_manifest(selection_path: Path, output_path: Path) -> dict[str, Any]:
                     audio_cache[cache_key] = _resolve_audio_path(raw_path, data_root)
                 replacements[raw_path] = audio_cache[cache_key]
             row = _replace_paths(source_row, replacements)
+            if source.get("user_prompt") is not None:
+                user_messages = [message for message in row.get("messages", []) if message.get("role") == "user"]
+                if len(user_messages) != 1:
+                    raise ValueError(
+                        f"Expected one user message for prompt override: {source_manifest}:{source_index}"
+                    )
+                user_messages[0]["content"] = source["user_prompt"]
             duration = float(row.get("duration") or 0.0)
             if duration <= 0.0:
                 message_durations = [
