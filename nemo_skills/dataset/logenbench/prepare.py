@@ -82,6 +82,29 @@ def _duration_bucket(duration: float) -> str:
     return "long-form"
 
 
+def _apply_prompt_overrides(
+    messages: list[dict[str, Any]], system_prompt: str | None, user_prompt: str | None
+) -> list[dict[str, Any]]:
+    """Materialize the same message semantics as GenerationTask overrides."""
+    messages = [dict(message) for message in messages]
+    if user_prompt is not None:
+        user_messages = [message for message in messages if message.get("role") == "user"]
+        if len(user_messages) != 1:
+            raise ValueError(f"user prompt override expects exactly one user message, found {len(user_messages)}")
+        user_messages[0]["content"] = user_prompt
+
+    if system_prompt is not None:
+        has_system = bool(messages) and messages[0].get("role") == "system"
+        if system_prompt == "":
+            if has_system:
+                messages.pop(0)
+        elif has_system:
+            messages[0]["content"] = system_prompt
+        else:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+    return messages
+
+
 def build_manifest(selection_path: Path, output_path: Path) -> dict[str, Any]:
     inventory = json.loads(selection_path.read_text())
     rows = []
@@ -111,13 +134,9 @@ def build_manifest(selection_path: Path, output_path: Path) -> dict[str, Any]:
                     audio_cache[cache_key] = _resolve_audio_path(raw_path, data_root)
                 replacements[raw_path] = audio_cache[cache_key]
             row = _replace_paths(source_row, replacements)
-            if source.get("user_prompt") is not None:
-                user_messages = [message for message in row.get("messages", []) if message.get("role") == "user"]
-                if len(user_messages) != 1:
-                    raise ValueError(
-                        f"Expected one user message for prompt override: {source_manifest}:{source_index}"
-                    )
-                user_messages[0]["content"] = source["user_prompt"]
+            row["messages"] = _apply_prompt_overrides(
+                row.get("messages", []), source.get("system_prompt"), source.get("user_prompt")
+            )
             duration = float(row.get("duration") or 0.0)
             if duration <= 0.0:
                 message_durations = [
