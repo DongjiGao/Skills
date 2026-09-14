@@ -268,6 +268,9 @@ class GenerationTaskConfig:
     # mapping. Only simple scalar {{field_name}} placeholders are accepted.
     system_message_template: str | None = None
     user_message_template: str | None = None
+    # Static message overrides keyed by each row's ``subset_for_metrics``.
+    # The benchmark-level values above remain the fallback.
+    prompt_overrides_by_subset: dict[str, dict[str, str | None]] | None = field(default_factory=dict)
     # Optional top-level row key containing a mapping of safe decoding knobs.
     # The allowlist is SAFE_REQUEST_INFERENCE_OVERRIDES; transport/router fields
     # and arbitrary extra_body payloads are rejected.
@@ -462,6 +465,26 @@ class GenerationTaskConfig:
                 raise ValueError("inference_overrides_key must be a non-empty stripped string or None")
             if self.inference_overrides_key == self.async_position_key:
                 raise ValueError("inference_overrides_key cannot use the internal async_position_key")
+
+        subset_overrides = self.prompt_overrides_by_subset
+        if subset_overrides is not None:
+            if not isinstance(subset_overrides, Mapping):
+                raise TypeError("prompt_overrides_by_subset must be a mapping or None")
+            for subset, override in subset_overrides.items():
+                if not isinstance(subset, str) or not subset or subset.strip() != subset:
+                    raise ValueError("prompt_overrides_by_subset keys must be non-empty stripped strings")
+                if not isinstance(override, Mapping):
+                    raise TypeError(f"prompt override for subset {subset!r} must be a mapping")
+                unknown = set(override) - {"system_message", "user_message"}
+                if unknown:
+                    raise ValueError(
+                        f"prompt override for subset {subset!r} has unsupported keys {sorted(unknown)}"
+                    )
+                for role, value in override.items():
+                    if value is not None and not isinstance(value, str):
+                        raise TypeError(
+                            f"prompt override {subset!r}.{role} must be a string or None"
+                        )
 
     def _post_init_deprecated_params(self):
         if self.use_completions_api:
@@ -1002,6 +1025,19 @@ class GenerationTask:
             )
         else:
             user_message = self.cfg.user_message if self.prompt is None else None
+        subset_overrides = self.cfg.prompt_overrides_by_subset
+        if isinstance(subset_overrides, Mapping) and isinstance(data_point, Mapping):
+            subset = data_point.get("subset_for_metrics")
+            # OmegaConf mappings enforce their declared string key type and
+            # reject ``get(None)``. Subset-less benchmarks simply retain the
+            # benchmark-level fallback prompts.
+            if isinstance(subset, str):
+                override = subset_overrides.get(subset)
+                if isinstance(override, Mapping):
+                    if "system_message" in override:
+                        system_message = override["system_message"]
+                    if "user_message" in override:
+                        user_message = override["user_message"]
         return system_message, user_message
 
     @staticmethod

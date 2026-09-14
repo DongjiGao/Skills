@@ -67,13 +67,9 @@ def test_eval_client_script_parallel_fails_if_any_unit_fails(monkeypatch, tmp_pa
     assert succeeded_marker.read_text().strip() == "succeeded"
 
 
-def test_eval_client_script_parallelizes_chunks_but_sequences_outputs(
-    monkeypatch, tmp_path
-):
+def test_eval_client_script_parallelizes_chunks_but_sequences_outputs(monkeypatch, tmp_path):
     trace = tmp_path / "trace.txt"
-    monkeypatch.setattr(
-        eval_scripts, "get_generation_cmd", lambda *, command, **kwargs: command
-    )
+    monkeypatch.setattr(eval_scripts, "get_generation_cmd", lambda *, command, **kwargs: command)
     monkeypatch.setattr(eval_scripts, "wrap_python_path", lambda cmd: cmd)
 
     units = [
@@ -90,9 +86,7 @@ def test_eval_client_script_parallelizes_chunks_but_sequences_outputs(
             "command": f"echo b >> {shlex.quote(str(trace))}",
         },
     ]
-    client_script = EvalClientScript(
-        units=units, single_node_mode="parallel_chunks"
-    )
+    client_script = EvalClientScript(units=units, single_node_mode="parallel_chunks")
 
     cmd, _ = client_script.inline()
     subprocess.run(["bash", "-lc", cmd], check=True)
@@ -116,8 +110,7 @@ def test_eval_client_script_uses_slurm_master_ref_for_self_hosted_single_group(m
         units=[
             {
                 "extra_arguments": (
-                    "++server.host=127.0.0.1 ++server.port=31134 "
-                    "++server.base_url=http://stale ++foo=bar"
+                    "++server.host=127.0.0.1 ++server.port=31134 ++server.base_url=http://stale ++foo=bar"
                 )
             }
         ],
@@ -329,9 +322,22 @@ def _patch_eval_for_sbatch_tests(monkeypatch, benchmark_args):
 @pytest.mark.parametrize(
     "summarize_sbatch_kwargs,expected_sbatch_kwargs",
     [
-        (None, {"segment": 4, "qos": "main"}),
-        ({}, None),
-        ({"segment": 1}, {"segment": 1}),
+        (
+            None,
+            {
+                "segment": 4,
+                "qos": "main",
+                "exclusive": False,
+                "mem": "16G",
+                "time": "0-01:00:00",
+                "time_min": "00:15:00",
+            },
+        ),
+        ({}, {"exclusive": False, "mem": "16G", "time": "0-01:00:00"}),
+        (
+            {"segment": 1},
+            {"segment": 1, "exclusive": False, "mem": "16G", "time": "0-01:00:00"},
+        ),
     ],
 )
 def test_eval_summarize_sbatch_kwargs_and_account(
@@ -378,6 +384,55 @@ def test_eval_summarize_sbatch_kwargs_and_account(
     assert len(captured) == 1
     assert captured[0]["account"] == "acct"
     assert captured[0]["sbatch_kwargs"] == expected_sbatch_kwargs
+
+
+def test_eval_explicit_small_scorer_contract_has_no_time_min(monkeypatch, tmp_path):
+    def benchmark_args():
+        return eval_utils.BenchmarkArgs(
+            name="gsm8k",
+            input_file="/tmp/gsm8k.jsonl",
+            generation_args="",
+            judge_args="",
+            judge_pipeline_args={},
+            requires_sandbox=False,
+            keep_mounts_for_sandbox=False,
+            generation_module="nemo_skills.inference.generate",
+            num_samples=0,
+            num_chunks=None,
+            eval_subfolder="eval-results/gsm8k",
+            metrics_type="math",
+        )
+
+    _patch_eval_for_sbatch_tests(monkeypatch, benchmark_args)
+    captured = []
+
+    def fake_add_task(*args, **kwargs):
+        captured.append(kwargs)
+        return f"task-{len(captured)}"
+
+    monkeypatch.setattr(eval_pipeline.pipeline_utils, "add_task", fake_add_task)
+    scorer = {
+        "cpus_per_task": 1,
+        "mem": "4G",
+        "time": "00:15:00",
+        "exclusive": False,
+    }
+    eval_pipeline.eval(
+        ctx=SimpleNamespace(args=[]),
+        cluster="test-cluster",
+        output_dir=str(tmp_path),
+        benchmarks="gsm8k",
+        model="model",
+        server_type="openai",
+        server_address="http://server",
+        account="acct",
+        sbatch_kwargs={"segment": 4, "qos": "main"},
+        summarize_sbatch_kwargs=scorer,
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["sbatch_kwargs"] == scorer
+    assert "time_min" not in captured[0]["sbatch_kwargs"]
 
 
 def test_eval_judge_sbatch_kwargs_override(monkeypatch, tmp_path):

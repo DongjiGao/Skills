@@ -41,6 +41,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -258,6 +259,13 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
             count += 1
 
     print(f"Saved {count} samples to {output_file}")
+    # Dotted evaluation targets resolve to
+    # ``asr-leaderboard/<subset>/test.jsonl``. Publish the exact same rows there
+    # so a subset can be regenerated with its own prompt without rerunning the
+    # other six leaderboard datasets.
+    leaf_dir = output_dir / dataset_name
+    leaf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(output_file, leaf_dir / "test.jsonl")
     return count
 
 

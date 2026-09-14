@@ -457,6 +457,7 @@ class VLLMMultimodalModel(VLLMModel):
             raise RuntimeError("No audio chunks generated - audio may be too short or invalid")
 
         chunk_results = []
+        chunk_finish_reasons = []
         result = None
 
         # Track cumulative statistics across chunks
@@ -508,6 +509,7 @@ class VLLMMultimodalModel(VLLMModel):
 
             generation = result["generation"]
             chunk_results.append(generation.strip())
+            chunk_finish_reasons.append(result.get("finish_reason"))
 
         # Aggregate results
         aggregated_text = " ".join(chunk_results)
@@ -516,6 +518,9 @@ class VLLMMultimodalModel(VLLMModel):
         final_result["generation"] = aggregated_text
         final_result["num_audio_chunks"] = len(chunks)
         final_result["audio_duration"] = duration
+        final_result["chunk_finish_reasons"] = chunk_finish_reasons
+        if "length" in chunk_finish_reasons:
+            final_result["finish_reason"] = "length"
         # Update with summed statistics
         final_result["num_generated_tokens"] = total_num_generated_tokens
 
