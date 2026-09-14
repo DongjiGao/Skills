@@ -537,8 +537,10 @@ def eval(
         summarize_sbatch_kwargs["time"] = "0-01:00:00"
         summarize_sbatch_kwargs["time_min"] = "00:15:00"
     else:
+        # An explicit child contract owns its fixed wall time. Do not also
+        # inject time_min: scarce CPU partitions may be unable to satisfy
+        # that scheduling hint even though the small scorer fits its limit.
         summarize_sbatch_kwargs.setdefault("time", "0-01:00:00")
-        summarize_sbatch_kwargs.setdefault("time_min", "00:15:00")
 
     has_tasks = False
     job_id_to_tasks = {}

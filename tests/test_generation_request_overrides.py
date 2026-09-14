@@ -1,10 +1,69 @@
 # Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
+from omegaconf import OmegaConf
 
 from nemo_skills.inference.generate import GenerationTask, GenerationTaskConfig, InferenceConfig
+
+
+def test_subset_prompt_override_accepts_hydra_map_merge():
+    cfg = OmegaConf.structured(
+        GenerationTaskConfig(
+            input_file="input.jsonl",
+            output_file="output.jsonl",
+            server={"server_type": "vllm_multimodal"},
+            prompt_format="openai",
+        )
+    )
+    overrides = {
+        "spgispeech": {
+            "system_message": "",
+            "user_message": "SPGI cleanup prompt",
+        }
+    }
+
+    OmegaConf.update(
+        cfg,
+        "prompt_overrides_by_subset",
+        overrides,
+        merge=True,
+        force_add=True,
+    )
+
+    assert OmegaConf.to_container(cfg.prompt_overrides_by_subset) == overrides
+
+
+@pytest.mark.parametrize(
+    "row",
+    [{}, {"subset_for_metrics": None}, {"subset_for_metrics": 7}],
+)
+def test_omegaconf_prompt_map_ignores_rows_without_string_subset(row):
+    cfg = OmegaConf.structured(
+        GenerationTaskConfig(
+            input_file="input.jsonl",
+            output_file="output.jsonl",
+            server={"server_type": "vllm_multimodal"},
+            prompt_format="openai",
+            system_message="",
+            user_message="benchmark fallback",
+        )
+    )
+    OmegaConf.update(
+        cfg,
+        "prompt_overrides_by_subset",
+        {"spgispeech": {"system_message": "", "user_message": "SPGI prompt"}},
+        merge=True,
+        force_add=True,
+    )
+    task = SimpleNamespace(cfg=cfg, prompt=None)
+
+    assert GenerationTask._request_message_overrides(task, row) == (
+        "",
+        "benchmark fallback",
+    )
 
 
 class _CapturingLLM:
@@ -92,6 +151,50 @@ async def test_real_generation_task_applies_row_prompts_and_decode_without_mutat
     assert first["extra_body"] == second["extra_body"] == {"skip_special_tokens": False}
     first["prompt"][1]["content"][0]["text"] = "mutated after capture"
     assert rows == originals
+
+
+@pytest.mark.asyncio
+async def test_subset_prompt_override_replaces_parent_prompt_only_for_matching_rows(
+    monkeypatch, tmp_path
+):
+    task, llm = _task(
+        monkeypatch,
+        tmp_path,
+        system_message="",
+        user_message="parent prompt",
+        prompt_overrides_by_subset={
+            "spgispeech": {
+                "system_message": "",
+                "user_message": "SPGI cleanup prompt",
+            }
+        },
+    )
+    regular = _row()
+    regular["subset_for_metrics"] = "ami"
+    spgi = _row()
+    spgi["subset_for_metrics"] = "spgispeech"
+
+    await task.process_single_datapoint(regular, [regular, spgi])
+    await task.process_single_datapoint(spgi, [regular, spgi])
+
+    assert llm.requests[0]["prompt"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "parent prompt"},
+                regular["messages"][1]["content"][1],
+            ],
+        }
+    ]
+    assert llm.requests[1]["prompt"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "SPGI cleanup prompt"},
+                spgi["messages"][1]["content"][1],
+            ],
+        }
+    ]
 
 
 @pytest.mark.asyncio

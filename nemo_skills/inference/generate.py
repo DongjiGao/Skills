@@ -69,11 +69,13 @@ LOG = logging.getLogger(get_logger_name(__file__))
 
 _SIMPLE_TEMPLATE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ROUTER_CONTROL_FIELD = "_speechlm_router"
-_PROHIBITED_ASR_PROMPT = "Transcribe the " "following:"
+_PROHIBITED_ASR_PROMPT = "Transcribe the following:"
 
 
-def _validate_effective_prompt(prompt: Any) -> None:
+def _validate_effective_prompt(prompt: Any, allow_legacy_asr_prompt: bool = False) -> None:
     """Reject the legacy ASR instruction after all row/CLI overrides resolve."""
+    if allow_legacy_asr_prompt:
+        return
     pending = [prompt]
     while pending:
         value = pending.pop()
@@ -87,6 +89,7 @@ def _validate_effective_prompt(prompt: Any) -> None:
             pending.extend(value.values())
         elif isinstance(value, (list, tuple, ListConfig)):
             pending.extend(value)
+
 
 # Row-level inference overrides intentionally expose only prediction knobs that
 # are already explicit arguments of BaseModel.generate_async. Transport,
@@ -268,6 +271,9 @@ class GenerationTaskConfig:
     # mapping. Only simple scalar {{field_name}} placeholders are accepted.
     system_message_template: str | None = None
     user_message_template: str | None = None
+    # Static message overrides keyed by each row's ``subset_for_metrics``.
+    # The benchmark-level values above remain the fallback.
+    prompt_overrides_by_subset: dict[str, dict[str, str | None]] | None = field(default_factory=dict)
     # Optional top-level row key containing a mapping of safe decoding knobs.
     # The allowlist is SAFE_REQUEST_INFERENCE_OVERRIDES; transport/router fields
     # and arbitrary extra_body payloads are rejected.
@@ -386,6 +392,7 @@ class GenerationTaskConfig:
 
     # Audio configuration - set by benchmarks that need audio processing (mmau-pro, audiobench, etc.)
     enable_audio: bool = False  # Enable audio preprocessing (set by benchmark configs)
+    allow_legacy_asr_prompt: bool = False
     enable_audio_chunking: bool = True
     audio_chunk_task_types: list[str] | None = None  # If None, chunk all task types; if specified, only chunk these
     chunk_audio_threshold_sec: int = 30  # Duration in seconds for each audio chunk
@@ -462,6 +469,22 @@ class GenerationTaskConfig:
                 raise ValueError("inference_overrides_key must be a non-empty stripped string or None")
             if self.inference_overrides_key == self.async_position_key:
                 raise ValueError("inference_overrides_key cannot use the internal async_position_key")
+
+        subset_overrides = self.prompt_overrides_by_subset
+        if subset_overrides is not None:
+            if not isinstance(subset_overrides, Mapping):
+                raise TypeError("prompt_overrides_by_subset must be a mapping or None")
+            for subset, override in subset_overrides.items():
+                if not isinstance(subset, str) or not subset or subset.strip() != subset:
+                    raise ValueError("prompt_overrides_by_subset keys must be non-empty stripped strings")
+                if not isinstance(override, Mapping):
+                    raise TypeError(f"prompt override for subset {subset!r} must be a mapping")
+                unknown = set(override) - {"system_message", "user_message"}
+                if unknown:
+                    raise ValueError(f"prompt override for subset {subset!r} has unsupported keys {sorted(unknown)}")
+                for role, value in override.items():
+                    if value is not None and not isinstance(value, str):
+                        raise TypeError(f"prompt override {subset!r}.{role} must be a string or None")
 
     def _post_init_deprecated_params(self):
         if self.use_completions_api:
@@ -1002,6 +1025,19 @@ class GenerationTask:
             )
         else:
             user_message = self.cfg.user_message if self.prompt is None else None
+        subset_overrides = self.cfg.prompt_overrides_by_subset
+        if isinstance(subset_overrides, Mapping) and isinstance(data_point, Mapping):
+            subset = data_point.get("subset_for_metrics")
+            # OmegaConf mappings enforce their declared string key type and
+            # reject ``get(None)``. Subset-less benchmarks simply retain the
+            # benchmark-level fallback prompts.
+            if isinstance(subset, str):
+                override = subset_overrides.get(subset)
+                if isinstance(override, Mapping):
+                    if "system_message" in override:
+                        system_message = override["system_message"]
+                    if "user_message" in override:
+                        user_message = override["user_message"]
         return system_message, user_message
 
     @staticmethod
@@ -1080,7 +1116,7 @@ class GenerationTask:
                 )
                 if self.cfg.prompt_suffix:
                     GenerationTask._append_message_text_suffix(messages[-1], self.cfg.prompt_suffix)
-                _validate_effective_prompt(messages)
+                _validate_effective_prompt(messages, self.cfg.allow_legacy_asr_prompt)
                 return messages
 
             # OpenAI path with prompt_config template -- build prompt from template, merge audio from data.
@@ -1102,7 +1138,7 @@ class GenerationTask:
                     GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
                 else:
                     filled_prompt += self.cfg.prompt_suffix
-            _validate_effective_prompt(filled_prompt)
+            _validate_effective_prompt(filled_prompt, self.cfg.allow_legacy_asr_prompt)
             return filled_prompt
 
         # NS path -- always uses prompt template
@@ -1126,7 +1162,7 @@ class GenerationTask:
                 GenerationTask._append_message_text_suffix(filled_prompt[-1], self.cfg.prompt_suffix)
             elif isinstance(filled_prompt, str):
                 filled_prompt += self.cfg.prompt_suffix
-        _validate_effective_prompt(filled_prompt)
+        _validate_effective_prompt(filled_prompt, self.cfg.allow_legacy_asr_prompt)
         return filled_prompt
 
     def dump_outputs(self, outputs, data_points, fout):

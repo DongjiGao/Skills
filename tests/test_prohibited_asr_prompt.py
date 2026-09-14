@@ -27,3 +27,10 @@ def test_effective_prompt_accepts_hr7_and_task_specific_instructions():
         [{"role": "user", "content": "Translate the audio into English."}],
     ):
         _validate_effective_prompt(prompt)
+
+
+def test_legacy_asr_prompt_can_be_explicitly_allowed_for_regression_eval():
+    _validate_effective_prompt(
+        [{"role": "user", "content": "Transcribe the following:"}],
+        allow_legacy_asr_prompt=True,
+    )

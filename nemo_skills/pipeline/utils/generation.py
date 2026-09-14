@@ -587,7 +587,7 @@ def get_generation_cmd(
         merged_output_file = get_chunked_rs_filename(output_dir=output_dir, random_seed=random_seed)
         merge_cmd = (
             f"python -m nemo_skills.inference.merge_chunks {merged_output_file} "
-            f"{' '.join([f[:-5] for f in donefiles])}"
+            f"{' '.join([f[:-5] for f in donefiles])} --source-file {shlex.quote(str(input_file))}"
         )
         if postprocess_cmd:
             postprocess_cmd = shlex.quote(postprocess_cmd)
