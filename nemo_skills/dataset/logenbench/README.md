@@ -6,7 +6,8 @@ ended with `finish_reason=length` across the accepted HR9b step-4000 evaluation
 artifacts audited on 2026-09-14. The 494 text-only observations were excluded.
 
 The manifest preserves duplicate waveforms when they appeared under distinct
-prompt or task conditions. Each row retains its original generation ceiling.
+prompt or task conditions. Each row materializes the original effective system
+and user messages and retains its original generation ceiling.
 The benchmark disables client-side chunking so the evaluation launcher can route
 recordings longer than 55 minutes through the validated server-side 55-minute,
 5-second-overlap chunker. A logical example is counted as unbounded when any

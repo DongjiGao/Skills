@@ -9,8 +9,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/asr-leaderboard-multilingual/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "contextasr-bench.coarse",
@@ -26,6 +27,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/contextasr-bench/coarse/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -44,6 +46,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/contextasr-bench/contextless/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -60,6 +63,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/contextasr-bench/fine/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -233,8 +237,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/cs-fleurs/mms/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio."
   },
   {
     "source_benchmark": "cs-fleurs.read",
@@ -272,8 +277,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/cs-fleurs/read/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio."
   },
   {
     "source_benchmark": "cs-fleurs.xtts-test1",
@@ -328,8 +334,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/cs-fleurs/xtts-test1/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio."
   },
   {
     "source_benchmark": "halas",
@@ -342,8 +349,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/halas/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "multispeaker-sot.120-180s",
@@ -354,8 +362,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/multispeaker-sot/120-180s/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 4096,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. Use no punctuation and no capitalization. Start every speaker turn with a speaker tag such as <spk:0>, <spk:1>, <spk:2>, etc.; assign one stable tag per speaker and keep speaker identities consistent. Output only the speaker-tagged transcript."
   },
   {
     "source_benchmark": "multispeaker-sot.60-90s",
@@ -368,8 +377,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/multispeaker-sot/60-90s/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 2048,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. Use no punctuation and no capitalization. Start every speaker turn with a speaker tag such as <spk:0>, <spk:1>, <spk:2>, etc.; assign one stable tag per speaker and keep speaker identities consistent. Output only the speaker-tagged transcript."
   },
   {
     "source_benchmark": "multispeaker-sot.full",
@@ -383,8 +393,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/multispeaker-sot/full/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 16384,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. Use no punctuation and no capitalization. Start every speaker turn with a speaker tag such as <spk:0>, <spk:1>, <spk:2>, etc.; assign one stable tag per speaker and keep speaker identities consistent. Output only the speaker-tagged transcript."
   },
   {
     "source_benchmark": "multispeaker-sot.under20s",
@@ -394,8 +405,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/multispeaker-sot/under20s/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 1024,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. Use no punctuation and no capitalization. Start every speaker turn with a speaker tag such as <spk:0>, <spk:1>, <spk:2>, etc.; assign one stable tag per speaker and keep speaker identities consistent. Output only the speaker-tagged transcript."
   },
   {
     "source_benchmark": "rich_transcription_asr.test.d8",
@@ -412,8 +424,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/rich_transcription_asr/test/d8/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 1024,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Use <ev:*> and <sty:*> special tokens to recognize all non-speech verbatims and speaking style."
   },
   {
     "source_benchmark": "voice-code-bench",
@@ -423,8 +436,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/voice-code-bench/test.jsonl",
     "source_run": "default-main",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Transcribe the audio as a clean written transcript. Context terms to bias toward: phone number, email address, URL, file path, command, CLI flag, environment variable, software version, date, time, postal address, reference ID, account ID, record ID, product code, spelled sequence. Use conventional written forms and preserve punctuation/separators inside code-like entities."
   },
   {
     "source_benchmark": "aishell4-sot",
@@ -448,8 +462,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/aishell4-sot/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 16384,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. No punctuation or capitalization. Put a distinct <spk:N> tag before every speaker turn, assigning a different N to every speaker."
   },
   {
     "source_benchmark": "alimeeting-sot",
@@ -466,8 +481,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/alimeeting-sot/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 16384,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio. Include all spoken words and verbal fillers. Write numbers as spoken. No punctuation or capitalization. Put a distinct <spk:N> tag before every speaker turn, assigning a different N to every speaker."
   },
   {
     "source_benchmark": "asr-leaderboard",
@@ -484,8 +500,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/asr-leaderboard/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "covost2.asr",
@@ -505,8 +522,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/covost2/asr/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "covost2.st",
@@ -605,6 +623,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/covost2/st/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -849,8 +868,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/cs-fleurs/xtts-test2/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio."
   },
   {
     "source_benchmark": "fleurs.asr",
@@ -927,8 +947,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/fleurs/asr/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "fleurs.st",
@@ -1297,6 +1318,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/fleurs/st/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -1308,6 +1330,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/mmar/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": null
   },
@@ -1325,8 +1348,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9-default35-no-numb3rs-20260912-c331b58e-s10f067d8-n159ec05-noefe4588-aa36658a-l87768d8-p21ac87bc-atomic2-r4/0911-hr9b-16node-30k-r2-16node/balanced-data-n128-0bb6eb433a2f/rich_transcription_asr/test/d12a/test.jsonl",
     "source_run": "default-repair",
+    "system_prompt": "",
     "tokens_to_generate": 1024,
-    "user_prompt": null
+    "user_prompt": "Transcribe this audio with punctuation and capitalization. Include all spoken words and verbal fillers. Write numbers in their standard written form. Use <ev:*> and <sty:*> special tokens to recognize all non-speech verbatims and speaking style."
   },
   {
     "source_benchmark": "asr-leaderboard-longform",
@@ -1360,8 +1384,9 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9b-step4000-open-asr-longform55m-c38bc378-s10f067d8-n159ec05-aa36658a-l87768d8-r1/0911-hr9b-16node-30k-r2-16node/balanced-data-n32-eb3fcb681b71/asr-leaderboard-longform/test.jsonl",
     "source_run": "longform-default",
+    "system_prompt": "",
     "tokens_to_generate": 20000,
-    "user_prompt": null
+    "user_prompt": "Produce a verbatim transcript of the audio. Preserve named entities, abbreviations, numbers, dates, measurements, acronyms, and technical terms as clearly as possible. Keep the same language as spoken and do not translate."
   },
   {
     "source_benchmark": "asr-leaderboard-longform",
@@ -1407,6 +1432,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/burst-eval-vllm-v2-staging/hr9b-step4000-open-asr-longform55m-pc-e1c5fa9e-c38bc378-s10f067d8-n159ec05-aa36658a-l87768d8-r3/0911-hr9b-16node-30k-r2-16node/balanced-data-n32-eb3fcb681b71/asr-leaderboard-longform/test.jsonl",
     "source_run": "longform-punctuation",
+    "system_prompt": "",
     "tokens_to_generate": 20000,
     "user_prompt": "Transcribe the audio with proper punctuation and capitalization."
   },
@@ -1424,6 +1450,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/immutable-hr9b-step4000-pc-spgi-clean-balanced-n32-20260913-r1/asr-leaderboard/test.jsonl",
     "source_run": "punctuation-SPGI-clean",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": "Transcribe the audio with proper punctuation and capitalization."
   },
@@ -1438,6 +1465,7 @@
     ],
     "source_manifest": "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/speechlm-2026h1/results/immutable-hr9b-step4000-pc-spgi-clean-balanced-n32-20260913-r1/asr-leaderboard-multilingual/test.jsonl",
     "source_run": "punctuation-SPGI-clean",
+    "system_prompt": "",
     "tokens_to_generate": 256,
     "user_prompt": "Transcribe the audio with proper punctuation and capitalization."
   }
