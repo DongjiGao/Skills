@@ -8,10 +8,15 @@ import struct
 import wave
 from pathlib import Path
 
+import pytest
+
 from nemo_skills.dataset.utils import get_dataset_module
 
 prepare = importlib.import_module("nemo_skills.dataset.multispeaker-sot.prepare")
 build_group_manifests = importlib.import_module("nemo_skills.dataset.multispeaker-sot.build_group_manifests")
+nsv_converter = importlib.import_module(
+    "nemo_skills.dataset.multispeaker-sot.turing-diarization-v1.convert_nsv_tokens"
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -31,7 +36,17 @@ def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
 def test_group_registration():
     group_module, _ = get_dataset_module("multispeaker-sot")
     assert group_module.IS_BENCHMARK_GROUP is True
-    expected_groups = ("under20s", "60-90s", "120-180s", "full", "lsm")
+    expected_groups = (
+        "under20s",
+        "60-90s",
+        "120-180s",
+        "full",
+        "lsm",
+        "turing-diarization-v1",
+        "mlc-slm-2-dev-13L",
+        "notsofar1-eval-ihm",
+        "notsofar1-eval-sc",
+    )
     assert group_module.EVAL_GROUPS == expected_groups
     assert tuple(group_module.BENCHMARKS) == tuple(
         f"multispeaker-sot.{name}" for name in expected_groups
@@ -67,22 +82,375 @@ def test_full_group_is_a_single_benchmark_covering_every_full_length_set():
     )
 
 
-def test_allsets_group_contains_exactly_five_merged_groups():
+def test_notsofar1_eval_aliases_use_the_full_evaluation_contract():
+    full_module, _ = get_dataset_module("multispeaker-sot.full")
+    for name in ("notsofar1-eval-ihm", "notsofar1-eval-sc"):
+        module, _ = get_dataset_module(f"multispeaker-sot.{name}")
+        assert module.METRICS_TYPE == full_module.METRICS_TYPE
+        assert module.EVAL_ARGS == full_module.EVAL_ARGS
+        assert module.GENERATION_ARGS == full_module.GENERATION_ARGS
+        assert module.GENERATION_MODULE == full_module.GENERATION_MODULE
+        assert module.EVAL_SPLIT == full_module.EVAL_SPLIT
+
+
+def test_allsets_group_contains_every_regular_eval_group():
     group_module, _ = get_dataset_module("multispeaker-sot.allsets")
-    expected_groups = ["under20s", "60-90s", "120-180s", "full", "lsm"]
+    expected_groups = [
+        "under20s",
+        "60-90s",
+        "120-180s",
+        "full",
+        "lsm",
+        "turing-diarization-v1",
+        "mlc-slm-2-dev-13L",
+        "notsofar1-eval-ihm",
+        "notsofar1-eval-sc",
+    ]
 
     assert group_module.SUBSETS == expected_groups
 
+    legacy_groups = expected_groups[:5]
     flattened = [
         subset
-        for group_name in expected_groups
+        for group_name in legacy_groups
         for subset in get_dataset_module(f"multispeaker-sot.{group_name}")[0].SUBSETS
     ]
     assert len(flattened) == len(set(flattened))
     assert set(flattened) == set(prepare.BENCHMARK_MANIFESTS)
 
 
-def test_build_allsets_manifest_merges_all_five_groups(tmp_path, monkeypatch):
+def test_new_dataset_defaults_use_shared_dfw_roots_only():
+    assert prepare.DEFAULT_MLC_SLM_2_OPUS_DEV_ROOT == (
+        "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
+        "data/multi_speaker_asr/MultiSpeakerASR/MLC_SLM_2_opus/dev"
+    )
+    assert prepare.DEFAULT_NOTSOFAR1_ROOT == (
+        "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
+        "data/multi_speaker_asr/diarization_e2e/above4spk_finetune_datasets/notsofar1"
+    )
+    assert prepare.DEFAULT_TURING_ROOT == (
+        "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
+        "data/multi_speaker_asr/diarization_e2e/above4spk_finetune_datasets/"
+        "Turing_Batch_Deliveries"
+    )
+    for source_root in (
+        prepare.DEFAULT_MLC_SLM_2_OPUS_DEV_ROOT,
+        prepare.DEFAULT_NOTSOFAR1_ROOT,
+        prepare.DEFAULT_TURING_ROOT,
+    ):
+        assert "home" not in Path(source_root).parts
+        assert "pool" not in Path(source_root).parts
+
+
+def test_prepare_turing_uses_opus_mixdown_and_stg_v4_2(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    batch = source_root / "Delivery_Batch1_01012026"
+    session = batch / "NV-GR-SS02-CONVO01"
+    session.mkdir(parents=True)
+    mixed_opus = session / "NV-GR-SS02-CONVO01_mixed.opus"
+    mixed_opus.write_bytes(b"delivered-opus")
+    (session / "SPK01.seglst.json").write_text(
+        json.dumps(
+            [
+                {
+                    "session_id": session.name,
+                    "start_time": "2.0",
+                    "end_time": "3.0",
+                    "words": "later",
+                    "speaker": "SPK01",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (session / "SPK02.seglst.json").write_text(
+        json.dumps(
+            [
+                {
+                    "session_id": session.name,
+                    "start_time": "1.0",
+                    "end_time": "1.5",
+                    "words": "earlier",
+                    "speaker": "SPK02",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    missing_mix = batch / "NV-EN-SS02-CONVO02"
+    missing_mix.mkdir()
+    (missing_mix / "SPK01.seglst.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(prepare, "_audio_duration_seconds", lambda path: 3.0)
+
+    def fake_stg(input_manifest, output_manifest, **kwargs):
+        inputs = list(prepare.iter_jsonl(input_manifest))
+        assert kwargs["dataset_id"] == "turing-diarization-v1"
+        assert kwargs["max_speakers"] == 8
+        assert len(inputs) == 1
+        combined = json.loads(Path(inputs[0]["seglst_filepath"]).read_text(encoding="utf-8"))
+        assert {entry["speaker"] for entry in combined} == {"SPK01", "SPK02"}
+        return [
+            {
+                **inputs[0],
+                "offset": 1.0,
+                "duration": 2.0,
+                "num_speakers": 2,
+                "num_changes": 1,
+                "global_speaker_ids": ["SPK02", "SPK01"],
+                "text": "<spk:0> earlier [inhale] <spk:1> later",
+            }
+        ]
+
+    monkeypatch.setattr(prepare, "_run_stg_v4_2", fake_stg)
+    count = prepare.prepare_turing_diarization_v1(
+        source_root=source_root,
+        output_dir=tmp_path / "output",
+        data_dir=tmp_path / "data",
+        audio_prefix=Path("/data/multispeaker-sot/audio"),
+        no_audio=False,
+        max_samples=None,
+        speaker_tag_style="spk",
+    )
+
+    assert count == 1
+    record = json.loads((tmp_path / "output/turing-diarization-v1/test.jsonl").read_text())
+    assert record["audio_filepath"].endswith("/turing-diarization-v1/NV-GR-SS02-CONVO01.opus")
+    assert record["text"] == "<spk:0> earlier <ev:breath> <spk:1> later"
+    assert record["speaker_tag_map"] == {"SPK02": "s0", "SPK01": "s1"}
+    assert record["source_lang"] == "el"
+    assert record["num_speakers"] == 2
+    assert record["num_changes"] == 1
+    assert (tmp_path / "data/audio/turing-diarization-v1/NV-GR-SS02-CONVO01.opus").read_bytes() == b"delivered-opus"
+
+
+def test_prepare_mlc_slm_2_uses_processed_opus_delivery_and_stg_v4_2(tmp_path, monkeypatch):
+    opus_dev_root = tmp_path / "MLC_SLM_2_opus/dev"
+    locale = "es-MX"
+    recording_id = "sample_phone"
+    locale_root = opus_dev_root / "data" / locale
+    (locale_root / "opus").mkdir(parents=True)
+    (locale_root / "seglsts").mkdir()
+    (locale_root / "rttms").mkdir()
+    (locale_root / "seglsts" / f"{recording_id}.seglst.json").write_text(
+        json.dumps(
+            [
+                {
+                    "session_id": recording_id,
+                    "start_time": "2.0",
+                    "end_time": "3.0",
+                    "words": "México",
+                    "speaker": "O1",
+                },
+                {
+                    "session_id": recording_id,
+                    "start_time": "1.0",
+                    "end_time": "1.5",
+                    "words": "primero",
+                    "speaker": "O2",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (locale_root / "rttms" / f"{recording_id}.rttm").write_text(
+        "SPEAKER sample 1 1.0 0.5 <NA> <NA> O2 <NA>\n"
+    )
+    (locale_root / "opus" / f"{recording_id}.opus").write_bytes(b"opus")
+
+    monkeypatch.setattr(prepare, "_audio_duration_seconds", lambda path: 3.0)
+
+    def fake_stg(input_manifest, output_manifest, **kwargs):
+        inputs = list(prepare.iter_jsonl(input_manifest))
+        assert kwargs["dataset_id"] == "mlc-slm-2-dev-13L"
+        assert kwargs["max_speakers"] == 4
+        assert inputs[0]["source_lang"] == "es"
+        return [
+            {
+                **inputs[0],
+                "offset": 1.0,
+                "duration": 2.0,
+                "num_speakers": 2,
+                "num_changes": 1,
+                "global_speaker_ids": ["O2", "O1"],
+                "text": "<spk:0> primero <spk:1> México",
+            }
+        ]
+
+    monkeypatch.setattr(prepare, "_run_stg_v4_2", fake_stg)
+    count = prepare.prepare_mlc_slm_2_dev_13l(
+        opus_dev_root=opus_dev_root,
+        output_dir=tmp_path / "output",
+        data_dir=tmp_path / "data",
+        audio_prefix=Path("/data/multispeaker-sot/audio"),
+        no_audio=False,
+        max_samples=None,
+        speaker_tag_style="spk",
+        locales=(locale,),
+    )
+
+    assert count == 1
+    record = json.loads((tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text())
+    assert record["source_lang"] == "es"
+    assert record["locale"] == "es-MX"
+    assert record["sample_id"] == "es-MX-sample_phone"
+    assert record["text"] == "<spk:0> primero <spk:1> México"
+    assert record["subset_for_metrics"] == "mlc-slm-2-dev-13L.es-MX"
+    assert record["audio_filepath"].endswith("/mlc-slm-2-dev-13L/es-MX/sample_phone.opus")
+    assert record["reference_seglst_filepath"].endswith(
+        "/seglst/mlc-slm-2-dev-13L/es-MX/sample_phone_ref.seglst.json"
+    )
+    assert record["rttm_filepath"].endswith("/rttm/mlc-slm-2-dev-13L/es-MX/sample_phone.rttm")
+    assert "México" in (tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text(encoding="utf-8")
+    assert "\\u00e9" not in (tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text(encoding="utf-8")
+
+
+def test_stg_v4_2_command_uses_full_session_overlap_contract(tmp_path, monkeypatch):
+    script = tmp_path / "serialized_transcription_generator_v4_2.py"
+    script.write_text("# fixture\n", encoding="utf-8")
+    input_manifest = tmp_path / "input.jsonl"
+    output_manifest = tmp_path / "output.jsonl"
+    _write_jsonl(input_manifest, [])
+    captured = {}
+
+    def fake_run(command, check):
+        captured["command"] = command
+        assert check is True
+        _write_jsonl(output_manifest, [])
+
+    monkeypatch.setattr(prepare.subprocess, "run", fake_run)
+    assert prepare._run_stg_v4_2(
+        input_manifest,
+        output_manifest,
+        dataset_id="fixture",
+        max_speakers=8,
+        speaker_tag_style="spk",
+        stg_script=script,
+        python_executable="python-fixture",
+    ) == []
+    command = captured["command"]
+    assert "--full_session" in command
+    assert "--use_word_ts_sim" in command
+    assert command[command.index("--min_overlap_turn_sec") + 1] == "1.2"
+    assert command[command.index("--speaker_token_position") + 1] == "segment"
+    assert command[command.index("--speaker_token_style") + 1] == "<spk:*>"
+
+
+def test_copy_file_atomic_replaces_same_size_stale_label(tmp_path):
+    source = tmp_path / "source.rttm"
+    destination = tmp_path / "destination.rttm"
+    source.write_text("new\n", encoding="utf-8")
+    destination.write_text("old\n", encoding="utf-8")
+
+    prepare._copy_file_atomic(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "new\n"
+
+
+def test_turing_nsv_converter_maps_event_families_and_preserves_speech_annotations():
+    source = (
+        "<spk:0> [inhale] hello [chuckle] [lip-smack] [typing] [groan] "
+        "[hum-tune] [whoop] [cough] [cry] [unintelligible] [um] [oh] [hm] [uh]"
+    )
+
+    converted = nsv_converter.convert_text(source)
+
+    assert converted == (
+        "<spk:0> <ev:breath> hello <ev:laughter> <ev:mouth_noise> "
+        "<ev:gesture_noise> <ev:effort_strain> <ev:music_vocal> "
+        "<ev:shout_exclaim> <ev:throat_cough> <ev:crying> [unintelligible] um oh hm uh"
+    )
+
+
+def test_turing_nsv_converter_rejects_unknown_bracketed_annotation():
+    with pytest.raises(ValueError, match="Unknown bracketed annotation"):
+        nsv_converter.convert_text("<spk:0> hello [new-event]")
+
+
+def test_turing_nsv_manifest_conversion_is_utf8_atomic_and_updates_answer(tmp_path):
+    input_path = tmp_path / "input.jsonl"
+    output_path = tmp_path / "output.jsonl"
+    stats_path = tmp_path / "stats.json"
+    _write_jsonl(
+        input_path,
+        [
+            {
+                "sample_id": "ko-example",
+                "text": "<spk:0> 안녕[inhale] [laugh] [Umm]",
+                "expected_answer": "<spk:0> 안녕[inhale] [laugh] [Umm]",
+            }
+        ],
+    )
+
+    report = nsv_converter.convert_manifest(input_path, output_path, stats_path)
+    raw_output = output_path.read_text(encoding="utf-8")
+    row = json.loads(raw_output)
+
+    assert row["text"] == "<spk:0> 안녕 <ev:breath> <ev:laughter> um"
+    assert row["expected_answer"] == row["text"]
+    assert report["rows"] == 1
+    assert report["changed_rows"] == 1
+    assert report["source_nsv_total"] == 2
+    assert report["source_filler_total"] == 1
+    assert report["source_filler_counts"] == {"[Umm]": 1}
+    assert report["target_nsv_counts"]["<ev:breath>"] == 1
+    assert report["target_nsv_counts"]["<ev:laughter>"] == 1
+    assert "안녕" in raw_output
+    assert "\\uc548" not in raw_output
+    assert json.loads(stats_path.read_text(encoding="utf-8"))["unknown_bracketed_annotations"] == []
+
+
+def test_prepare_notsofar1_eval_uses_full_tn_raw_nopnc_opus(tmp_path):
+    manifest_root = tmp_path / "manifests"
+    manifest_root.mkdir()
+    source_audio = tmp_path / "source" / "S32050101.opus"
+    source_audio.parent.mkdir()
+    source_audio.write_bytes(b"opus")
+    source_manifest = manifest_root / "nemoSOT_NOTSOFAR1_ihm_eval_full_tn_raw_noPnC.jsonl"
+    _write_jsonl(
+        source_manifest,
+        [
+            {
+                "audio_filepath": str(source_audio),
+                "offset": 0.0,
+                "duration": 360.12345,
+                "text": "<spk:0> hello um <spk:1> yes",
+                "source_lang": "en",
+                "target_lang": "en",
+                "taskname": "asr",
+                "num_speakers": 2,
+                "num_changes": 1,
+                "dataset_id": "NOTSOFAR1",
+                "global_speaker_ids": ["notsofar1_P1", "notsofar1_P2"],
+            }
+        ],
+    )
+
+    count = prepare.prepare_notsofar1_eval(
+        "notsofar1-eval-ihm",
+        manifest_root=manifest_root,
+        output_dir=tmp_path / "output",
+        data_dir=tmp_path / "data",
+        audio_prefix=Path("/data/multispeaker-sot/audio"),
+        no_audio=False,
+        max_samples=None,
+        speaker_tag_style="spk",
+    )
+
+    assert count == 1
+    record = json.loads((tmp_path / "output/notsofar1-eval-ihm/test.jsonl").read_text())
+    assert record["audio_filepath"] == "/data/multispeaker-sot/audio/notsofar1-eval-ihm/S32050101.opus"
+    assert record["duration"] == 360.1234
+    assert record["text"] == "<spk:0> hello um <spk:1> yes"
+    assert record["expected_answer"] == record["text"]
+    assert record["pnc"] == "no"
+    assert record["subset_for_metrics"] == "notsofar1-eval-ihm"
+    assert record["speaker_tag_map"] == {"s0": "s0", "s1": "s1"}
+    assert record["global_speaker_ids"] == ["notsofar1_P1", "notsofar1_P2"]
+    assert (tmp_path / "data/audio/notsofar1-eval-ihm/S32050101.opus").read_bytes() == b"opus"
+
+
+def test_build_allsets_manifest_merges_every_regular_eval_group(tmp_path, monkeypatch):
     data_root = tmp_path / "data"
     bench_root = data_root / "multispeaker-sot"
     groups = get_dataset_module("multispeaker-sot.allsets")[0].SUBSETS
@@ -380,3 +748,21 @@ def test_group_score_aggregates_the_five_regular_merged_benchmarks():
     assert output["all"]["cpwer"] == 30.0
     for name, errors in group_errors.items():
         assert output[name]["cpwer"] == errors * 10.0
+
+
+def test_group_score_reports_notsofar1_microphone_views_separately():
+    group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
+    combined = {
+        "multispeaker-sot.notsofar1-eval-ihm": {
+            "pass@1": {"cpwer_errors": 2, "cpwer_ref_words": 10, "num_entries": 1}
+        },
+        "multispeaker-sot.notsofar1-eval-sc": {
+            "pass@1": {"cpwer_errors": 4, "cpwer_ref_words": 10, "num_entries": 1}
+        },
+    }
+
+    output = group_module.compute_score(combined)["pass@1"]
+
+    assert output["notsofar1-eval-ihm"]["cpwer"] == 20.0
+    assert output["notsofar1-eval-sc"]["cpwer"] == 40.0
+    assert output["all"]["cpwer"] == 30.0

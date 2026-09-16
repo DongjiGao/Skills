@@ -70,6 +70,10 @@ def compute_score(combined_metrics: dict) -> dict:
         "120-180s": _select_eval_group(combined_metrics, "120-180s"),
         "full": _select_eval_group(combined_metrics, "full"),
         "lsm": _select_eval_group(combined_metrics, "lsm"),
+        "turing-diarization-v1": _select_eval_group(combined_metrics, "turing-diarization-v1"),
+        "mlc-slm-2-dev-13L": _select_eval_group(combined_metrics, "mlc-slm-2-dev-13L"),
+        "notsofar1-eval-ihm": _select_eval_group(combined_metrics, "notsofar1-eval-ihm"),
+        "notsofar1-eval-sc": _select_eval_group(combined_metrics, "notsofar1-eval-sc"),
         # Per-corpus buckets (collapsed across duration splits)
         "ami-ihm-dev": {k: v for k, v in combined_metrics.items() if "-ami-ihm-dev" in k},
         "ami-ihm-test": {k: v for k, v in combined_metrics.items() if "-ami-ihm-test" in k},
