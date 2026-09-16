@@ -29,7 +29,7 @@ from scipy import signal
 
 
 DATA_ROOT = Path(
-    "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data"
+    "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/data"
 )
 NOTSOFAR1_ROOT = (
     DATA_ROOT

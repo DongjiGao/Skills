@@ -44,8 +44,7 @@ def test_group_registration():
         "lsm",
         "turing-diarization-v1",
         "mlc-slm-2-dev-13L",
-        "notsofar1-eval-ihm",
-        "notsofar1-eval-sc",
+        "notsofar1-eval",
     )
     assert group_module.EVAL_GROUPS == expected_groups
     assert tuple(group_module.BENCHMARKS) == tuple(
@@ -93,6 +92,24 @@ def test_notsofar1_eval_aliases_use_the_full_evaluation_contract():
         assert module.EVAL_SPLIT == full_module.EVAL_SPLIT
 
 
+def test_new_parent_groups_expose_exact_language_locale_and_microphone_leaves():
+    expected = {
+        "turing-diarization-v1": prepare.TURING_SUBSETS,
+        "mlc-slm-2-dev-13L": prepare.MLC_SLM_2_SUBSETS,
+        "notsofar1-eval": prepare.NOTSOFAR1_BENCHMARKS,
+    }
+    assert len(prepare.TURING_SUBSETS) == 10
+    assert len(prepare.MLC_SLM_2_SUBSETS) == 13
+    assert len(prepare.NOTSOFAR1_BENCHMARKS) == 2
+    for parent, leaves in expected.items():
+        parent_module, _ = get_dataset_module(f"multispeaker-sot.{parent}")
+        assert tuple(parent_module.SUBSETS) == tuple(leaves)
+        for leaf in leaves:
+            leaf_module, _ = get_dataset_module(f"multispeaker-sot.{leaf}")
+            assert leaf_module.METRICS_TYPE == "audio"
+            assert leaf_module.EVAL_ARGS == parent_module.EVAL_ARGS
+
+
 def test_allsets_group_contains_every_regular_eval_group():
     group_module, _ = get_dataset_module("multispeaker-sot.allsets")
     expected_groups = [
@@ -103,8 +120,7 @@ def test_allsets_group_contains_every_regular_eval_group():
         "lsm",
         "turing-diarization-v1",
         "mlc-slm-2-dev-13L",
-        "notsofar1-eval-ihm",
-        "notsofar1-eval-sc",
+        "notsofar1-eval",
     ]
 
     assert group_module.SUBSETS == expected_groups
@@ -215,13 +231,18 @@ def test_prepare_turing_uses_opus_mixdown_and_stg_v4_2(tmp_path, monkeypatch):
 
     assert count == 1
     record = json.loads((tmp_path / "output/turing-diarization-v1/test.jsonl").read_text())
-    assert record["audio_filepath"].endswith("/turing-diarization-v1/NV-GR-SS02-CONVO01.opus")
+    leaf_record = json.loads((tmp_path / "output/turing-diarization-v1-el/test.jsonl").read_text())
+    assert leaf_record == record
+    assert record["audio_filepath"].endswith("/turing-diarization-v1-el/NV-GR-SS02-CONVO01.opus")
     assert record["text"] == "<spk:0> earlier <ev:breath> <spk:1> later"
     assert record["speaker_tag_map"] == {"SPK02": "s0", "SPK01": "s1"}
     assert record["source_lang"] == "el"
+    assert record["language"] == "el"
+    assert record["dataset_id"] == "turing-diarization-v1-el"
+    assert record["subset_for_metrics"] == "turing-diarization-v1-el"
     assert record["num_speakers"] == 2
     assert record["num_changes"] == 1
-    assert (tmp_path / "data/audio/turing-diarization-v1/NV-GR-SS02-CONVO01.opus").read_bytes() == b"delivered-opus"
+    assert (tmp_path / "data/audio/turing-diarization-v1-el/NV-GR-SS02-CONVO01.opus").read_bytes() == b"delivered-opus"
 
 
 def test_prepare_mlc_slm_2_uses_processed_opus_delivery_and_stg_v4_2(tmp_path, monkeypatch):
@@ -291,16 +312,19 @@ def test_prepare_mlc_slm_2_uses_processed_opus_delivery_and_stg_v4_2(tmp_path, m
 
     assert count == 1
     record = json.loads((tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text())
+    leaf_record = json.loads((tmp_path / "output/mlc-slm-2-dev-13L-es-MX/test.jsonl").read_text())
+    assert leaf_record == record
     assert record["source_lang"] == "es"
     assert record["locale"] == "es-MX"
     assert record["sample_id"] == "es-MX-sample_phone"
     assert record["text"] == "<spk:0> primero <spk:1> México"
-    assert record["subset_for_metrics"] == "mlc-slm-2-dev-13L.es-MX"
-    assert record["audio_filepath"].endswith("/mlc-slm-2-dev-13L/es-MX/sample_phone.opus")
+    assert record["dataset_id"] == "mlc-slm-2-dev-13L-es-MX"
+    assert record["subset_for_metrics"] == "mlc-slm-2-dev-13L-es-MX"
+    assert record["audio_filepath"].endswith("/mlc-slm-2-dev-13L-es-MX/sample_phone.opus")
     assert record["reference_seglst_filepath"].endswith(
-        "/seglst/mlc-slm-2-dev-13L/es-MX/sample_phone_ref.seglst.json"
+        "/seglst/mlc-slm-2-dev-13L-es-MX/sample_phone_ref.seglst.json"
     )
-    assert record["rttm_filepath"].endswith("/rttm/mlc-slm-2-dev-13L/es-MX/sample_phone.rttm")
+    assert record["rttm_filepath"].endswith("/rttm/mlc-slm-2-dev-13L-es-MX/sample_phone.rttm")
     assert "México" in (tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text(encoding="utf-8")
     assert "\\u00e9" not in (tmp_path / "output/mlc-slm-2-dev-13L/test.jsonl").read_text(encoding="utf-8")
 
@@ -445,6 +469,7 @@ def test_prepare_notsofar1_eval_uses_full_tn_raw_nopnc_opus(tmp_path):
     assert record["expected_answer"] == record["text"]
     assert record["pnc"] == "no"
     assert record["subset_for_metrics"] == "notsofar1-eval-ihm"
+    assert record["dataset_id"] == "notsofar1-eval-ihm"
     assert record["speaker_tag_map"] == {"s0": "s0", "s1": "s1"}
     assert record["global_speaker_ids"] == ["notsofar1_P1", "notsofar1_P2"]
     assert (tmp_path / "data/audio/notsofar1-eval-ihm/S32050101.opus").read_bytes() == b"opus"
@@ -750,7 +775,7 @@ def test_group_score_aggregates_the_five_regular_merged_benchmarks():
         assert output[name]["cpwer"] == errors * 10.0
 
 
-def test_group_score_reports_notsofar1_microphone_views_separately():
+def test_group_score_nests_notsofar1_microphone_views_under_parent():
     group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
     combined = {
         "multispeaker-sot.notsofar1-eval-ihm": {
@@ -763,6 +788,44 @@ def test_group_score_reports_notsofar1_microphone_views_separately():
 
     output = group_module.compute_score(combined)["pass@1"]
 
+    assert output["notsofar1-eval"]["cpwer"] == 30.0
     assert output["notsofar1-eval-ihm"]["cpwer"] == 20.0
     assert output["notsofar1-eval-sc"]["cpwer"] == 40.0
     assert output["all"]["cpwer"] == 30.0
+
+
+def test_group_score_recovers_leaf_counts_from_merged_parent_metrics():
+    group_module = importlib.import_module("nemo_skills.dataset.multispeaker-sot.multispeaker_sot_score")
+    leaf = "turing-diarization-v1-ko"
+    combined = {
+        "multispeaker-sot.turing-diarization-v1": {
+            "pass@1": {
+                "cpwer_errors": 3,
+                "cpwer_substitutions": 2,
+                "cpwer_insertions": 1,
+                "cpwer_deletions": 0,
+                "cpwer_ref_words": 20,
+                "num_entries": 2,
+                f"cpwer::{leaf}": 15.0,
+                f"cpwer::{leaf}_errors": 3,
+                f"cpwer::{leaf}_substitutions": 2,
+                f"cpwer::{leaf}_insertions": 1,
+                f"cpwer::{leaf}_deletions": 0,
+                f"cpwer::{leaf}_ref_words": 20,
+                f"cpwer::{leaf}_num_entries": 2,
+            }
+        }
+    }
+
+    output = group_module.compute_score(combined)["pass@1"]
+
+    assert output["turing-diarization-v1"]["cpwer"] == 15.0
+    assert output[leaf] == {
+        "num_entries": 2,
+        "cpwer": 15.0,
+        "cpwer_errors": 3,
+        "cpwer_substitutions": 2,
+        "cpwer_insertions": 1,
+        "cpwer_deletions": 0,
+        "cpwer_ref_words": 20,
+    }

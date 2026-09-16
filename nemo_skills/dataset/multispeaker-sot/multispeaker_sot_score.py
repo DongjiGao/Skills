@@ -7,6 +7,18 @@
 from __future__ import annotations
 
 
+TURING_SUBSETS = tuple(
+    f"turing-diarization-v1-{language}"
+    for language in ("ar", "el", "en", "es", "fr", "it", "ja", "ko", "pt", "ru")
+)
+MLC_SLM_2_SUBSETS = tuple(
+    f"mlc-slm-2-dev-13L-{locale}"
+    for locale in ("de", "en", "es", "es-MX", "fr", "fr-CA", "it", "ja", "ko", "pt", "pt-BR", "ru", "th")
+)
+NOTSOFAR1_SUBSETS = ("notsofar1-eval-ihm", "notsofar1-eval-sc")
+NEW_SUBDATASETS = (*TURING_SUBSETS, *MLC_SLM_2_SUBSETS, *NOTSOFAR1_SUBSETS)
+
+
 def _aggregate_metric_counts(output: dict, metric_name: str, totals: dict) -> None:
     ref_words = totals.get("ref_words", 0)
     output[f"{metric_name}_errors"] = totals.get("errors", 0)
@@ -55,6 +67,26 @@ def _select_eval_group(combined_metrics: dict, group_name: str) -> dict:
     }
 
 
+def _subset_metrics_from_parent(benchmarks: dict, eval_mode: str, subset: str) -> dict:
+    """Recover exact per-leaf counts emitted by a merged parent benchmark."""
+    prefix = f"cpwer::{subset}"
+    for benchmark_metrics in benchmarks.values():
+        metrics = benchmark_metrics.get(eval_mode, {})
+        if prefix not in metrics:
+            continue
+        output = {
+            "num_entries": metrics.get(f"{prefix}_num_entries", 0),
+            "cpwer": metrics[prefix],
+            "cpwer_errors": metrics.get(f"{prefix}_errors", 0),
+            "cpwer_substitutions": metrics.get(f"{prefix}_substitutions", 0),
+            "cpwer_insertions": metrics.get(f"{prefix}_insertions", 0),
+            "cpwer_deletions": metrics.get(f"{prefix}_deletions", 0),
+            "cpwer_ref_words": metrics.get(f"{prefix}_ref_words", 0),
+        }
+        return output
+    return {}
+
+
 def compute_score(combined_metrics: dict) -> dict:
     """Aggregate cpWER overall and by dataset/mix, collapsing duration splits."""
     if not combined_metrics:
@@ -72,8 +104,7 @@ def compute_score(combined_metrics: dict) -> dict:
         "lsm": _select_eval_group(combined_metrics, "lsm"),
         "turing-diarization-v1": _select_eval_group(combined_metrics, "turing-diarization-v1"),
         "mlc-slm-2-dev-13L": _select_eval_group(combined_metrics, "mlc-slm-2-dev-13L"),
-        "notsofar1-eval-ihm": _select_eval_group(combined_metrics, "notsofar1-eval-ihm"),
-        "notsofar1-eval-sc": _select_eval_group(combined_metrics, "notsofar1-eval-sc"),
+        "notsofar1-eval": _select_eval_group(combined_metrics, "notsofar1-eval"),
         # Per-corpus buckets (collapsed across duration splits)
         "ami-ihm-dev": {k: v for k, v in combined_metrics.items() if "-ami-ihm-dev" in k},
         "ami-ihm-test": {k: v for k, v in combined_metrics.items() if "-ami-ihm-test" in k},
@@ -87,6 +118,7 @@ def compute_score(combined_metrics: dict) -> dict:
         "2mix": {k: v for k, v in combined_metrics.items() if "-2mix" in k},
         "3mix": {k: v for k, v in combined_metrics.items() if "-3mix" in k},
     }
+    groups.update({subset: _select_eval_group(combined_metrics, subset) for subset in NEW_SUBDATASETS})
 
     output = {}
     for eval_mode in eval_modes:
@@ -95,6 +127,11 @@ def compute_score(combined_metrics: dict) -> dict:
             aggregate = _aggregate(group_metrics, eval_mode)
             if aggregate:
                 mode_output[group_name] = aggregate
+        for subset in NEW_SUBDATASETS:
+            if subset not in mode_output:
+                subset_metrics = _subset_metrics_from_parent(combined_metrics, eval_mode, subset)
+                if subset_metrics:
+                    mode_output[subset] = subset_metrics
         if mode_output:
             output[eval_mode] = mode_output
     return output

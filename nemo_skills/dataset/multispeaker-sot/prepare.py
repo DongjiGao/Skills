@@ -21,7 +21,9 @@ from typing import Iterable
 BENCHMARK_NAME = "multispeaker-sot"
 TURING_BENCHMARK = "turing-diarization-v1"
 MLC_SLM_2_BENCHMARK = "mlc-slm-2-dev-13L"
+NOTSOFAR1_BENCHMARK = "notsofar1-eval"
 NOTSOFAR1_BENCHMARKS = ("notsofar1-eval-ihm", "notsofar1-eval-sc")
+TURING_LANGUAGES = ("ar", "el", "en", "es", "fr", "it", "ja", "ko", "pt", "ru")
 DFW_MULTISPEAKER_ROOT = (
     "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
     "data/multi_speaker_asr"
@@ -51,12 +53,14 @@ MLC_SLM_2_DEV_LOCALES = (
     "ru",
     "th",
 )
+TURING_SUBSETS = tuple(f"{TURING_BENCHMARK}-{language}" for language in TURING_LANGUAGES)
+MLC_SLM_2_SUBSETS = tuple(f"{MLC_SLM_2_BENCHMARK}-{locale}" for locale in MLC_SLM_2_DEV_LOCALES)
 DEFAULT_IAD_MANIFEST_ROOT = (
-    "/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/"
+    "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
     "data/multi_speaker_asr/eval_manifests"
 )
 DEFAULT_ORD_MANIFEST_ROOT = (
-    "/lustre/fs11/portfolios/llmservice/projects/llmservice_nemo_speechlm/"
+    "/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/"
     "data/multi_speaker_asr/eval_manifests"
 )
 DEFAULT_PROMPT = "Transcribe the mixed audio with speaker tags like <spk:0> hello <spk:1> yes."
@@ -64,8 +68,7 @@ SPEAKER_TAG_STYLES = ("spk", "s_bracket")
 SOT_TAG_RE = re.compile(r"\[(s\d+)\]|<spk:(\d+)>", re.IGNORECASE)
 SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 PROJECT_DATA_ROOTS = (
-    Path("/lustre/fsw/portfolios/llmservice/projects/llmservice_nemo_speechlm/data"),
-    Path("/lustre/fs12/portfolios/llmservice/projects/llmservice_nemo_speechlm/data"),
+    Path("/lustre/fsw/portfolios/nemotron/projects/nemotron_speechprod_asr/data"),
 )
 CONTAINER_DATA_ROOT = Path("/data")
 
@@ -104,7 +107,7 @@ BENCHMARK_MANIFESTS = {
 
 
 def available_benchmarks() -> tuple[str, ...]:
-    """Return every leaf benchmark supported by this preparation package."""
+    """Return every source benchmark supported by this preparation package."""
     return (*BENCHMARK_MANIFESTS, TURING_BENCHMARK, MLC_SLM_2_BENCHMARK, *NOTSOFAR1_BENCHMARKS)
 
 
@@ -619,15 +622,18 @@ def prepare_turing_diarization_v1(
         session_id = session_dir.name
         language_code = session_id.split("-")[1].lower()
         language_code = "el" if language_code == "gr" else language_code
-        local_audio_path = local_audio_root / TURING_BENCHMARK / f"{session_id}.opus"
+        if language_code not in TURING_LANGUAGES:
+            raise ValueError(f"Unsupported Turing language {language_code!r} in {session_id}")
+        subset = f"{TURING_BENCHMARK}-{language_code}"
+        local_audio_path = local_audio_root / subset / f"{session_id}.opus"
         if not no_audio:
             _copy_file_atomic(source_audio, local_audio_path)
         audio_filepath = _public_audio_path(local_audio_path, local_audio_root, audio_prefix)
 
-        seglst_dst = data_dir / "seglst" / TURING_BENCHMARK / f"{session_id}_ref.seglst.json"
+        seglst_dst = data_dir / "seglst" / subset / f"{session_id}_ref.seglst.json"
         _write_json(seglst_dst, entries)
         reference_seglst_filepath = str(public_root / seglst_dst.relative_to(data_dir))
-        rttm_dst = data_dir / "rttm" / TURING_BENCHMARK / f"{session_id}.rttm"
+        rttm_dst = data_dir / "rttm" / subset / f"{session_id}.rttm"
         _write_rttm_from_seglst(entries, rttm_dst, session_id)
         source_records.append(
             {
@@ -645,6 +651,8 @@ def prepare_turing_diarization_v1(
                 "audio_filepath": audio_filepath,
                 "source_audio_filepath": str(source_audio),
                 "sample_id": session_id,
+                "language": language_code,
+                "subset": subset,
                 "duration": round(duration, 4),
                 "reference_seglst_filepath": reference_seglst_filepath,
                 "rttm_filepath": str(public_root / rttm_dst.relative_to(data_dir)),
@@ -697,11 +705,12 @@ def prepare_turing_diarization_v1(
                 "duration": duration_seconds,
                 "text": text,
                 "expected_answer": text,
-                "dataset_id": TURING_BENCHMARK,
+                "dataset_id": source_record["subset"],
                 "sample_id": source_record["sample_id"],
+                "language": source_record["language"],
                 "speaker_tag_map": _speaker_tag_map_from_stg(stg_row),
                 "speaker_tag_style": speaker_tag_style,
-                "subset_for_metrics": TURING_BENCHMARK,
+                "subset_for_metrics": source_record["subset"],
                 "task_type": "MS-ASR",
                 "category": "nonjudge",
                 "reference_seglst_filepath": source_record["reference_seglst_filepath"],
@@ -718,7 +727,12 @@ def prepare_turing_diarization_v1(
                 ],
             }
         )
-    return write_jsonl(output_dir / TURING_BENCHMARK / "test.jsonl", rows)
+    return write_parent_and_leaf_manifests(
+        output_dir,
+        parent=TURING_BENCHMARK,
+        subsets=TURING_SUBSETS,
+        rows=rows,
+    )
 
 
 def _index_opus_by_stem(locale_audio_dir: Path) -> dict[str, Path]:
@@ -778,6 +792,7 @@ def prepare_mlc_slm_2_dev_13l(
             )
 
         locale_count = 0
+        subset = f"{MLC_SLM_2_BENCHMARK}-{locale}"
         for seglst_src in seglst_paths:
             if max_samples is not None and len(source_records) >= max_samples:
                 break
@@ -795,17 +810,15 @@ def prepare_mlc_slm_2_dev_13l(
                 raise ValueError(f"No reference transcript text resolved from {seglst_src}")
 
             sample_id = _safe_id(f"{locale}-{recording_id}")
-            local_audio_path = local_audio_root / MLC_SLM_2_BENCHMARK / locale / f"{recording_id}.opus"
+            local_audio_path = local_audio_root / subset / f"{recording_id}.opus"
             if not no_audio:
                 _copy_file_atomic(source_audio, local_audio_path)
             audio_filepath = _public_audio_path(local_audio_path, local_audio_root, audio_prefix)
 
-            seglst_dst = (
-                data_dir / "seglst" / MLC_SLM_2_BENCHMARK / locale / f"{recording_id}_ref.seglst.json"
-            )
+            seglst_dst = data_dir / "seglst" / subset / f"{recording_id}_ref.seglst.json"
             _write_json(seglst_dst, entries)
             reference_seglst_filepath = str(public_root / seglst_dst.relative_to(data_dir))
-            rttm_dst = data_dir / "rttm" / MLC_SLM_2_BENCHMARK / locale / f"{recording_id}.rttm"
+            rttm_dst = data_dir / "rttm" / subset / f"{recording_id}.rttm"
             _copy_file_atomic(rttm_src, rttm_dst)
             rttm_filepath = str(public_root / rttm_dst.relative_to(data_dir))
 
@@ -828,6 +841,7 @@ def prepare_mlc_slm_2_dev_13l(
                     "source_audio_filepath": str(source_audio),
                     "duration": duration_seconds,
                     "locale": locale,
+                    "subset": subset,
                     "sample_id": sample_id,
                     "reference_seglst_filepath": reference_seglst_filepath,
                     "rttm_filepath": rttm_filepath,
@@ -879,11 +893,11 @@ def prepare_mlc_slm_2_dev_13l(
                 "text": text,
                 "expected_answer": text,
                 "locale": source_record["locale"],
-                "dataset_id": MLC_SLM_2_BENCHMARK,
+                "dataset_id": source_record["subset"],
                 "sample_id": source_record["sample_id"],
                 "speaker_tag_map": _speaker_tag_map_from_stg(stg_row),
                 "speaker_tag_style": speaker_tag_style,
-                "subset_for_metrics": f"{MLC_SLM_2_BENCHMARK}.{source_record['locale']}",
+                "subset_for_metrics": source_record["subset"],
                 "task_type": "MS-ASR",
                 "category": "nonjudge",
                 "reference_seglst_filepath": source_record["reference_seglst_filepath"],
@@ -897,7 +911,12 @@ def prepare_mlc_slm_2_dev_13l(
                 ],
             }
         )
-    return write_jsonl(output_dir / MLC_SLM_2_BENCHMARK / "test.jsonl", rows)
+    return write_parent_and_leaf_manifests(
+        output_dir,
+        parent=MLC_SLM_2_BENCHMARK,
+        subsets=MLC_SLM_2_SUBSETS,
+        rows=rows,
+    )
 
 
 def prepare_notsofar1_eval(
@@ -964,7 +983,7 @@ def prepare_notsofar1_eval(
             "pnc": "no",
             "num_speakers": int(source_record.get("num_speakers") or len(speaker_tag_map)),
             "num_changes": int(source_record.get("num_changes") or 0),
-            "dataset_id": source_record.get("dataset_id", "NOTSOFAR1"),
+            "dataset_id": benchmark,
             "sample_id": sample_id,
             "speaker_tag_map": speaker_tag_map,
             "speaker_tag_style": speaker_tag_style,
@@ -1127,6 +1146,29 @@ def write_jsonl(path: Path, rows: Iterable[dict]) -> int:
             fout.write(json.dumps(row, ensure_ascii=False) + "\n")
             count += 1
     return count
+
+
+def write_parent_and_leaf_manifests(
+    output_dir: Path,
+    *,
+    parent: str,
+    subsets: Iterable[str],
+    rows: Iterable[dict],
+) -> int:
+    """Write directly addressable leaf manifests and their merged parent."""
+    subset_order = tuple(subsets)
+    grouped = {subset: [] for subset in subset_order}
+    for row in rows:
+        subset = str(row.get("subset_for_metrics", ""))
+        if subset not in grouped:
+            raise ValueError(f"Unexpected {parent} subset_for_metrics: {subset!r}")
+        grouped[subset].append(row)
+
+    merged_rows: list[dict] = []
+    for subset in subset_order:
+        write_jsonl(output_dir / subset / "test.jsonl", grouped[subset])
+        merged_rows.extend(grouped[subset])
+    return write_jsonl(output_dir / parent / "test.jsonl", merged_rows)
 
 
 def prepare_manifest_set(

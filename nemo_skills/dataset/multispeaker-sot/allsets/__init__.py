@@ -9,9 +9,9 @@ checkpoint -> one convert + one vLLM generation job + one summarize job (3 jobs
 per step). Its ``test.jsonl`` is the concatenation of the five already-merged
 legacy manifests plus the Turing, MLC-SLM 2, and two NOTSOFAR1 full-conversation
 manifests listed in ``SUBSETS``, built on the cluster by
-``build_group_manifests.py``. We merge the legacy GROUP manifests and the four
-full-conversation leaf manifests, reusing their fixed audio paths verbatim. The
-merge is a pure concatenation and touches no audio.
+``build_group_manifests.py``. We merge the eight parent manifests, reusing their
+fixed audio paths verbatim. The merge is a pure concatenation and touches no
+audio.
 
 Per-set cpWER is still fully recovered: every record carries its original
 ``subset_for_metrics`` tag (e.g. ``under20s-ami-ihm-dev``), and AudioMetrics
@@ -45,6 +45,5 @@ SUBSETS = [
     "lsm",
     "turing-diarization-v1",
     "mlc-slm-2-dev-13L",
-    "notsofar1-eval-ihm",
-    "notsofar1-eval-sc",
+    "notsofar1-eval",
 ]

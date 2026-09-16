@@ -45,15 +45,13 @@ EVAL_GROUPS = (
     "lsm",
     "turing-diarization-v1",
     "mlc-slm-2-dev-13L",
-    "notsofar1-eval-ihm",
-    "notsofar1-eval-sc",
+    "notsofar1-eval",
 )
 
 # A regular `multispeaker-sot` evaluation runs the five merged legacy benchmarks
-# plus the Turing, MLC-SLM 2, and NOTSOFAR1 full-conversation benchmarks. Each
-# merged legacy manifest retains `subset_for_metrics`, so all 21 underlying eval
-# sets remain visible in the per-group metrics without launching 21 generation
-# jobs.
+# plus the three new parent benchmarks. Every merged manifest retains
+# `subset_for_metrics`, so Turing languages, MLC-SLM 2 locales, and NOTSOFAR1
+# microphone views remain visible without launching a generation job per leaf.
 BENCHMARKS = {f"multispeaker-sot.{name}": {} for name in EVAL_GROUPS}
 
 FORMAT_EXPECTATIONS = {
