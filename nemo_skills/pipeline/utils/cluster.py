@@ -264,7 +264,8 @@ def get_env_variables(cluster_config):
             if key in os.environ:
                 env_vars[key] = os.path.expandvars(value)
                 LOG.info(
-                    f"Resolved environment variable {key} inside the placeholder value: {value} with {env_vars[key]}"
+                    "Resolved environment variable %s inside its configured placeholder",
+                    key,
                 )
             else:
                 raise ValueError(f"Cannot resolve environment variable {key} inside the placeholder value: {value}")

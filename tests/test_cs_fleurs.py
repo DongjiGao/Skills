@@ -20,12 +20,18 @@ HuggingFace download and is exercised separately by the GPU eval suite, where
 ``cs-fleurs`` is intentionally excluded from auto-prepare.
 """
 
+import hashlib
+import json
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 
+from nemo_skills.evaluation.evaluator.audio import resolve_sample_cer_whitespace_mode
+
 languages = import_module("nemo_skills.dataset.cs-fleurs.languages")
 audio_score = import_module("nemo_skills.dataset.cs-fleurs.audio_score")
+prepare = import_module("nemo_skills.dataset.cs-fleurs.prepare")
 
 
 class TestSplitPair:
@@ -89,6 +95,24 @@ class TestUsesGrapheme:
         assert languages.uses_grapheme(matrix) is False
 
 
+class TestPrepareMetadata:
+    def test_parallel_cer_explicitly_removes_all_whitespace(self):
+        record = prepare._build_record(
+            {
+                "id": "cmn-eng-1",
+                "language": "cmn-eng",
+                "file_name": "audio/cmn/sample.wav",
+                "duration": 1.5,
+                "text": "今 天 use AI",
+            },
+            raw_subdir="read/test",
+            subset="read",
+        )
+
+        assert record["extra_fields"]["use_mer"] is True
+        assert resolve_sample_cer_whitespace_mode(record["extra_fields"]) == "all"
+
+
 class TestComputeScore:
     def test_empty_when_no_known_subsets(self):
         assert audio_score.compute_score({"some-other-bench": {"greedy": {"num_entries": 5}}}) == {}
@@ -130,3 +154,75 @@ class TestComputeScore:
         result = audio_score.compute_score(combined)
         assert result["greedy"]["read"]["substitutions"] == 0
         assert result["greedy"]["overall"]["substitutions"] == 0
+
+
+def test_cs_fleurs_source_revision_and_metadata_contracts_are_pinned():
+    assert prepare.HF_REVISION == "0cdbf166c5517ae4b6eb1c54248522eedec53017"
+    assert {key: value["rows"] for key, value in prepare.SOURCE_CONTRACTS.items()} == {
+        "read": 5818,
+        "mms": 14932,
+        "xtts-test1": 11321,
+        "xtts-test2": 17226,
+    }
+    assert all(len(value["sha256"]) == 64 for value in prepare.SOURCE_CONTRACTS.values())
+
+
+def test_cs_fleurs_metadata_validator_rejects_hash_and_row_drift(tmp_path, monkeypatch):
+    path = tmp_path / "metadata.jsonl"
+    rows = [
+        {"id": "one", "file_name": "audio/one.wav"},
+        {"id": "two", "file_name": "audio/two.wav"},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 2, "sha256": digest})
+    assert prepare._validate_metadata(path, "read") == rows
+
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 3, "sha256": digest})
+    with pytest.raises(ValueError, match="row-count drift"):
+        prepare._validate_metadata(path, "read")
+
+    monkeypatch.setitem(prepare.SOURCE_CONTRACTS, "read", {"rows": 2, "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="metadata hash drift"):
+        prepare._validate_metadata(path, "read")
+
+
+def test_cs_fleurs_record_carries_immutable_source_provenance():
+    row = {
+        "id": "ara_1_BT",
+        "file_name": "audio/ara/ara_1_BT.wav",
+        "text": "hello",
+        "duration": 1.0,
+        "language": "ara-eng",
+        "speaker": "BT",
+    }
+    record = prepare._build_record(row, "read/test", "read")
+    assert record["source_provenance"]["dataset_revision"] == prepare.HF_REVISION
+    assert record["source_provenance"]["expected_rows"] == 5818
+
+
+def test_cs_fleurs_default_data_dir_honors_cli_managed_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEMO_SKILLS_DATA_DIR", str(tmp_path))
+    assert prepare._default_data_dir() == tmp_path / "cs-fleurs"
+
+    monkeypatch.delenv("NEMO_SKILLS_DATA_DIR")
+    assert prepare._default_data_dir() == Path(prepare.__file__).parent
+
+
+def test_cs_fleurs_manifest_publication_is_atomic_resumable_and_fail_closed(tmp_path):
+    out_path = tmp_path / "read" / "test.jsonl"
+    out_path.parent.mkdir()
+    records = [{"id": "one", "text": "hello"}, {"id": "two", "text": "world"}]
+    expected = b'{"id": "one", "text": "hello"}\n{"id": "two", "text": "world"}\n'
+
+    assert prepare._publish_records(out_path, records) is True
+    assert out_path.read_bytes() == expected
+    assert not out_path.with_suffix(".jsonl.partial").exists()
+
+    assert prepare._publish_records(out_path, records) is False
+    assert out_path.read_bytes() == expected
+
+    out_path.write_text("truncated\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="fails deterministic closure"):
+        prepare._publish_records(out_path, records)
+    assert out_path.read_text(encoding="utf-8") == "truncated\n"

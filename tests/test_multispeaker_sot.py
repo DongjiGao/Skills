@@ -2,6 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0
 
+import hashlib
 import importlib
 import json
 import struct
@@ -31,6 +32,24 @@ def _write_wav(path: Path, seconds: float, sample_rate: int = 16000) -> None:
         fout.setsampwidth(2)
         fout.setframerate(sample_rate)
         fout.writeframes(struct.pack("<h", 0) * int(sample_rate * seconds))
+
+
+def test_dfw_manifest_root_requires_an_explicit_verified_mirror(tmp_path, monkeypatch):
+    monkeypatch.delenv("MULTISPEAKER_SOT_MANIFEST_ROOT", raising=False)
+    with pytest.raises(ValueError, match="DFW has no canonical"):
+        prepare._resolve_manifest_root("dfw", None)
+
+    assert prepare._resolve_manifest_root("dfw", str(tmp_path)) == tmp_path.resolve()
+    monkeypatch.setenv("MULTISPEAKER_SOT_MANIFEST_ROOT", str(tmp_path))
+    assert prepare._resolve_manifest_root("dfw", None) == tmp_path.resolve()
+    assert prepare._resolve_manifest_root("iad", None) == tmp_path.resolve()
+
+
+def test_under20_ami_source_contract_is_exactly_pinned():
+    assert prepare.PINNED_SOURCE_MANIFESTS["under20s-ami-ihm-dev"] == (
+        "e8ebe7f8e5c285f6b3e3ef3961c3ecf9c8766bb32c294c86bead1c0ee74250c9",
+        476,
+    )
 
 
 def test_group_registration():
@@ -554,7 +573,7 @@ def test_full_length_row_without_duration_uses_probed_audio_length(tmp_path, mon
     assert record["subset_for_metrics"] == "full-ami-ihm-test"
 
 
-def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
+def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path, monkeypatch):
     manifest_root = tmp_path / "manifests"
     audio = tmp_path / "audio" / "session.wav"
     audio.parent.mkdir(parents=True)
@@ -572,6 +591,12 @@ def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
                 "num_changes": 1,
             }
         ],
+    )
+    manifest_path = manifest_root / "under20s_eval_set/ami_ihm_dev_10-20s.json"
+    monkeypatch.setitem(
+        prepare.PINNED_SOURCE_MANIFESTS,
+        "under20s-ami-ihm-dev",
+        (hashlib.sha256(manifest_path.read_bytes()).hexdigest(), 1),
     )
 
     count = prepare.prepare_manifest_set(
@@ -591,6 +616,45 @@ def test_under20_manifest_conversion_uses_spk_tags_and_audio_prefix(tmp_path):
     assert record["audio_filepath"].startswith("/data/multispeaker-sot/audio/under20s-ami-ihm-dev/")
     assert record["offset"] == 1.25
     assert record["messages"][0]["audio"]["path"] == record["audio_filepath"]
+
+
+def test_under20_pinned_source_manifest_rejects_hash_drift(tmp_path, monkeypatch):
+    manifest = tmp_path / "under20s_eval_set/ami_ihm_dev_10-20s.json"
+    _write_jsonl(manifest, [{"text": "row"}])
+    monkeypatch.setitem(prepare.PINNED_SOURCE_MANIFESTS, "under20s-ami-ihm-dev", ("0" * 64, 1))
+
+    with pytest.raises(ValueError, match="source manifest SHA-256 drift"):
+        prepare._validate_pinned_source_manifest("under20s-ami-ihm-dev", manifest)
+
+
+def test_under20_pinned_prepared_closure_rejects_skipped_rows(tmp_path, monkeypatch):
+    manifest_root = tmp_path / "manifests"
+    manifest = manifest_root / "under20s_eval_set/ami_ihm_dev_10-20s.json"
+    _write_jsonl(manifest, [{"audio_filepath": "/missing.wav", "text": "[s0] row"}])
+    monkeypatch.setitem(
+        prepare.PINNED_SOURCE_MANIFESTS,
+        "under20s-ami-ihm-dev",
+        (hashlib.sha256(manifest.read_bytes()).hexdigest(), 1),
+    )
+
+    def invalid_record(*_args, **_kwargs):
+        raise prepare.InvalidAudioSegmentError("invalid")
+
+    monkeypatch.setattr(prepare, "build_record", invalid_record)
+    output_dir = tmp_path / "bench"
+    with pytest.raises(ValueError, match="prepared row closure drift"):
+        prepare.prepare_manifest_set(
+            "under20s-ami-ihm-dev",
+            manifest_root=manifest_root,
+            output_dir=output_dir,
+            data_dir=tmp_path / "data",
+            audio_prefix=Path("/data/multispeaker-sot/audio"),
+            no_audio=False,
+            max_samples=None,
+            speaker_tag_style="spk",
+            invalid_audio_policy="skip",
+        )
+    assert not (output_dir / "under20s-ami-ihm-dev/test.jsonl").exists()
 
 
 def test_seglst_manifest_conversion_uses_row_reference_seglst(tmp_path, monkeypatch):

@@ -104,8 +104,42 @@ def test_content_text_to_list_with_audio(mock_vllm_multimodal_model, tmp_path):
     assert isinstance(result["content"], list)
     assert len(result["content"]) == 2
     assert _is_valid_audio_content(result["content"][0])
-    assert result["content"][0]["audio_url"]["url"] == audio_path.resolve().as_uri()
+    assert result["content"][0]["audio_url"]["url"] == audio_path.absolute().as_uri()
     assert result["content"][1]["type"] == "text"
+
+
+def test_content_text_to_list_deduplicates_compatible_audio_aliases(mock_vllm_multimodal_model, tmp_path):
+    """Prepared manifests may carry identical singular/plural compatibility aliases."""
+    audio_path = tmp_path / "test.wav"
+    with open(audio_path, "wb") as f:
+        f.write(b"RIFF" + b"\x00" * 100)
+
+    audio = {"path": "test.wav", "duration": 1.0}
+    message = {
+        "role": "user",
+        "content": "Describe this audio",
+        "audio": audio,
+        "audios": [audio],
+    }
+    result = mock_vllm_multimodal_model.content_text_to_list(message)
+
+    assert len(result["content"]) == 2
+    assert _is_valid_audio_content(result["content"][0])
+    assert "audio" not in result
+    assert "audios" not in result
+
+
+def test_content_text_to_list_rejects_conflicting_audio_aliases(mock_vllm_multimodal_model):
+    """Ambiguous singular/plural aliases must fail closed instead of dropping audio."""
+    message = {
+        "role": "user",
+        "content": "Describe this audio",
+        "audio": {"path": "first.wav"},
+        "audios": [{"path": "second.wav"}],
+    }
+
+    with pytest.raises(ValueError, match="Conflicting 'audio' and 'audios'"):
+        mock_vllm_multimodal_model.content_text_to_list(message)
 
 
 def test_content_text_to_list_with_audio_url_path_escapes_uri(mock_vllm_multimodal_model, tmp_path):
@@ -117,7 +151,7 @@ def test_content_text_to_list_with_audio_url_path_escapes_uri(mock_vllm_multimod
     message = {"role": "user", "content": "Describe this audio", "audio": {"path": audio_path.name}}
     result = mock_vllm_multimodal_model.content_text_to_list(message)
 
-    assert result["content"][0]["audio_url"]["url"] == audio_path.resolve().as_uri()
+    assert result["content"][0]["audio_url"]["url"] == audio_path.absolute().as_uri()
 
 
 def test_content_text_to_list_with_audio_url_base64_fallback(mock_vllm_multimodal_model, tmp_path):
@@ -313,6 +347,42 @@ def test_audio_as_path_rejected_for_external_api():
     with _stub_vllm_base():
         with pytest.raises(ValueError, match="audio_as_path is only supported"):
             VLLMMultimodalModel(base_url="https://inference-api.nvidia.com/v1", audio_as_path=True)
+
+
+def test_audio_as_path_shared_filesystem_server_opt_in():
+    """A co-scheduled node-hostname server may consume file:// paths after explicit attestation."""
+    with _stub_vllm_base():
+        model = VLLMMultimodalModel(
+            base_url="http://pool0-node-123:5000/v1",
+            audio_as_path=True,
+            shared_filesystem_server=True,
+        )
+    assert model._external_api_mode is True
+    assert model.shared_filesystem_server is True
+    assert model.audio_format == "audio_url"
+    assert model.audio_as_path is True
+
+
+def test_shared_filesystem_server_allows_vllm_specific_request_params():
+    """A co-scheduled vLLM server supports native vLLM decode parameters."""
+    with _stub_vllm_base():
+        model = VLLMMultimodalModel(
+            base_url="http://pool0-node-123:5000/v1",
+            shared_filesystem_server=True,
+        )
+
+    assert model._build_request_body(
+        top_k=20,
+        min_p=0.05,
+        repetition_penalty=1.02,
+        extra_body={"skip_special_tokens": False},
+    ) == {
+        "min_p": 0.05,
+        "repetition_penalty": 1.02,
+        "top_k": 20,
+        "skip_special_tokens": False,
+        "spaces_between_special_tokens": False,
+    }
 
 
 def test_audio_as_path_rejected_for_input_audio_format():

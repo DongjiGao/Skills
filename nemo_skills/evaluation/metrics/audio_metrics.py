@@ -33,6 +33,7 @@ audio-specific metrics as the field evolves.
 """
 
 import logging
+from typing import Any
 
 from nemo_skills.evaluation.metrics.base import BaseMetrics, as_float, as_int, as_percentage
 from nemo_skills.utils import get_logger_name
@@ -101,6 +102,10 @@ class AudioMetrics(BaseMetrics):
         self.wer_total_insertions = 0
         self.wer_total_deletions = 0
 
+        # Corpus-level error rates per explicit ``subset_for_metrics`` tag.
+        # Multilingual benchmarks use locales/language pairs as subsets.
+        self.wer_subset_totals: dict[str, dict[str, int]] = {}
+
         # Corpus-level cpWER accumulators (multispeaker ASR)
         self.cpwer_total_errors = 0
         self.cpwer_total_ref_words = 0
@@ -120,9 +125,29 @@ class AudioMetrics(BaseMetrics):
         self.wer_c_scores = []
         self.wer_pc_scores = []
         self.per_scores = []
+        self.asr_pc_wer_totals = {
+            metric_name: {
+                "errors": 0,
+                "ref_words": 0,
+                "substitutions": 0,
+                "insertions": 0,
+                "deletions": 0,
+            }
+            for metric_name in ("wer_c", "wer_pc")
+        }
+        self.per_totals = {
+            "correct": 0,
+            "substitutions": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "errors": 0,
+            "operations": 0,
+        }
         self.bleu_hyps: list[str] = []
         self.bleu_refs: list[str] = []
         self.bleu_tokenizes: list[str] = []
+        self.bleu_subset_inputs: dict[str, dict[str, Any]] = {}
+
         self.comet_scores = []
 
         # Extended metrics
@@ -134,6 +159,7 @@ class AudioMetrics(BaseMetrics):
         self.cer_total_substitutions = 0
         self.cer_total_insertions = 0
         self.cer_total_deletions = 0
+        self.cer_subset_totals: dict[str, dict[str, int]] = {}
 
         self.hallucination_scores = []
         self.pc_rate_scores = []
@@ -151,6 +177,12 @@ class AudioMetrics(BaseMetrics):
         # Structured ASR scoring exposes strict/canonical/content WERs as separate streams.
         self.structured_wer_scores: dict[str, list[float]] = {}
         self.structured_wer_totals: dict[str, dict[str, int]] = {}
+        self.structured_wer_subset_totals: dict[str, dict[str, dict[str, int]]] = {}
+
+        # Spoken-MQA's official metric name is accuracy (``acc`` upstream).
+        self.has_spoken_mqa = False
+        self.spoken_mqa_parse_failures = 0
+        self.spoken_mqa_parse_diagnostics = 0
 
     def _extract_judge_result(self, judgement_text: str) -> tuple[bool, float]:
         """Extract judge result from judgement text.
@@ -263,12 +295,32 @@ class AudioMetrics(BaseMetrics):
 
         # Collect existing metrics: WER, PnC, and BLEU scores
         for pred in predictions:
+            if pred.get("task_type") == "MathQA":
+                self.has_spoken_mqa = True
+                if "spoken_mqa_parse_failure" in pred:
+                    self.spoken_mqa_parse_diagnostics += 1
+                    self.spoken_mqa_parse_failures += int(bool(pred["spoken_mqa_parse_failure"]))
             if "wer_errors" in pred and "wer_ref_words" in pred:
                 self.wer_total_errors += pred["wer_errors"]
                 self.wer_total_ref_words += pred["wer_ref_words"]
                 self.wer_total_substitutions += pred["wer_substitutions"]
                 self.wer_total_insertions += pred["wer_insertions"]
                 self.wer_total_deletions += pred["wer_deletions"]
+                if subset := pred.get("subset_for_metrics"):
+                    totals = self.wer_subset_totals.setdefault(
+                        str(subset),
+                        {
+                            "errors": 0,
+                            "ref_words": 0,
+                            "substitutions": 0,
+                            "insertions": 0,
+                            "deletions": 0,
+                            "num_entries": 0,
+                        },
+                    )
+                    for name in ("errors", "ref_words", "substitutions", "insertions", "deletions"):
+                        totals[name] += pred[f"wer_{name}"]
+                    totals["num_entries"] += 1
             if "wer" in pred and pred["wer"] is not None:
                 self.wer_scores.append(pred["wer"])
 
@@ -303,7 +355,7 @@ class AudioMetrics(BaseMetrics):
             if "cpwer" in pred and pred["cpwer"] is not None:
                 self.cpwer_scores.append(pred["cpwer"])
 
-            for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+            for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
                 if wer_name in pred and pred[wer_name] is not None:
                     self.structured_wer_scores.setdefault(wer_name, []).append(pred[wer_name])
 
@@ -325,16 +377,64 @@ class AudioMetrics(BaseMetrics):
                     totals["substitutions"] += pred.get(f"{wer_name}_substitutions", 0)
                     totals["insertions"] += pred.get(f"{wer_name}_insertions", 0)
                     totals["deletions"] += pred.get(f"{wer_name}_deletions", 0)
+                    subset = pred.get("subset_for_metrics")
+                    if subset:
+                        subset_totals = self.structured_wer_subset_totals.setdefault(wer_name, {}).setdefault(
+                            str(subset),
+                            {
+                                "errors": 0,
+                                "ref_words": 0,
+                                "substitutions": 0,
+                                "insertions": 0,
+                                "deletions": 0,
+                                "num_entries": 0,
+                            },
+                        )
+                        subset_totals["errors"] += pred.get(errors_key, 0)
+                        subset_totals["ref_words"] += pred.get(ref_words_key, 0)
+                        subset_totals["substitutions"] += pred.get(f"{wer_name}_substitutions", 0)
+                        subset_totals["insertions"] += pred.get(f"{wer_name}_insertions", 0)
+                        subset_totals["deletions"] += pred.get(f"{wer_name}_deletions", 0)
+                        subset_totals["num_entries"] += 1
             if "wer_c" in pred and pred["wer_c"] is not None:
                 self.wer_c_scores.append(pred["wer_c"])
             if "wer_pc" in pred and pred["wer_pc"] is not None:
                 self.wer_pc_scores.append(pred["wer_pc"])
             if "per" in pred and pred["per"] is not None:
                 self.per_scores.append(pred["per"])
+            for metric_name in ("wer_c", "wer_pc"):
+                if f"{metric_name}_errors" in pred and f"{metric_name}_ref_words" in pred:
+                    totals = self.asr_pc_wer_totals[metric_name]
+                    totals["errors"] += pred[f"{metric_name}_errors"]
+                    totals["ref_words"] += pred[f"{metric_name}_ref_words"]
+                    totals["substitutions"] += pred[f"{metric_name}_substitutions"]
+                    totals["insertions"] += pred[f"{metric_name}_insertions"]
+                    totals["deletions"] += pred[f"{metric_name}_deletions"]
+            if "per_operations" in pred:
+                self.per_totals["correct"] += pred["per_correct"]
+                self.per_totals["substitutions"] += pred["per_substitutions"]
+                self.per_totals["insertions"] += pred["per_insertions"]
+                self.per_totals["deletions"] += pred["per_deletions"]
+                self.per_totals["errors"] += pred["per_errors"]
+                self.per_totals["operations"] += pred["per_operations"]
             if "bleu" in pred and pred["bleu"] is not None:
                 self.bleu_hyps.append(pred["pred_text"])
                 self.bleu_refs.append(pred["text"])
                 self.bleu_tokenizes.append(pred["bleu_tokenize"])
+                if subset := pred.get("subset_for_metrics"):
+                    inputs = self.bleu_subset_inputs.setdefault(
+                        str(subset),
+                        {
+                            "hyps": [],
+                            "refs": [],
+                            "tokenizes": [],
+                            "num_entries": 0,
+                        },
+                    )
+                    inputs["hyps"].append(pred["pred_text"])
+                    inputs["refs"].append(pred["text"])
+                    inputs["tokenizes"].append(pred["bleu_tokenize"])
+                    inputs["num_entries"] += 1
             if "comet" in pred and pred["comet"] is not None:
                 self.comet_scores.append(pred["comet"])
 
@@ -345,6 +445,23 @@ class AudioMetrics(BaseMetrics):
                 self.cer_total_substitutions += pred["cer_substitutions"]
                 self.cer_total_insertions += pred["cer_insertions"]
                 self.cer_total_deletions += pred["cer_deletions"]
+                if subset := pred.get("subset_for_metrics"):
+                    totals = self.cer_subset_totals.setdefault(
+                        str(subset),
+                        {
+                            "errors": 0,
+                            "ref_chars": 0,
+                            "substitutions": 0,
+                            "insertions": 0,
+                            "deletions": 0,
+                            "num_entries": 0,
+                        },
+                    )
+                    totals["errors"] += pred["cer_errors"]
+                    totals["ref_chars"] += pred["cer_ref_words"]
+                    for name in ("substitutions", "insertions", "deletions"):
+                        totals[name] += pred[f"cer_{name}"]
+                    totals["num_entries"] += 1
             if "cer" in pred and pred["cer"] is not None:
                 self.cer_scores.append(pred["cer"])
             if "hallucination_rate" in pred and pred["hallucination_rate"] is not None:
@@ -377,6 +494,16 @@ class AudioMetrics(BaseMetrics):
                 "wer_substitutions",
                 "wer_insertions",
                 "wer_deletions",
+                "wer_c_errors",
+                "wer_c_ref_words",
+                "wer_c_substitutions",
+                "wer_c_insertions",
+                "wer_c_deletions",
+                "wer_pc_errors",
+                "wer_pc_ref_words",
+                "wer_pc_substitutions",
+                "wer_pc_insertions",
+                "wer_pc_deletions",
             }
             for metric_name, metric_value in pred.items():
                 if (
@@ -400,7 +527,7 @@ class AudioMetrics(BaseMetrics):
         """
         metrics_dict = super().get_metrics()
 
-        for _agg_mode, agg_metrics in metrics_dict.items():
+        for agg_metrics in metrics_dict.values():
             if "no_answer" in agg_metrics:
                 # Divide by 2.0 to compensate for double-counting in base metrics #MEL
                 agg_metrics["no_answer"] = agg_metrics["no_answer"] / 2.0
@@ -410,6 +537,14 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["success_rate"] = agg_metrics["correct"]
             elif "judge_correct" in agg_metrics:
                 agg_metrics["success_rate"] = agg_metrics["judge_correct"]
+            if self.has_spoken_mqa and "success_rate" in agg_metrics:
+                agg_metrics["accuracy"] = agg_metrics["success_rate"]
+            if self.spoken_mqa_parse_diagnostics:
+                # Attempt-level diagnostic only; it does not participate in
+                # official accuracy or pass@k correctness.
+                agg_metrics["no_numeric_answer_rate"] = round(
+                    100.0 * self.spoken_mqa_parse_failures / self.spoken_mqa_parse_diagnostics, 2
+                )
 
             # Add AudioBench-style judge_score if rating outputs were used.
             # Formula: judge_score = mean(ratings) * 20 (converts 0-5 scale to 0-100)
@@ -424,6 +559,16 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["deletions"] = self.wer_total_deletions
                 agg_metrics["ref_words"] = self.wer_total_ref_words
                 agg_metrics["wer"] = round(100.0 * self.wer_total_errors / self.wer_total_ref_words, 2)
+            for subset, totals in sorted(self.wer_subset_totals.items()):
+                if totals["ref_words"] > 0:
+                    prefix = f"wer::{subset}"
+                    agg_metrics[prefix] = round(100.0 * totals["errors"] / totals["ref_words"], 2)
+                    agg_metrics[f"{prefix}_errors"] = totals["errors"]
+                    agg_metrics[f"{prefix}_ref_words"] = totals["ref_words"]
+                    agg_metrics[f"{prefix}_substitutions"] = totals["substitutions"]
+                    agg_metrics[f"{prefix}_insertions"] = totals["insertions"]
+                    agg_metrics[f"{prefix}_deletions"] = totals["deletions"]
+                    agg_metrics[f"{prefix}_num_entries"] = totals["num_entries"]
             if self.wer_scores:
                 agg_metrics["wer_macro"] = round(100.0 * sum(self.wer_scores) / len(self.wer_scores), 2)
             if self.cpwer_total_ref_words > 0:
@@ -454,19 +599,53 @@ class AudioMetrics(BaseMetrics):
                     agg_metrics[f"{wer_name}_insertions"] = totals.get("insertions", 0)
                     agg_metrics[f"{wer_name}_deletions"] = totals.get("deletions", 0)
                     agg_metrics[f"{wer_name}_ref_words"] = ref_words
+            for wer_name, subsets in self.structured_wer_subset_totals.items():
+                for subset, totals in sorted(subsets.items()):
+                    ref_words = totals.get("ref_words", 0)
+                    if ref_words > 0:
+                        prefix = f"{wer_name}::{subset}"
+                        agg_metrics[prefix] = round(100.0 * totals.get("errors", 0) / ref_words, 2)
+                        agg_metrics[f"{prefix}_errors"] = totals.get("errors", 0)
+                        agg_metrics[f"{prefix}_ref_words"] = ref_words
+                        agg_metrics[f"{prefix}_substitutions"] = totals.get("substitutions", 0)
+                        agg_metrics[f"{prefix}_insertions"] = totals.get("insertions", 0)
+                        agg_metrics[f"{prefix}_deletions"] = totals.get("deletions", 0)
+                        agg_metrics[f"{prefix}_num_entries"] = totals.get("num_entries", 0)
             for wer_name, values in self.structured_wer_scores.items():
                 if values:
                     agg_metrics[f"{wer_name}_macro"] = round(100.0 * sum(values) / len(values), 2)
-            if self.wer_c_scores:
-                agg_metrics["wer_c"] = round(100.0 * sum(self.wer_c_scores) / len(self.wer_c_scores), 2)
-            if self.wer_pc_scores:
-                agg_metrics["wer_pc"] = round(100.0 * sum(self.wer_pc_scores) / len(self.wer_pc_scores), 2)
-            if self.per_scores:
+            for metric_name, scores in (("wer_c", self.wer_c_scores), ("wer_pc", self.wer_pc_scores)):
+                totals = self.asr_pc_wer_totals[metric_name]
+                if totals["ref_words"] > 0:
+                    agg_metrics[metric_name] = round(100.0 * totals["errors"] / totals["ref_words"], 2)
+                    agg_metrics[f"{metric_name}_errors"] = totals["errors"]
+                    agg_metrics[f"{metric_name}_substitutions"] = totals["substitutions"]
+                    agg_metrics[f"{metric_name}_insertions"] = totals["insertions"]
+                    agg_metrics[f"{metric_name}_deletions"] = totals["deletions"]
+                    agg_metrics[f"{metric_name}_ref_words"] = totals["ref_words"]
+                elif scores:
+                    agg_metrics[metric_name] = round(100.0 * sum(scores) / len(scores), 2)
+                if scores:
+                    agg_metrics[f"{metric_name}_macro"] = round(100.0 * sum(scores) / len(scores), 2)
+            if self.per_totals["operations"] > 0:
+                agg_metrics["per"] = round(100.0 * self.per_totals["errors"] / self.per_totals["operations"], 2)
+                for count_name, value in self.per_totals.items():
+                    agg_metrics[f"per_{count_name}"] = value
+            elif self.per_scores:
                 agg_metrics["per"] = round(100.0 * sum(self.per_scores) / len(self.per_scores), 2)
+            if self.per_scores:
+                agg_metrics["per_macro"] = round(100.0 * sum(self.per_scores) / len(self.per_scores), 2)
             if self.bleu_refs:
                 agg_metrics["bleu"] = round(
                     compute_corpus_bleu(self.bleu_hyps, self.bleu_refs, self.bleu_tokenizes), 2
                 )
+            for subset, inputs in sorted(self.bleu_subset_inputs.items()):
+                prefix = f"bleu::{subset}"
+                agg_metrics[prefix] = round(
+                    compute_corpus_bleu(inputs["hyps"], inputs["refs"], inputs["tokenizes"]),
+                    2,
+                )
+                agg_metrics[f"{prefix}_num_entries"] = inputs["num_entries"]
             if self.comet_scores:
                 agg_metrics["comet"] = round(100.0 * sum(self.comet_scores) / len(self.comet_scores), 2)
 
@@ -477,6 +656,16 @@ class AudioMetrics(BaseMetrics):
                 agg_metrics["cer_deletions"] = self.cer_total_deletions
                 agg_metrics["cer_ref_chars"] = self.cer_total_ref_chars
                 agg_metrics["cer"] = round(100.0 * self.cer_total_errors / self.cer_total_ref_chars, 2)
+            for subset, totals in sorted(self.cer_subset_totals.items()):
+                if totals["ref_chars"] > 0:
+                    prefix = f"cer::{subset}"
+                    agg_metrics[prefix] = round(100.0 * totals["errors"] / totals["ref_chars"], 2)
+                    agg_metrics[f"{prefix}_errors"] = totals["errors"]
+                    agg_metrics[f"{prefix}_ref_chars"] = totals["ref_chars"]
+                    agg_metrics[f"{prefix}_substitutions"] = totals["substitutions"]
+                    agg_metrics[f"{prefix}_insertions"] = totals["insertions"]
+                    agg_metrics[f"{prefix}_deletions"] = totals["deletions"]
+                    agg_metrics[f"{prefix}_num_entries"] = totals["num_entries"]
             if self.cer_scores:
                 agg_metrics["cer_macro"] = round(100.0 * sum(self.cer_scores) / len(self.cer_scores), 2)
             if self.hallucination_scores:
@@ -528,6 +717,10 @@ class AudioMetrics(BaseMetrics):
             "success_rate": as_percentage,
         }
 
+        if self.has_spoken_mqa:
+            base_metrics["accuracy"] = as_percentage
+            if self.spoken_mqa_parse_diagnostics:
+                base_metrics["no_numeric_answer_rate"] = as_percentage
         if self.compute_no_answer:
             base_metrics["no_answer"] = as_percentage
 
@@ -552,11 +745,14 @@ class AudioMetrics(BaseMetrics):
             for subset, totals in sorted(self.cpwer_subset_totals.items()):
                 if totals["ref_words"] > 0:
                     base_metrics[f"cpwer::{subset}"] = as_percentage
-        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
             if wer_name in self.structured_wer_scores:
                 base_metrics[f"{wer_name}_macro"] = as_percentage
             if wer_name in self.structured_wer_totals and self.structured_wer_totals[wer_name].get("ref_words", 0) > 0:
                 base_metrics[wer_name] = as_percentage
+            for subset, totals in sorted(self.structured_wer_subset_totals.get(wer_name, {}).items()):
+                if totals.get("ref_words", 0) > 0:
+                    base_metrics[f"{wer_name}::{subset}"] = as_percentage
         if self.cer_scores:
             base_metrics["cer_macro"] = as_percentage
         if self.cer_total_ref_chars > 0:
@@ -567,7 +763,7 @@ class AudioMetrics(BaseMetrics):
             base_metrics["insertions"] = as_int
             base_metrics["deletions"] = as_int
             base_metrics["ref_words"] = as_int
-        for wer_name in ("strict_wer", "canonical_wer", "content_wer"):
+        for wer_name in ("strict_wer", "canonical_wer", "content_wer", "audiobench_wer"):
             totals = self.structured_wer_totals.get(wer_name)
             if totals and totals.get("ref_words", 0) > 0:
                 base_metrics[f"{wer_name}_errors"] = as_int
@@ -576,10 +772,27 @@ class AudioMetrics(BaseMetrics):
                 base_metrics[f"{wer_name}_deletions"] = as_int
                 base_metrics[f"{wer_name}_ref_words"] = as_int
         if self.wer_c_scores:
-            base_metrics["wer_c"] = as_percentage
+            base_metrics["wer_c_macro"] = as_percentage
         if self.wer_pc_scores:
-            base_metrics["wer_pc"] = as_percentage
+            base_metrics["wer_pc_macro"] = as_percentage
         if self.per_scores:
+            base_metrics["per_macro"] = as_percentage
+        for metric_name in ("wer_c", "wer_pc"):
+            totals = self.asr_pc_wer_totals[metric_name]
+            if totals["ref_words"] > 0:
+                base_metrics[metric_name] = as_percentage
+                base_metrics[f"{metric_name}_errors"] = as_int
+                base_metrics[f"{metric_name}_substitutions"] = as_int
+                base_metrics[f"{metric_name}_insertions"] = as_int
+                base_metrics[f"{metric_name}_deletions"] = as_int
+                base_metrics[f"{metric_name}_ref_words"] = as_int
+            elif (metric_name == "wer_c" and self.wer_c_scores) or (metric_name == "wer_pc" and self.wer_pc_scores):
+                base_metrics[metric_name] = as_percentage
+        if self.per_totals["operations"] > 0:
+            base_metrics["per"] = as_percentage
+            for count_name in self.per_totals:
+                base_metrics[f"per_{count_name}"] = as_int
+        elif self.per_scores:
             base_metrics["per"] = as_percentage
         if self.bleu_refs:
             base_metrics["bleu"] = as_percentage
@@ -643,7 +856,7 @@ def compute_score(combined_metrics: dict) -> dict:
         weighted_tokens = 0.0
         weighted_no_answer = 0.0
 
-        for benchmark_name, benchmark_data in benchmarks.items():
+        for benchmark_data in benchmarks.values():
             if eval_mode not in benchmark_data:
                 continue
 

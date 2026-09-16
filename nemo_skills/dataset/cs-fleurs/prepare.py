@@ -38,6 +38,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -50,6 +51,13 @@ languages = importlib.util.module_from_spec(_lang_spec)
 _lang_spec.loader.exec_module(languages)
 
 HF_REPO_ID = "byan/cs-fleurs"
+HF_REVISION = "0cdbf166c5517ae4b6eb1c54248522eedec53017"
+SOURCE_CONTRACTS = {
+    "read": {"rows": 5818, "sha256": "1ed381025ed51c368e591e263eace85a6e4e59a215d3f8888ca07c1e188fd709"},
+    "mms": {"rows": 14932, "sha256": "48c065a79260058951ba2f25e58c865bea313874beb15fc07db7e72b6bc63f37"},
+    "xtts-test1": {"rows": 11321, "sha256": "677893d3db633645aedbb0a1d838e046afbad53c9817f66b3e5977c24fd0065d"},
+    "xtts-test2": {"rows": 17226, "sha256": "bdee4723f79c3485e03b5476ec90215c0b24dd3dfc285f65a09491d8f705b9c8"},
+}
 
 # Sub-benchmark name -> (HuggingFace top-level dir, split dir name).
 SUBSETS: dict[str, tuple[str, str]] = {
@@ -59,21 +67,42 @@ SUBSETS: dict[str, tuple[str, str]] = {
     "xtts-test2": ("xtts", "test2"),
 }
 
-ASR_INSTRUCTION = "Transcribe the following audio."
+ASR_INSTRUCTION = "Produce a verbatim transcript of the audio."
 
 
-def _download_subset(local_dir: Path, hf_dir: str, split: str, no_audio: bool) -> Path:
+def _validate_metadata(metadata_path: Path, subset: str) -> list[dict]:
+    """Load metadata only when it exactly matches the immutable source contract."""
+    payload = metadata_path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    expected = SOURCE_CONTRACTS[subset]
+    if digest != expected["sha256"]:
+        raise ValueError(f"CS-FLEURS {subset} metadata hash drift: expected {expected['sha256']}, found {digest}")
+
+    rows = [json.loads(line) for line in payload.decode("utf-8").splitlines() if line.strip()]
+    if len(rows) != expected["rows"]:
+        raise ValueError(f"CS-FLEURS {subset} row-count drift: expected {expected['rows']}, found {len(rows)}")
+    if len({row["id"] for row in rows}) != len(rows):
+        raise ValueError(f"CS-FLEURS {subset} contains duplicate row ids")
+    if len({row["file_name"] for row in rows}) != len(rows):
+        raise ValueError(f"CS-FLEURS {subset} contains duplicate audio paths")
+    return rows
+
+
+def _missing_audio(split_dir: Path, rows: list[dict]) -> list[str]:
+    return [row["file_name"] for row in rows if not (split_dir / row["file_name"]).is_file()]
+
+
+def _download_subset(local_dir: Path, subset: str, hf_dir: str, split: str, no_audio: bool) -> Path:
     """Snapshot-download one CS-FLEURS subset; return its split directory on disk."""
     split_dir = local_dir / hf_dir / split
     metadata_path = split_dir / "metadata.jsonl"
-    audio_dir = split_dir / "audio"
-    if metadata_path.exists() and (no_audio or audio_dir.exists()):
-        n_meta = sum(1 for line in metadata_path.open(encoding="utf-8") if line.strip())
-        n_audio = sum(1 for _ in audio_dir.rglob("*.wav")) if not no_audio else n_meta
-        if n_audio == n_meta:
-            print(f"  (already downloaded {n_meta} files, skipping HF snapshot)")
+    if metadata_path.exists():
+        rows = _validate_metadata(metadata_path, subset)
+        missing = [] if no_audio else _missing_audio(split_dir, rows)
+        if not missing:
+            print(f"  (already downloaded {len(rows)} pinned files, skipping HF snapshot)")
             return split_dir
-        print(f"  (incomplete: {n_audio}/{n_meta} audio files, re-downloading)")
+        print(f"  (incomplete: {len(missing)}/{len(rows)} referenced audio files missing, re-downloading)")
 
     from huggingface_hub import snapshot_download
 
@@ -86,18 +115,15 @@ def _download_subset(local_dir: Path, hf_dir: str, split: str, no_audio: bool) -
         repo_type="dataset",
         local_dir=str(local_dir),
         allow_patterns=patterns,
+        revision=HF_REVISION,
     )
+    rows = _validate_metadata(metadata_path, subset)
+    missing = [] if no_audio else _missing_audio(split_dir, rows)
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise FileNotFoundError(f"CS-FLEURS {subset} download is incomplete: {len(missing)} files missing ({preview})")
+
     return split_dir
-
-
-def _read_metadata(split_dir: Path) -> list[dict]:
-    rows = []
-    with open(split_dir / "metadata.jsonl", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
 
 
 def _container_audio_path(raw_subdir: str, file_name: str) -> str:
@@ -113,7 +139,7 @@ def _container_audio_path(raw_subdir: str, file_name: str) -> str:
     return f"{audio_root}/cs-fleurs/raw/{raw_subdir}/{file_name}"
 
 
-def _build_record(row: dict, raw_subdir: str) -> dict:
+def _build_record(row: dict, raw_subdir: str, subset: str) -> dict:
     language = row["language"]
     matrix, embedded = languages.split_pair(language)
     cpath = _container_audio_path(raw_subdir, row["file_name"])
@@ -153,7 +179,40 @@ def _build_record(row: dict, raw_subdir: str) -> dict:
         "subset_for_metrics": language,
         "task_type": "Multilingual-ASR",
         "extra_fields": extra_fields,
+        "source_provenance": {
+            "dataset": HF_REPO_ID,
+            "dataset_revision": HF_REVISION,
+            "metadata_sha256": SOURCE_CONTRACTS[subset]["sha256"],
+            "expected_rows": SOURCE_CONTRACTS[subset]["rows"],
+            "subset": subset,
+        },
     }
+
+
+def _default_data_dir() -> Path:
+    """Resolve the CLI-managed immutable data root before falling back locally."""
+    if data_root := os.getenv("NEMO_SKILLS_DATA_DIR"):
+        return Path(data_root) / "cs-fleurs"
+    return Path(__file__).parent
+
+
+def _publish_records(out_path: Path, records: list[dict]) -> bool:
+    """Atomically publish a deterministic manifest, or validate a completed one."""
+    payload = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records).encode("utf-8")
+    if out_path.exists():
+        if not out_path.is_file() or out_path.read_bytes() != payload:
+            raise ValueError(f"Existing CS-FLEURS manifest fails deterministic closure: {out_path}")
+        return False
+
+    partial = out_path.with_suffix(out_path.suffix + ".partial")
+    with partial.open("wb") as output:
+        output.write(payload)
+        output.flush()
+        os.fsync(output.fileno())
+    partial.replace(out_path)
+    if out_path.read_bytes() != payload:
+        raise ValueError(f"Published CS-FLEURS manifest failed byte revalidation: {out_path}")
+    return True
 
 
 def prepare_cs_fleurs(data_dir: Path, subsets: list[str], no_audio: bool) -> None:
@@ -164,20 +223,19 @@ def prepare_cs_fleurs(data_dir: Path, subsets: list[str], no_audio: bool) -> Non
         hf_dir, split = SUBSETS[subset]
         raw_subdir = f"{hf_dir}/{split}"
         print(f"\n=== {subset} (hf: {raw_subdir}) ===")
-        split_dir = _download_subset(raw_dir, hf_dir, split, no_audio)
-        rows = _read_metadata(split_dir)
+        split_dir = _download_subset(raw_dir, subset, hf_dir, split, no_audio)
+        rows = _validate_metadata(split_dir / "metadata.jsonl", subset)
 
-        records = [_build_record(row, raw_subdir) for row in rows]
+        records = [_build_record(row, raw_subdir, subset) for row in rows]
 
         out_dir = data_dir / subset
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "test.jsonl"
-        with open(out_path, "w", encoding="utf-8") as out:
-            for record in records:
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+        published = _publish_records(out_path, records)
 
         n_cer = sum(1 for r in records if r["extra_fields"]["use_cer"])
-        print(f"  wrote {len(records)} records -> {out_path} ({n_cer} CER, {len(records) - n_cer} WER)")
+        action = "wrote" if published else "revalidated existing"
+        print(f"  {action} {len(records)} records -> {out_path} ({n_cer} CER, {len(records) - n_cer} WER)")
 
 
 def main():
@@ -205,7 +263,7 @@ def main():
     if args.data_dir:
         data_dir = Path(args.data_dir) / "cs-fleurs"
     else:
-        data_dir = Path(__file__).parent
+        data_dir = _default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
     prepare_cs_fleurs(data_dir=data_dir, subsets=args.subsets, no_audio=args.no_audio)

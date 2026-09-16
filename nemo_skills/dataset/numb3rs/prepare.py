@@ -38,11 +38,16 @@ Default audio_prefix: /data/numb3rs (maps to container mount)
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
-import soundfile as sf
-from datasets import load_dataset
+from huggingface_hub import hf_hub_download, snapshot_download
 from tqdm import tqdm
+
+HF_REPO_ID = "nvidia/Numb3rs"
+HF_REVISION = "192908075e1bd293914cc7b508f4a183ba6ef2b8"
+MANIFEST_FILENAME = "manifest.jsonl"
+EXPECTED_MANIFEST_ROWS = 10131
 
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 
@@ -72,7 +77,79 @@ def build_messages_with_prompt(audio_metadata, prompt_text):
     return [system_message, user_message]
 
 
-def save_audio_and_format_entry(entry, category, audio_dir, sample_idx, with_audio=True, audio_prefix="/data/numb3rs"):
+def _relative_audio_path(entry):
+    raw_path = entry.get("audio_filepath")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("Numb3rs manifest row has no audio_filepath")
+    relative_path = Path(raw_path)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError(f"Numb3rs audio path must be repository-relative: {raw_path!r}")
+    if len(relative_path.parts) != 2 or relative_path.suffix.lower() != ".wav":
+        raise ValueError(f"Unexpected Numb3rs audio path: {raw_path!r}")
+    return relative_path
+
+
+def load_official_manifest():
+    """Load the pinned, transcript-bearing manifest rather than AudioFolder rows.
+
+    The Hub dataset's automatic AudioFolder view contains only ``audio`` and
+    ``label``.  The official manifest is the source of written/spoken references
+    and identifies the 10,131 human-verified examples described by the card.
+    """
+    manifest_path = Path(
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=MANIFEST_FILENAME,
+            repo_type="dataset",
+            revision=HF_REVISION,
+        )
+    )
+    with manifest_path.open(encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream if line.strip()]
+
+    if len(rows) != EXPECTED_MANIFEST_ROWS:
+        raise RuntimeError(
+            f"Expected {EXPECTED_MANIFEST_ROWS} rows in pinned Numb3rs manifest, "
+            f"found {len(rows)}"
+        )
+
+    seen_audio_paths = set()
+    required_fields = {"audio_filepath", "duration", "info", "original_text", "text"}
+    for row_index, row in enumerate(rows):
+        missing = required_fields - row.keys()
+        if missing:
+            raise ValueError(
+                f"Numb3rs manifest row {row_index} is missing fields: {sorted(missing)}"
+            )
+        relative_path = _relative_audio_path(row)
+        if relative_path in seen_audio_paths:
+            raise ValueError(f"Duplicate Numb3rs audio path: {relative_path}")
+        seen_audio_paths.add(relative_path)
+    return rows
+
+
+def download_manifest_audio(rows):
+    """Download exactly the WAVs referenced by the pinned official manifest."""
+    allow_patterns = sorted(str(_relative_audio_path(row)) for row in rows)
+    return Path(
+        snapshot_download(
+            repo_id=HF_REPO_ID,
+            repo_type="dataset",
+            revision=HF_REVISION,
+            allow_patterns=allow_patterns,
+        )
+    )
+
+
+def save_audio_and_format_entry(
+    entry,
+    category,
+    audio_dir,
+    sample_idx,
+    with_audio=True,
+    audio_prefix="/data/numb3rs",
+    source_root=None,
+):
     """Format a dataset entry and optionally save audio file.
 
     Returns a base entry dict with audio metadata. Messages are added separately
@@ -87,32 +164,32 @@ def save_audio_and_format_entry(entry, category, audio_dir, sample_idx, with_aud
     # original_text = written form (TN), text = spoken form (ITN)
     original_text = entry["original_text"].strip()
     text = entry["text"].strip()
+    category = category.upper()
+    if entry["info"].upper() != category:
+        raise ValueError(
+            f"Numb3rs category mismatch: requested {category}, row has {entry['info']}"
+        )
 
-    # Get audio filename from file_name field (e.g., "MONEY/MONEY_540__21_999.wav")
-    file_name = entry["file_name"]
-    audio_filename = Path(file_name).name  # e.g., "MONEY_540__21_999.wav"
-    sample_id = Path(file_name).stem  # e.g., "MONEY_540__21_999"
+    relative_audio_path = _relative_audio_path(entry)
+    if relative_audio_path.parts[0].upper() != category:
+        raise ValueError(
+            f"Numb3rs category/path mismatch: {category} vs {relative_audio_path}"
+        )
+    audio_filename = relative_audio_path.name
+    sample_id = relative_audio_path.stem
 
-    # Use duration from dataset (already provided)
-    duration = entry["duration"]
+    duration = float(entry["duration"])
     if duration < MIN_AUDIO_DURATION:
         return None
 
-    # Handle audio saving if requested
     if with_audio:
-        audio_info = entry["audio"]
-        audio_array = audio_info["array"]
-        sampling_rate = audio_info["sampling_rate"]
+        if source_root is None:
+            raise ValueError("source_root is required when saving Numb3rs audio")
+        source_path = Path(source_root) / relative_audio_path
+        if not source_path.is_file():
+            raise FileNotFoundError(source_path)
+        shutil.copy2(source_path, audio_dir / audio_filename)
 
-        if audio_array is None or len(audio_array) == 0:
-            return None
-
-        audio_file_path = audio_dir / audio_filename
-        sf.write(str(audio_file_path), audio_array, sampling_rate)
-
-    # Container path for evaluation
-    # Use audio_prefix to set the base path (e.g., /data/numb3rs or full cluster path)
-    # Audio files are organized as: {audio_prefix}/Numb3rs/{category}/{filename}.wav
     audio_filepath = f"{audio_prefix}/Numb3rs/{category}/{audio_filename}"
 
     # Build audio metadata (to be embedded in messages later)
@@ -131,13 +208,20 @@ def save_audio_and_format_entry(entry, category, audio_dir, sample_idx, with_aud
         "category": category,
         "sample_id": sample_id,
         "subset_for_metrics": f"numb3rs_{category}",
+        "extra_fields": {
+            "source_repo": HF_REPO_ID,
+            "source_revision": HF_REVISION,
+            "source_manifest": MANIFEST_FILENAME,
+        },
         "audio_metadata": audio_metadata,  # Store for message building
     }
 
     return formatted_entry
 
 
-def prepare_category(category, dataset, output_dir, with_audio=True, audio_prefix="/data/numb3rs"):
+def prepare_category(
+    category, dataset, output_dir, with_audio=True, audio_prefix="/data/numb3rs", source_root=None
+):
     """Prepare a single category from the Numb3rs dataset.
 
     Generates 3 files per category in categories/ subfolder:
@@ -151,7 +235,7 @@ def prepare_category(category, dataset, output_dir, with_audio=True, audio_prefi
     print(f"\nProcessing category: {category}")
 
     # Filter dataset by category
-    category_samples = [s for s in dataset if s["category"].upper() == category.upper()]
+    category_samples = [s for s in dataset if s["info"].upper() == category.upper()]
 
     if not category_samples:
         print(f"No samples found for category: {category}")
@@ -175,7 +259,13 @@ def prepare_category(category, dataset, output_dir, with_audio=True, audio_prefi
 
     for idx, entry in enumerate(tqdm(category_samples, desc=f"Processing {category}")):
         formatted = save_audio_and_format_entry(
-            entry, category, audio_dir, idx, with_audio=with_audio, audio_prefix=audio_prefix
+            entry,
+            category,
+            audio_dir,
+            idx,
+            with_audio=with_audio,
+            audio_prefix=audio_prefix,
+            source_root=source_root,
         )
         if formatted is None:
             skipped += 1
@@ -251,13 +341,13 @@ def main():
     else:
         print("Running with audio. Saving to Numb3rs/{category}/")
 
-    # Load dataset from HuggingFace
-    print("\nLoading Numb3rs dataset from HuggingFace...")
-    dataset = load_dataset("nvidia/Numb3rs", split="test", trust_remote_code=True)
-    print(f"Loaded {len(dataset)} total samples")
+    print("\nLoading the official Numb3rs manifest from Hugging Face...")
+    dataset = load_official_manifest()
+    source_root = download_manifest_audio(dataset) if with_audio else None
+    print(f"Loaded {len(dataset)} human-verified samples")
 
     # Get all available categories
-    all_categories = sorted(set(s["category"].upper() for s in dataset))
+    all_categories = sorted({sample["info"].upper() for sample in dataset})
     print(f"Available categories: {', '.join(all_categories)}")
 
     # Determine which categories to process
@@ -280,7 +370,12 @@ def main():
     total_samples = 0
     for category in categories_to_prepare:
         total_samples += prepare_category(
-            category, dataset, output_dir, with_audio=with_audio, audio_prefix=audio_prefix
+            category,
+            dataset,
+            output_dir,
+            with_audio=with_audio,
+            audio_prefix=audio_prefix,
+            source_root=source_root,
         )
 
     # Combine all category variant files into test variant files
@@ -288,7 +383,7 @@ def main():
 
     categories_dir = output_dir / "categories"
 
-    for variant_name in PROMPT_VARIANTS.keys():
+    for variant_name in PROMPT_VARIANTS:
         combined_file = output_dir / f"test_{variant_name}.jsonl"
 
         # Get all category files for this variant from categories/ subfolder
@@ -302,6 +397,12 @@ def main():
                     for line in fin:
                         fout.write(line)
                         combined_count += 1
+
+        concrete_dir = output_dir / variant_name
+        concrete_dir.mkdir(parents=True, exist_ok=True)
+        concrete_file = concrete_dir / "test.jsonl"
+        shutil.copy2(combined_file, concrete_file)
+        print(f"  {concrete_file}: Published {combined_count} rows for numb3rs.{variant_name}")
 
         print(f"  {combined_file.name}: Combined {combined_count} samples from {len(category_files)} categories")
 

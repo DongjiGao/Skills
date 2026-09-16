@@ -19,7 +19,7 @@ import os
 import shlex
 import uuid
 from dataclasses import dataclass, fields
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 
 import nemo_run as run
@@ -56,6 +56,34 @@ from nemo_skills.pipeline.utils.server import get_free_port, get_server_command
 from nemo_skills.utils import get_logger_name, remove_handlers
 
 LOG = logging.getLogger(get_logger_name(__file__))
+
+
+def _disable_nemorun_slurm_tracing(script: str) -> str:
+    """Keep NeMo-Run's generated environment exports out of Slurm logs.
+
+    NeMo-Run 0.12 renders ``set -evx`` before literal ``export KEY=value``
+    lines. Both ``-v`` and ``-x`` therefore expose credential values in the
+    sbatch log. Preserve fail-fast ``-e`` semantics while disabling the two
+    tracing modes. The exact replacement is intentionally a no-op after
+    NeMo-Run adopts a secret-safe template itself.
+    """
+    return script.replace("\nset -evx\n", "\nset -e\n", 1)
+
+
+def _install_nemorun_slurm_trace_guard() -> None:
+    """Apply the secret-safe rendering guard once in the launcher process."""
+    from nemo_run.core.execution.slurm import SlurmBatchRequest
+
+    materialize = SlurmBatchRequest.materialize
+    if getattr(materialize, "_nemo_skills_secret_safe", False):
+        return
+
+    @wraps(materialize)
+    def secret_safe_materialize(request):
+        return _disable_nemorun_slurm_tracing(materialize(request))
+
+    secret_safe_materialize._nemo_skills_secret_safe = True
+    SlurmBatchRequest.materialize = secret_safe_materialize
 
 
 # keeping a global variable for first submitted experiment (per cluster) and reusing it by default
@@ -419,6 +447,7 @@ def get_executor(
         if overridden:
             LOG.warning(f"Parameters from sbatch_kwargs are overriding default values: {', '.join(overridden)}")
         executor_params.update(explicit_kwargs)
+    _install_nemorun_slurm_trace_guard()
     return run.SlurmExecutor(**executor_params)
 
 

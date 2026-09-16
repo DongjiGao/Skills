@@ -44,6 +44,9 @@ _EVALUATOR_MAP_PATHS = {
     "human_eval_infilling": "nemo_skills.evaluation.evaluator.code:eval_human_eval_infilling",
     "mmau-pro": "nemo_skills.evaluation.evaluator.mmau_pro:eval_mmau_pro",
     "specdec": "nemo_skills.evaluation.evaluator.specdec:eval_specdec",
+    "set-token-mcq": "nemo_skills.evaluation.evaluator.set_token_mcq:eval_set_token_mcq",
+    "air-bench-foundation": "nemo_skills.evaluation.evaluator.air_bench_foundation:eval_air_bench_foundation",
+    "voicebench-ifeval": "nemo_skills.evaluation.evaluator.voicebench_ifeval:eval_voicebench_ifeval",
 }
 
 # Class-based evaluators: eval_type -> "module_path:ClassName"
@@ -58,6 +61,12 @@ _EVALUATOR_CLASS_MAP_PATHS = {
     "bird": "nemo_skills.evaluation.evaluator.bird:BirdEvaluator",
     "compute-eval": "nemo_skills.evaluation.evaluator.compute_eval:ComputeEvalEvaluator",
     "contextasr": "nemo_skills.evaluation.evaluator.contextasr:ContextASREvaluator",
+    "ascend": "nemo_skills.evaluation.evaluator.ascend:ASCENDEvaluator",
+    "fleurs_lid": "nemo_skills.evaluation.evaluator.fleurs_lid:FleursLIDEvaluator",
+    "language_id": "nemo_skills.evaluation.evaluator.language_id:LanguageIDEvaluator",
+    "mandarin_meeting": "nemo_skills.evaluation.evaluator.mandarin_meeting:MandarinMeetingEvaluator",
+    "voice_code_bench": "nemo_skills.evaluation.evaluator.voice_code_bench:VoiceCodeBenchEvaluator",
+    "voicebench": "nemo_skills.evaluation.evaluator.voicebench:VoiceBenchEvaluator",
     "contextual_earnings22": ("nemo_skills.evaluation.evaluator.contextual_earnings22:ContextualEarnings22Evaluator"),
     "halas": "nemo_skills.evaluation.evaluator.halas:HALASEvaluator",
     "critpt": "nemo_skills.evaluation.evaluator.critpt:CritPtEvaluator",

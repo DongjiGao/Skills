@@ -314,6 +314,7 @@ def prepare_eval_commands(
     generation_type=None,
     generation_module=None,
     extra_benchmark_map=None,
+    benchmark_extra_arguments=None,
 ):
     """
     # TODO: there is a bit too much code duplication here and logic is quite dense, should try to refactor
@@ -332,6 +333,7 @@ def prepare_eval_commands(
             raise ValueError("Cannot specify both generation_module and generation_type. ")
         generation_module = GENERATION_MODULE_MAP[generation_type]
 
+    benchmark_extra_arguments = benchmark_extra_arguments or {}
     benchmarks_or_groups = {
         k: int(v) for k, v in [b.split(":") if ":" in b else (b, -1) for b in benchmarks_or_groups.split(",")]
     }
@@ -473,6 +475,7 @@ def prepare_eval_commands(
                     f"{generation_task.get_generation_default_args()} "
                     f"{benchmark_args.generation_args} "
                     f"{extra_arguments} "
+                    f"{benchmark_extra_arguments.get(benchmark, benchmark_extra_arguments.get(benchmark_args.benchmark_group, ''))} "
                 )
 
                 job_units.append(

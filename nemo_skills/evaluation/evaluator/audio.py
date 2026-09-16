@@ -22,8 +22,6 @@ from collections import OrderedDict
 from functools import lru_cache
 from typing import Any
 
-import numpy as np
-
 from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorConfig
 from nemo_skills.utils import get_logger_name, nested_dataclass
 
@@ -265,15 +263,31 @@ def split_tokens(text: str) -> list[str]:
     return re.findall(r"\w+|[^\w\s]", text)
 
 
+# Han ideographs used by the han_adjacent CER whitespace predicate and by the
+# Han component of the scriptio-continua segmentation set.
+_HAN_RANGES = (
+    "〇"  # Ideographic number zero
+    "㐀-䶿"  # CJK Unified Ideographs Extension A
+    "一-鿿"  # CJK Unified Ideographs
+    "豈-﫿"  # CJK Compatibility Ideographs
+    "\U00020000-\U0002A6DF"  # Extension B
+    "\U0002A700-\U0002B73F"  # Extension C
+    "\U0002B740-\U0002B81F"  # Extension D
+    "\U0002B820-\U0002CEAF"  # Extension E
+    "\U0002CEB0-\U0002EBEF"  # Extension F
+    "\U0002EBF0-\U0002EE5F"  # Extension I
+    "\U0002F800-\U0002FA1F"  # Compatibility Ideographs Supplement
+    "\U00030000-\U0003134F"  # Extension G
+    "\U00031350-\U000323AF"  # Extension H
+)
+_HAN_RE = re.compile(f"[{_HAN_RANGES}]")
+
 # Scriptio-continua scripts (no inter-word spaces) whose units are tokenized
 # individually for Mixed Error Rate, while space-delimited scripts (e.g. Latin)
 # keep their whitespace-delimited words. Covers every CER-style script that
 # occurs in CS-FLEURS plus the obvious siblings (Lao/Khmer).
 _CONTINUA_RANGES = (
-    "㐀-䶿"  # CJK Unified Ideographs Extension A
-    "一-鿿"  # CJK Unified Ideographs
-    "豈-﫿"  # CJK Compatibility Ideographs
-    "぀-ゟ"  # Hiragana
+    _HAN_RANGES + "぀-ゟ"  # Hiragana
     "゠-ヿ"  # Katakana
     "ㇰ-ㇿ"  # Katakana Phonetic Extensions
     "ᄀ-ᇿ"  # Hangul Jamo
@@ -286,6 +300,42 @@ _CONTINUA_RANGES = (
     "ក-៿"  # Khmer
 )
 _CONTINUA_RE = re.compile(f"[{_CONTINUA_RANGES}]")
+VALID_CER_WHITESPACE_MODES = frozenset({"keep", "all", "han_adjacent"})
+
+
+def normalize_cer_whitespace(text: str, mode: str = "keep") -> str:
+    """Normalize whitespace for CER without losing Latin word boundaries.
+
+    ``han_adjacent`` removes a whitespace run only when the nearest
+    non-whitespace character on either side belongs to the Han script. For
+    example, ``今 天 use AI`` becomes ``今天use AI``: formatting
+    spaces around Han are ignored, while the meaningful English word boundary
+    is retained.
+    """
+    if not isinstance(mode, str) or mode not in VALID_CER_WHITESPACE_MODES:
+        raise ValueError(f"Invalid CER whitespace mode {mode!r}; expected one of {sorted(VALID_CER_WHITESPACE_MODES)}")
+    if mode == "keep":
+        return text
+    if mode == "all":
+        return re.sub(r"\s+", "", text)
+
+    output: list[str] = []
+    index = 0
+    while index < len(text):
+        if not text[index].isspace():
+            output.append(text[index])
+            index += 1
+            continue
+
+        whitespace_end = index + 1
+        while whitespace_end < len(text) and text[whitespace_end].isspace():
+            whitespace_end += 1
+        left = text[index - 1] if index > 0 else ""
+        right = text[whitespace_end] if whitespace_end < len(text) else ""
+        if not (_HAN_RE.fullmatch(left) or _HAN_RE.fullmatch(right)):
+            output.append(text[index:whitespace_end])
+        index = whitespace_end
+    return "".join(output)
 
 
 def _grapheme_clusters(text: str) -> list[str]:
@@ -343,85 +393,139 @@ def mixed_segment(text: str, grapheme: bool = False) -> list[str]:
     return tokens
 
 
-def extract_punctuation(text: str) -> list[str]:
-    """Extract only punctuation characters from text."""
-    return [c for c in text if not c.isalnum() and not c.isspace()]
+ASR_PC_PUNCTUATION = (".", ",", "?")
+_ASR_PC_TOKEN_RE = re.compile(r"[\w']+|[.,?]")
+
+
+def _asr_pc_tokens(text: str, *, punctuation: bool, lowercase: bool) -> list[str]:
+    """Tokenize the frozen LibriSpeech-PC protocol without text/number normalization."""
+    tokens = _ASR_PC_TOKEN_RE.findall(normalize_whitespace(text))
+    if not punctuation:
+        tokens = [token for token in tokens if token not in ASR_PC_PUNCTUATION]
+    if lowercase:
+        tokens = [token.lower() for token in tokens]
+    return tokens
+
+
+def punctuation_error_counts(reference: str, hypothesis: str) -> dict[str, int | float]:
+    """Return NeMo's official masked-position PER counts for ``[.,?]``."""
+    ref_tokens = _asr_pc_tokens(reference, punctuation=True, lowercase=False)
+    hyp_tokens = _asr_pc_tokens(hypothesis, punctuation=True, lowercase=False)
+    punctuation = set(ASR_PC_PUNCTUATION)
+    mask = "[PUNCT]"
+    ref_masked = [mask if token in punctuation else token for token in ref_tokens]
+    hyp_masked = [mask if token in punctuation else token for token in hyp_tokens]
+
+    ref_len = len(ref_masked)
+    hyp_len = len(hyp_masked)
+    costs = [[0] * (hyp_len + 1) for _ in range(ref_len + 1)]
+    backtrace = [[""] * (hyp_len + 1) for _ in range(ref_len + 1)]
+    for ref_index in range(1, ref_len + 1):
+        costs[ref_index][0] = ref_index
+        backtrace[ref_index][0] = "D"
+    for hyp_index in range(1, hyp_len + 1):
+        costs[0][hyp_index] = hyp_index
+        backtrace[0][hyp_index] = "I"
+
+    for ref_index in range(1, ref_len + 1):
+        for hyp_index in range(1, hyp_len + 1):
+            if ref_masked[ref_index - 1] == hyp_masked[hyp_index - 1]:
+                costs[ref_index][hyp_index] = costs[ref_index - 1][hyp_index - 1]
+                backtrace[ref_index][hyp_index] = "C"
+                continue
+            substitution = costs[ref_index - 1][hyp_index - 1] + 1
+            insertion = costs[ref_index][hyp_index - 1] + 1
+            deletion = costs[ref_index - 1][hyp_index] + 1
+            costs[ref_index][hyp_index] = min(substitution, insertion, deletion)
+            if costs[ref_index][hyp_index] == substitution:
+                backtrace[ref_index][hyp_index] = "S"
+            elif costs[ref_index][hyp_index] == insertion:
+                backtrace[ref_index][hyp_index] = "I"
+            else:
+                backtrace[ref_index][hyp_index] = "D"
+
+    correct = 0
+    substitutions = 0
+    ref_index = ref_len
+    hyp_index = hyp_len
+    while ref_index > 0 or hyp_index > 0:
+        operation = backtrace[ref_index][hyp_index]
+        if operation == "C":
+            ref_token = ref_tokens[ref_index - 1]
+            hyp_token = hyp_tokens[hyp_index - 1]
+            if ref_token in punctuation or hyp_token in punctuation:
+                if ref_token == hyp_token:
+                    correct += 1
+                else:
+                    substitutions += 1
+            ref_index -= 1
+            hyp_index -= 1
+        elif operation == "S":
+            ref_index -= 1
+            hyp_index -= 1
+        elif operation == "I":
+            hyp_index -= 1
+        elif operation == "D":
+            ref_index -= 1
+        else:
+            raise AssertionError(f"Missing PER backtrace at ({ref_index}, {hyp_index})")
+
+    ref_punctuation = sum(token in punctuation for token in ref_tokens)
+    hyp_punctuation = sum(token in punctuation for token in hyp_tokens)
+    deletions = ref_punctuation - correct - substitutions
+    insertions = hyp_punctuation - correct - substitutions
+    operations = correct + substitutions + deletions + insertions
+    errors = substitutions + deletions + insertions
+    return {
+        "per": errors / operations if operations else 0.0,
+        "per_correct": correct,
+        "per_substitutions": substitutions,
+        "per_deletions": deletions,
+        "per_insertions": insertions,
+        "per_errors": errors,
+        "per_operations": operations,
+    }
 
 
 def calculate_per(reference: str, hypothesis: str) -> float:
-    """Calculate Punctuation Error Rate (PER): (I+D+S) / (I+D+S+C)"""
-    ref_punct = extract_punctuation(reference)
-    hyp_punct = extract_punctuation(hypothesis)
+    """Calculate official LibriSpeech-PC PER: ``(I+D+S)/(I+D+S+C)``."""
+    return float(punctuation_error_counts(reference, hypothesis)["per"])
 
-    len_r, len_h = len(ref_punct), len(hyp_punct)
 
-    if len_r == 0 and len_h == 0:
-        return 0.0
-
-    dp = np.zeros((len_r + 1, len_h + 1, 4), dtype=int)
-
-    for i in range(1, len_r + 1):
-        dp[i, 0][2] = i
-    for j in range(1, len_h + 1):
-        dp[0, j][3] = j
-
-    for i in range(1, len_r + 1):
-        for j in range(1, len_h + 1):
-            if ref_punct[i - 1] == hyp_punct[j - 1]:
-                dp[i, j] = dp[i - 1, j - 1].copy()
-                dp[i, j][0] += 1
-            else:
-                sub = dp[i - 1, j - 1].copy()
-                sub[1] += 1
-                delete = dp[i - 1, j].copy()
-                delete[2] += 1
-                insert = dp[i, j - 1].copy()
-                insert[3] += 1
-                dp[i, j] = min([sub, delete, insert], key=lambda x: x[1] + x[2] + x[3])
-
-    correct, substitution, deletion, insertion = dp[len_r, len_h]
-    total = correct + substitution + deletion + insertion
-    per = (substitution + deletion + insertion) / total if total > 0 else 0.0
-    return per
+def _prefixed_wer_counts(reference: str, hypothesis: str, prefix: str) -> dict[str, int | float]:
+    counts = _wer_with_counts(reference, hypothesis)
+    return {
+        prefix: counts["wer"],
+        f"{prefix}_errors": counts["wer_errors"],
+        f"{prefix}_ref_words": counts["wer_ref_words"],
+        f"{prefix}_substitutions": counts["wer_substitutions"],
+        f"{prefix}_insertions": counts["wer_insertions"],
+        f"{prefix}_deletions": counts["wer_deletions"],
+    }
 
 
 def evaluate_asr_pc(
     reference: str, hypothesis: str, normalize_standard_wer: bool = True, normalization_mode: str = "standard"
 ) -> dict[str, Any]:
-    """Evaluate ASR-PC: computes WER, WER_C, WER_PC, PER.
+    """Evaluate the frozen LibriSpeech-PC WER/WER-C/WER-PC/PER protocol.
 
-    Args:
-        reference: Ground truth transcription.
-        hypothesis: Model output transcription.
-        normalize_standard_wer: Whether to apply normalization to standard WER.
-        normalization_mode: Normalization mode for standard WER ("standard", "audiobench", "hf_leaderboard", "none", "no_tn_itn").
+    The compatibility arguments remain accepted, but ASR-PC intentionally
+    never uses Whisper TN/ITN.  It applies only whitespace normalization,
+    case folding for WER, and the target punctuation set ``[.,?]``.
     """
-    import jiwer
-
-    ref_pc = normalize_whitespace(reference)
-    hyp_pc = normalize_whitespace(hypothesis)
-
-    ref_tokens = split_tokens(ref_pc)
-    hyp_tokens = split_tokens(hyp_pc)
-    wer_pc = jiwer.wer(" ".join(ref_tokens), " ".join(hyp_tokens))
-
-    ref_c = normalize_whitespace(re.sub(r"[^\w\s]", "", reference))
-    hyp_c = normalize_whitespace(re.sub(r"[^\w\s]", "", hypothesis))
-    wer_c = jiwer.wer(ref_c, hyp_c)
-
-    if normalize_standard_wer:
-        ref_std = preprocess_asr_text(reference, mode=normalization_mode)
-        hyp_std = preprocess_asr_text(hypothesis, mode=normalization_mode)
-    else:
-        ref_std = normalize_whitespace(re.sub(r"[^\w\s]", "", reference.lower()))
-        hyp_std = normalize_whitespace(re.sub(r"[^\w\s]", "", hypothesis.lower()))
+    del normalize_standard_wer, normalization_mode
+    ref_std = " ".join(_asr_pc_tokens(reference, punctuation=False, lowercase=True))
+    hyp_std = " ".join(_asr_pc_tokens(hypothesis, punctuation=False, lowercase=True))
+    ref_c = " ".join(_asr_pc_tokens(reference, punctuation=False, lowercase=False))
+    hyp_c = " ".join(_asr_pc_tokens(hypothesis, punctuation=False, lowercase=False))
+    ref_pc = " ".join(_asr_pc_tokens(reference, punctuation=True, lowercase=False))
+    hyp_pc = " ".join(_asr_pc_tokens(hypothesis, punctuation=True, lowercase=False))
 
     result = _wer_with_counts(ref_std, hyp_std)
-    per = calculate_per(reference, hypothesis)
-    result["wer_c"] = wer_c
-    result["wer_pc"] = wer_pc
-    result["per"] = per
-    result["is_correct"] = wer_pc < 0.5
+    result.update(_prefixed_wer_counts(ref_c, hyp_c, "wer_c"))
+    result.update(_prefixed_wer_counts(ref_pc, hyp_pc, "wer_pc"))
+    result.update(punctuation_error_counts(reference, hypothesis))
+    result["is_correct"] = result["wer_pc_errors"] == 0
     result["text"] = ref_std
     result["pred_text"] = hyp_std
     return result
@@ -504,6 +608,7 @@ def _remove_non_speech_elements(text: str) -> str:
 VALID_NORMALIZATION_MODES = (
     "standard",
     "audiobench",
+    "audiobench_earnings",
     "hf_leaderboard",
     "none",
     "no_tn_itn",
@@ -512,6 +617,58 @@ VALID_NORMALIZATION_MODES = (
     "lower_nopunct",
 )
 VALID_CPWER_NORMALIZATION_MODES = ("chime8", "none")
+
+
+def resolve_cer_whitespace_mode(override: bool | str | None = None) -> str:
+    """Resolve a validated CER whitespace mode.
+
+    A string override accepts ``keep``, ``all``, or ``han_adjacent``.
+    Boolean overrides are retained for compatibility with the old
+    ``cer_strip_whitespace`` metadata: ``True`` means ``all`` and ``False``
+    means ``keep``. Values such as the string ``"false"`` are rejected rather
+    than silently evaluating as truthy.
+    """
+    if override is None:
+        return "keep"
+    if isinstance(override, bool):
+        return "all" if override else "keep"
+    if not isinstance(override, str) or override not in VALID_CER_WHITESPACE_MODES:
+        raise ValueError(
+            f"Invalid CER whitespace override {override!r}; expected a boolean or one of "
+            f"{sorted(VALID_CER_WHITESPACE_MODES)}"
+        )
+    return override
+
+
+def resolve_sample_cer_whitespace_mode(extra_fields: dict[str, Any]) -> str:
+    """Resolve CER whitespace behavior from one dataset record.
+
+    New datasets should set ``cer_whitespace_mode``. The legacy Boolean
+    ``cer_strip_whitespace`` remains supported, but specifying both is an error.
+    CS-FLEURS keeps its paper-comparable all-whitespace CER by default; an
+    explicit record override always wins.
+    """
+    has_mode = "cer_whitespace_mode" in extra_fields
+    has_legacy = "cer_strip_whitespace" in extra_fields
+    if has_mode and has_legacy:
+        raise ValueError("Set only one of cer_whitespace_mode and cer_strip_whitespace")
+    if has_mode:
+        mode = extra_fields["cer_whitespace_mode"]
+        if not isinstance(mode, str):
+            raise ValueError(f"cer_whitespace_mode must be one of {sorted(VALID_CER_WHITESPACE_MODES)}")
+        return resolve_cer_whitespace_mode(mode)
+    if has_legacy:
+        strip_whitespace = extra_fields["cer_strip_whitespace"]
+        if not isinstance(strip_whitespace, bool):
+            raise ValueError("cer_strip_whitespace must be a boolean")
+        return resolve_cer_whitespace_mode(strip_whitespace)
+    # Code-switched MER records use paper-comparable all-whitespace CER in
+    # parallel with their boundary-preserving headline MER.
+    if extra_fields.get("use_mer", False):
+        return "all"
+    return "keep"
+
+
 TASKS_NEED_PARSING = {
     "ASR",
     "ASR-PC",
@@ -560,14 +717,15 @@ def _parse_sot_segments(
         raise ValueError(f"Unsupported SOT parse mode: {mode}")
     if strict_tag_style not in SOT_STRICT_TAG_RES:
         raise ValueError(
-            f"Unsupported SOT strict tag style: {strict_tag_style}. "
-            f"Expected one of {sorted(SOT_STRICT_TAG_RES)}"
+            f"Unsupported SOT strict tag style: {strict_tag_style}. Expected one of {sorted(SOT_STRICT_TAG_RES)}"
         )
 
     cleaned = normalize_whitespace(text or "")
     tag_re = SOT_STRICT_TAG_RES[strict_tag_style] if mode == "strict" else SOT_CANONICAL_TAG_RE
     matches = list(tag_re.finditer(cleaned))
     if not matches:
+        if mode == "canonical" and cleaned:
+            return [{"speaker": default_speaker, "text": cleaned}]
         return []
 
     segments: list[dict[str, str]] = []
@@ -619,18 +777,14 @@ def resolve_speaker_tag_style(speaker_token: str) -> str:
         return "s_bracket"
     if token in {"both", "all"}:
         return "both"
-    raise ValueError(
-        f"Unsupported speaker_token '{speaker_token}'. "
-        "Expected '<spk:*>' (default), '[s*]', or 'both'."
-    )
+    raise ValueError(f"Unsupported speaker_token '{speaker_token}'. Expected '<spk:*>' (default), '[s*]', or 'both'.")
 
 
 def normalize_cpwer_stream(text: str, mode: str = "chime8") -> str:
     """Normalize one speaker stream for cpWER scoring."""
     if mode not in VALID_CPWER_NORMALIZATION_MODES:
         raise ValueError(
-            f"Invalid cpwer_normalization '{mode}'. "
-            f"Available options: {', '.join(VALID_CPWER_NORMALIZATION_MODES)}"
+            f"Invalid cpwer_normalization '{mode}'. Available options: {', '.join(VALID_CPWER_NORMALIZATION_MODES)}"
         )
     if mode == "none":
         return normalize_whitespace(text or "")
@@ -711,6 +865,39 @@ def _get_open_asr_english_normalizer():
     return OpenASREnglishTextNormalizer()
 
 
+@lru_cache(maxsize=1)
+def _get_audiobench_earnings_english_normalizer():
+    """Reproduce AudioBench 85dcdb8's vendored Whisper normalizer exactly.
+
+    whisper-normalizer 0.1.12 added four slang expansions after the Whisper
+    snapshot vendored by AudioBench. Its remaining executable normalizer code
+    and spelling map are identical to that snapshot, so remove only those
+    additions. requirements/audio.txt pins 0.1.12.
+
+    This compatibility normalizer is intentionally used only by the standalone
+    Earnings-21/22 leaves. Existing AudioBench judge/nonjudge tasks retain their
+    historical ``audiobench`` behavior.
+    """
+    from whisper_normalizer.english import EnglishTextNormalizer
+
+    normalizer = EnglishTextNormalizer()
+    post_snapshot_replacers = {
+        r"\bkinda\b": "kind of",
+        r"\bsorta\b": "sort of",
+        r"\bdunno\b": "do not know",
+        r"\bcause\b": "because",
+    }
+    for pattern, expected_replacement in post_snapshot_replacers.items():
+        actual_replacement = normalizer.replacers.get(pattern)
+        if actual_replacement != expected_replacement:
+            raise RuntimeError(
+                "whisper-normalizer no longer matches the pinned 0.1.12 compatibility contract: "
+                f"expected replacer {pattern!r} -> {expected_replacement!r}, found {actual_replacement!r}"
+            )
+        del normalizer.replacers[pattern]
+    return normalizer
+
+
 def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
     """Normalize ASR text for WER calculation.
 
@@ -718,7 +905,8 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         text: Raw text.
         mode: Normalization mode:
             - "standard": Whisper normalization (default) - converts number words to digits
-            - "audiobench": Full AudioBench normalization (whisper + digits to words + more)
+            - "audiobench": Historical AudioBench normalization (whisper + digits to words + more)
+            - "audiobench_earnings": Exact AudioBench 85dcdb8 Earnings-21/22 normalization
             - "hf_leaderboard": HuggingFace leaderboard style (whisper normalization)
             - "none": No normalization (whitespace only)
             - "no_tn_itn": Lowercase + remove punctuation, no number word conversion (for TN/ITN eval)
@@ -767,12 +955,17 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
         text = _get_open_asr_english_normalizer()(text)
         return normalize_whitespace(text)
 
-    # "audiobench" uses additional (audiobench-specific) normalization
-    if mode == "audiobench":
+    # AudioBench uses additional benchmark-specific normalization. The
+    # Earnings-only mode removes four slang rules added after upstream's pinned
+    # Whisper snapshot; the historical broad mode remains unchanged.
+    if mode in {"audiobench", "audiobench_earnings"}:
         import jiwer
 
         text = text.lower()
-        text = EnglishTextNormalizer()(text)
+        if mode == "audiobench_earnings":
+            text = _get_audiobench_earnings_english_normalizer()(text)
+        else:
+            text = EnglishTextNormalizer()(text)
         text = _normalize_digits_to_words(text)
         text = _expand_contractions(text)
         text = re.sub(r"(\[|\(|\{|\<)[^\(\)\\n\[\]]*(\]|\)|\}|\>)", "", text)
@@ -806,13 +999,22 @@ def preprocess_asr_text(text: str, mode: str = "standard", **kwargs) -> str:
 def _wer_with_counts(ref: str, hyp: str, merge_compounds: bool = False) -> dict[str, Any]:
     """Compute WER and raw counts, optionally using Open ASR compound merging."""
     if merge_compounds:
-        from kaldialign import batch_error_rate
+        try:
+            from kaldialign import batch_error_rate
 
-        measures = batch_error_rate(
-            [tuple(ref.split())],
-            [tuple(hyp.split())],
-            merge_compounds=True,
-        )
+            measures = batch_error_rate(
+                [tuple(ref.split())],
+                [tuple(hyp.split())],
+                merge_compounds=True,
+            )
+        except ImportError:
+            from kaldialign import edit_distance
+
+            ref_words = ref.split()
+            ref, hyp = normalize_compound_pairs(ref, hyp)
+            measures = edit_distance(tuple(ref.split()), tuple(hyp.split()))
+            measures["ref_len"] = len(ref_words)
+            measures["err_rate"] = measures["total"] / measures["ref_len"] if measures["ref_len"] else 0.0
         return {
             "wer": measures["err_rate"],
             "wer_errors": measures["total"],
@@ -868,8 +1070,8 @@ def evaluate_asr(
     Args:
         reference: Ground truth transcription.
         hypothesis: Model output transcription.
-        normalization_mode: "standard", "audiobench", "hf_leaderboard", "none", "no_tn_itn", or
-            "apptek_callcenter".
+        normalization_mode: "standard", "audiobench", "audiobench_earnings", "hf_leaderboard",
+            "none", "no_tn_itn", or "apptek_callcenter".
         normalize_compound: Whether to normalize compound pairs.
         **kwargs: Additional keyword arguments.
     """
@@ -901,14 +1103,10 @@ def evaluate_asr(
         result = {"wer": None, "is_correct": None, "text": "", "pred_text": hyp or ""}
         return result
 
-    if normalization_mode == "hf_leaderboard":
-        # Open ASR Leaderboard PR #142 uses kaldialign's merge_compounds mode.
-        # Per-sample scoring produces the same additive counts as its batch call.
-        result = _wer_with_counts(ref, hyp, merge_compounds=True)
-    else:
-        if not hyp:
-            hyp = "empty"
-        result = _wer_with_counts(ref, hyp)
+    merge_compounds = normalization_mode == "hf_leaderboard" or kwargs.get("merge_compounds", False)
+    if not hyp and not merge_compounds:
+        hyp = "empty"
+    result = _wer_with_counts(ref, hyp, merge_compounds=merge_compounds)
     result["is_correct"] = result["wer"] < 0.5
     result["text"] = ref
     result["pred_text"] = hyp
@@ -971,15 +1169,29 @@ def evaluate_cer(
     normalization_mode: str = "none",
     key_prefix: str = "cer",
     normalize_compound: bool = False,
-    strip_whitespace: bool = False,
+    strip_whitespace: bool | None = None,
+    whitespace_mode: str = "keep",
     **kwargs,
 ) -> dict[str, Any]:
     """Evaluate CER: character-level edit distance.
 
-    strip_whitespace removes all whitespace before scoring, so CER is computed over
-    the bare character sequence (spaces not counted). This matches the CS-FLEURS
-    paper's character error rate; default False keeps spaces (existing behavior).
+    ``whitespace_mode`` controls how spaces are scored: ``keep`` preserves them,
+    ``all`` removes them globally, and ``han_adjacent`` removes only spaces
+    adjacent to Han characters. ``strip_whitespace`` is the legacy
+    Boolean spelling for ``all``/``keep``.
     """
+
+    # Validate the named mode before interpreting the legacy Boolean so an
+    # invalid mode is never hidden behind a misleading conflict error.
+    normalize_cer_whitespace("", mode=whitespace_mode)
+    if strip_whitespace is not None:
+        if not isinstance(strip_whitespace, bool):
+            raise ValueError("strip_whitespace must be a boolean when provided")
+        if whitespace_mode != "keep":
+            raise ValueError("Set only one of whitespace_mode and strip_whitespace")
+        whitespace_mode = "all" if strip_whitespace else "keep"
+    if normalize_compound and whitespace_mode == "han_adjacent":
+        raise ValueError("normalize_compound cannot be combined with han_adjacent CER whitespace mode")
 
     ref = preprocess_asr_text(reference, mode=normalization_mode, **kwargs)
     hyp = preprocess_asr_text(hypothesis, mode=normalization_mode, **kwargs)
@@ -987,9 +1199,8 @@ def evaluate_cer(
     if normalize_compound:
         ref, hyp = normalize_compound_pairs(ref, hyp)
 
-    if strip_whitespace:
-        ref = re.sub(r"\s+", "", ref)
-        hyp = re.sub(r"\s+", "", hyp)
+    ref = normalize_cer_whitespace(ref, mode=whitespace_mode)
+    hyp = normalize_cer_whitespace(hyp, mode=whitespace_mode)
 
     # Mirror evaluate_asr: drop samples whose normalized reference is empty rather
     # than dividing by zero in the character edit distance.
@@ -1164,12 +1375,108 @@ def coerce_text_field(value: Any) -> str:
     return str(value).strip()
 
 
+SPOKEN_MQA_ANSWER_TRIGGERS = (
+    "The answer is:",
+    "The answer is",
+    "the answer is",
+    "####",
+)
+
+
+def _spoken_mqa_delete_extra_zero(value: str) -> str:
+    """Match AudioBench's numeric canonicalization without using ``eval``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        fraction = re.fullmatch(r"(-?\d+)/(\d+)", str(value))
+        if fraction is None or int(fraction.group(2)) == 0:
+            return str(value)
+        number = int(fraction.group(1)) / int(fraction.group(2))
+
+    if number.is_integer():
+        return str(int(number))
+    return str(number)
+
+
+def clean_spoken_mqa_prediction(prediction: Any) -> str:
+    """Extract a numeric answer using AudioBench's pinned GSM8K routine."""
+    prediction = coerce_text_field(prediction).strip("\n")
+    if any(prediction.count(trigger) > 1 for trigger in SPOKEN_MQA_ANSWER_TRIGGERS):
+        prediction = prediction.split("\n\n")[0]
+
+    parts = re.split("|".join(SPOKEN_MQA_ANSWER_TRIGGERS), prediction)
+    answer_flag = len(parts) > 1
+    if answer_flag:
+        prediction = parts[-1]
+    prediction = prediction.strip("\n").rstrip(".").rstrip("/").strip(" ")
+    candidates = [
+        _spoken_mqa_delete_extra_zero(value.replace(",", ""))
+        for value in re.findall(r"-?\d+/?\.?\d*", prediction.replace(",", ""))
+    ]
+    if not candidates:
+        return ""
+    answer = candidates[0] if answer_flag else candidates[-1]
+    return answer.rstrip(".").rstrip("/")
+
+
+def _spoken_mqa_reference_list(reference: Any, protocol: str) -> list[str]:
+    if isinstance(reference, dict):
+        reference = reference.get("text", reference)
+    if isinstance(reference, (list, tuple)):
+        references = [coerce_text_field(value) for value in reference]
+    else:
+        references = [coerce_text_field(reference)]
+
+    if protocol == "reasoning":
+        normalized = []
+        for answer in references:
+            if "####" in answer:
+                answer = answer.split("#### ")[-1].replace(",", "")
+            normalized.append(_spoken_mqa_delete_extra_zero(answer))
+        references = normalized
+    elif protocol != "arithmetic":
+        raise ValueError(f"Unknown Spoken-MQA protocol: {protocol}")
+
+    return references or ["empty"]
+
+
+def _spoken_mqa_answers_match(prediction: str, reference: str) -> bool:
+    if "\\text{" in prediction:
+        prediction = prediction.replace("\\text{", "").rstrip("}")
+    if "\\text{" in reference:
+        reference = reference.replace("\\text{", "").rstrip("}")
+    if reference.lower() in {"(a)", "(b)", "(c)", "(d)", "(e)", "(f)"}:
+        return reference.lower() in prediction.lower()
+    return prediction.lower() == reference.lower()
+
+
+def evaluate_spoken_mqa(reference: Any, hypothesis: Any, protocol: str) -> dict[str, Any]:
+    """Score one Spoken-MQA row with the official AudioBench ``acc`` protocol."""
+    parsed_prediction = clean_spoken_mqa_prediction(hypothesis)
+    parse_failure = not parsed_prediction
+    prediction = parsed_prediction or "empty"
+    prediction = prediction[:100]
+    references = _spoken_mqa_reference_list(reference, protocol)
+    if not references or not any(references):
+        references = ["empty"]
+    is_correct = any(_spoken_mqa_answers_match(prediction, answer) for answer in references)
+    return {
+        "is_correct": is_correct,
+        "predicted_answer": prediction,
+        "spoken_mqa_prediction": prediction,
+        "spoken_mqa_references": references,
+        "spoken_mqa_parse_failure": parse_failure,
+        "requires_judge": False,
+    }
+
+
 def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dict[str, Any]:
     """Evaluate single sample based on task_type. Returns dict of updates to merge."""
     updates = {}
     task_type = sample.get("task_type", "unknown")
     generation = coerce_text_field(sample.get("generation", ""))
-    expected_answer = coerce_text_field(sample.get("expected_answer", ""))
+    raw_expected_answer = sample.get("expected_answer", "")
+    expected_answer = coerce_text_field(raw_expected_answer)
 
     # Extract ASR text from generation
     # E.g Qwen ASR uses <asr_text> tags to indicate the ASR text
@@ -1232,21 +1539,29 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         mode = resolve_asr_normalization_mode(config)
         extra_fields = sample.get("extra_fields", {})
         use_cer = extra_fields.get("use_cer", False)
+        use_mer = extra_fields.get("use_mer", False)
         src_lang = extra_fields.get("src_lang", None)
+        cer_whitespace_mode = resolve_sample_cer_whitespace_mode(extra_fields)
         if src_lang is not None and "_" in src_lang:
             src_lang = src_lang.split("_")[0]
         preprocess_kwargs = {
             "lang": src_lang,
-            "remove_diacritics": True,
+            "remove_diacritics": extra_fields.get("remove_diacritics", True),
         }
         # For code-switched data (use_mer, i.e. cs-fleurs), preserve combining marks in
         # the multilingual normalization so MER counts Thai/Myanmar vowels/tones (and so
         # grapheme-cluster segmentation is meaningful). num2words and other steps still
         # apply. Monolingual benchmarks keep the existing mark-stripping behavior.
-        if extra_fields.get("use_mer", False):
+        if use_mer or extra_fields.get("preserve_marks", False):
             preprocess_kwargs["preserve_marks"] = True
-        # Only normalize compound pairs for non-English languages
-        normalize_compound = src_lang not in [None, "en"]
+        # Only normalize compound pairs for non-English languages by default.
+        normalize_compound = extra_fields.get("normalize_compound", src_lang not in [None, "en"])
+        merge_compounds = extra_fields.get("merge_compounds", False)
+        # Non-keep whitespace semantics must not be undermined by the
+        # mismatch-region compound normalizer, which can join Latin words.
+        # Explicit keep and the legacy False value preserve pre-existing
+        # compound normalization behavior.
+        cer_normalize_compound = normalize_compound and not use_mer and cer_whitespace_mode == "keep"
 
         # Mixed WER column: CJK-style languages (use_cer) fold their CER into the WER
         # column (stored under wer* keys), all other languages contribute standard WER.
@@ -1254,12 +1569,15 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # scriptio-continua scripts by character and space-delimited scripts by word in
         # the same utterance; also stored under the wer* column. Monolingual benchmarks
         # (e.g. fleurs) never set use_mer, so their use_cer/WER behavior is unchanged.
-        if extra_fields.get("use_mer", False):
+        if use_mer:
             metrics = evaluate_mer(
                 expected_answer,
                 generation,
                 normalization_mode=mode,
-                normalize_compound=normalize_compound,
+                # mixed_segment already handles compact and spaced continua
+                # scripts. Compound normalization would erase English word
+                # boundaries before MER can score them.
+                normalize_compound=False,
                 grapheme=extra_fields.get("mer_grapheme", False),
                 **preprocess_kwargs,
             )
@@ -1269,7 +1587,8 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 generation,
                 normalization_mode=mode,
                 key_prefix="wer",  # fold CER into the mixed WER column
-                normalize_compound=normalize_compound,
+                normalize_compound=cer_normalize_compound,
+                whitespace_mode=cer_whitespace_mode,
                 **preprocess_kwargs,
             )
         else:
@@ -1278,6 +1597,7 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 generation,
                 normalization_mode=mode,
                 normalize_compound=normalize_compound,
+                merge_compounds=merge_compounds,
                 **preprocess_kwargs,
             )
         updates.update(metrics)
@@ -1286,16 +1606,17 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
         # reported separately (cer* keys) alongside the mixed WER column.
         # Code-switched benchmarks (use_mer, i.e. cs-fleurs) score this CER with
         # mark-preserving normalization (lowercase + unpunctuated, combining marks
-        # kept) so it matches the CS-FLEURS paper's CER; monolingual benchmarks keep
-        # the standard multilingual normalization unchanged.
-        cer_mode = "lower_nopunct" if extra_fields.get("use_mer", False) else mode
+        # kept) so it matches the CS-FLEURS paper's CER. Configured Mandarin and
+        # Cantonese benchmarks ignore Han-adjacent formatting spaces; Japanese,
+        # Korean, Vietnamese, and other CER languages retain whitespace by default.
+        cer_mode = "lower_nopunct" if use_mer else mode
         cer_metrics = evaluate_cer(
             expected_answer,
             generation,
             normalization_mode=cer_mode,
             key_prefix="cer",
-            normalize_compound=normalize_compound,
-            strip_whitespace=extra_fields.get("use_mer", False),
+            normalize_compound=cer_normalize_compound,
+            whitespace_mode=cer_whitespace_mode,
             **preprocess_kwargs,
         )
         # Merge only cer* keys so the mixed metric's is_correct/text/pred_text are preserved.
@@ -1311,7 +1632,22 @@ def evaluate_sample(sample: dict[str, Any], config: AudioEvaluatorConfig) -> dic
                 updates[cer_key] = cer_metrics[cer_key]
 
     elif task_type == "CER":
-        metrics = evaluate_cer(expected_answer, generation, normalization_mode="none", key_prefix="cer")
+        extra_fields = sample.get("extra_fields", {})
+        metrics = evaluate_cer(
+            expected_answer,
+            generation,
+            normalization_mode="none",
+            key_prefix="cer",
+            whitespace_mode=resolve_sample_cer_whitespace_mode(extra_fields),
+        )
+        updates.update(metrics)
+
+    elif task_type == "MathQA":
+        metrics = evaluate_spoken_mqa(
+            raw_expected_answer,
+            generation,
+            sample.get("spoken_mqa_protocol", "arithmetic"),
+        )
         updates.update(metrics)
 
     elif task_type == "Hallucination":

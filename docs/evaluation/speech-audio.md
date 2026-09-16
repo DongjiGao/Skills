@@ -13,17 +13,56 @@ This section details how to evaluate speech and audio benchmarks, including unde
 
 ASR benchmark based on the [HuggingFace Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard). Evaluates transcription quality using Word Error Rate (WER).
 
-**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `gigaspeech`, `spgispeech`, `earnings22`, `ami`
+**Leaderboard default set:** `librispeech_clean`, `librispeech_other`, `voxpopuli_aa`, `gigaspeech`, `spgispeech`, `earnings22_aa`, `ami`
 
-This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the official [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) dataset using its own config names, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
+This is what `ns prepare_data asr-leaderboard` prepares with no `--datasets`. Data is sourced from the repositories selected by the current leaderboard, including [`hf-audio/open-asr-leaderboard`](https://huggingface.co/datasets/hf-audio/open-asr-leaderboard) and AA-Earnings22, so the prepared set matches the leaderboard exactly. Protocol notes (2026 update):
 
-- **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Both stay in the average.
+- **AMI and GigaSpeech use the pre-cleaned configs** (`ami_cleaned` = 7,805 source rows and `gigaspeech_cleaned` = 18,768; sub-1s clips removed upstream). Applying the leaderboard's normalized-empty-reference filter leaves 7,715 and 18,757 prepared rows, respectively. Both stay in the average.
 - **VoxPopuli uses the Artificial Analysis cleaned config** (`voxpopuli_cleaned_aa` = 628), reported under the `voxpopuli_aa` subset.
+- **Earnings22 uses the Artificial Analysis cleaned set** ([`Earnings22-Cleaned-AA-chunked`](https://huggingface.co/datasets/ArtificialAnalysis/Earnings22-Cleaned-AA-chunked) = 341 chunks from 6 calls), reported under `earnings22_aa`. Predictions are concatenated by `chunk_index` within each call before corpus WER is computed against the six session-level references.
+
+For the public multilingual leaderboard, use `asr-leaderboard-multilingual`. It prepares the official FLEURS, MCV, and MLS configs for German, French, Italian, Spanish, and Portuguese. Summarization reports every dataset subset, adds per-language averages, and sets the top-line WER to the mean of those language averages.
 
 #### Dataset Location
 
 - Benchmark is defined in [`nemo_skills/dataset/asr-leaderboard/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/asr-leaderboard/__init__.py)
 - Original datasets are hosted on HuggingFace (downloaded automatically during preparation)
+
+### Multilingual LibriSpeech (MLS)
+
+`mls` is the standalone public MLS ASR benchmark, distinct from the four MLS
+configs embedded in `asr-leaderboard-multilingual`. It evaluates the official
+MLS `test` split for all eight languages in the primary paper's Table 6:
+English (`en`), German (`de`), Dutch (`nl`), French (`fr`), Spanish (`es`),
+Italian (`it`), Portuguese (`pt`), and Polish (`pl`).
+
+The source contract is immutable and fail-closed. Preparation downloads only
+the eight test Parquets, verifies their pinned repository revisions, byte sizes,
+SHA-256 hashes, and exact row counts, and then writes a manifest and a hashed
+`provenance.json` receipt. The seven non-English languages come from Meta's
+streamable [`facebook/multilingual_librispeech`](https://huggingface.co/datasets/facebook/multilingual_librispeech)
+release. English comes from the public [`parler-tts/mls_eng`](https://huggingface.co/datasets/parler-tts/mls_eng)
+streamable mirror of the OpenSLR English archive; this avoids downloading the
+651-GiB full compressed archive merely to extract its test split.
+
+Scoring uses language-aware normalization, preserves diacritics, and does not
+forgive compound-boundary differences. Every language receives its own corpus
+WER. The headline `mls` WER is the unweighted mean of the eight language WERs;
+the sample/word-weighted combined statistic is retained only as the explicitly
+named `wer_corpus`, not used as the headline. The MLS paper does not define a
+SpeechLM chat prompt, so the stored transcription prompt is a disclosed
+generative-ASR adapter rather than part of the paper protocol.
+
+Prepare the complete benchmark:
+
+```bash
+ns prepare_data mls --data_dir=/path/to/data --cluster=<cluster>
+```
+
+The prepared inventory contains 17,702 utterances: `en=3769`, `de=3394`,
+`nl=3075`, `fr=2426`, `es=2385`, `it=1262`, `pt=871`, and `pl=520`.
+The benchmark definition and pins live in
+[`nemo_skills/dataset/mls/`](https://github.com/NVIDIA-NeMo/Skills/tree/main/nemo_skills/dataset/mls).
 
 ### AppTek Call-Center Dialogues
 
@@ -280,19 +319,19 @@ Example output:
 ```
 ------------------------------------- asr-leaderboard --------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233522      | 86.70%       | 0.00%     | 7.82%  | 143597
+pass@1          | ...        | ...         | ...          | ...       | ...    | ...
 
 ----------------------------------- asr-leaderboard-ami ------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 732        | 3680        | 81.27%       | 0.00%     | 18.45% | 12620
+pass@1          | ...        | ...         | ...          | ...       | ...    | 7715
 
--------------------------------- asr-leaderboard-earnings22 --------------------------------
+-------------------------------- asr-leaderboard-earnings22_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 3522        | 83.97%       | 0.00%     | 14.72% | 57390
+pass@1          | ...        | ...         | ...          | ...       | ...    | 6
 
 -------------------------------- asr-leaderboard-gigaspeech --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233469      | 71.86%       | 0.00%     | 12.34% | 25376
+pass@1          | ...        | ...         | ...          | ...       | ...    | 18757
 
 ---------------------------- asr-leaderboard-librispeech_clean ----------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
@@ -306,13 +345,9 @@ pass@1          | 733        | 3927        | 98.67%       | 0.00%     | 4.34% | 
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
 pass@1          | 740        | 4510        | 99.99%       | 0.00%     | 3.81% | 39341
 
---------------------------------- asr-leaderboard-tedlium ----------------------------------
+-------------------------------- asr-leaderboard-voxpopuli_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 732        | 3878        | 77.74%       | 0.00%     | 7.89% | 1469
-
--------------------------------- asr-leaderboard-voxpopuli --------------------------------
-evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 741        | 4007        | 99.51%       | 0.00%     | 6.47% | 1842
+pass@1          | ...        | ...         | ...          | ...       | ...    | 628
 ```
 
 ### AppTek Call-Center Dialogues Results
@@ -668,19 +703,19 @@ Example output:
 ```
 ------------------------------------- asr-leaderboard --------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233522      | 86.70%       | 0.00%     | 7.82%  | 143597
+pass@1          | ...        | ...         | ...          | ...       | ...    | ...
 
 ----------------------------------- asr-leaderboard-ami ------------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 732        | 3680        | 81.27%       | 0.00%     | 18.45% | 12620
+pass@1          | ...        | ...         | ...          | ...       | ...    | 7805
 
--------------------------------- asr-leaderboard-earnings22 --------------------------------
+-------------------------------- asr-leaderboard-earnings22_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 3522        | 83.97%       | 0.00%     | 14.72% | 57390
+pass@1          | ...        | ...         | ...          | ...       | ...    | 6
 
 -------------------------------- asr-leaderboard-gigaspeech --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer    | num_entries
-pass@1          | 736        | 233469      | 71.86%       | 0.00%     | 12.34% | 25376
+pass@1          | ...        | ...         | ...          | ...       | ...    | 18768
 
 ---------------------------- asr-leaderboard-librispeech_clean ----------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
@@ -694,13 +729,9 @@ pass@1          | 733        | 3927        | 98.67%       | 0.00%     | 4.34% | 
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
 pass@1          | 740        | 4510        | 99.99%       | 0.00%     | 3.81% | 39341
 
---------------------------------- asr-leaderboard-tedlium ----------------------------------
+-------------------------------- asr-leaderboard-voxpopuli_aa --------------------------------
 evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 732        | 3878        | 77.74%       | 0.00%     | 7.89% | 1469
-
--------------------------------- asr-leaderboard-voxpopuli --------------------------------
-evaluation_mode | avg_tokens | gen_seconds | success_rate | no_answer | wer   | num_entries
-pass@1          | 741        | 4007        | 99.51%       | 0.00%     | 6.47% | 1842
+pass@1          | ...        | ...         | ...          | ...       | ...    | 628
 ```
 
 ### MMAU-Pro Results
@@ -967,7 +998,9 @@ SALM output with <spk:N> tags
 - Benchmark group: [`nemo_skills/dataset/multispeaker-sot/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/multispeaker-sot/__init__.py)
 - Evaluator: [`nemo_skills/evaluation/evaluator/audio.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/evaluator/audio.py) (`evaluate_msasr`)
 - cpWER engine: [`nemo_skills/evaluation/metrics/cpwer_utils.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/evaluation/metrics/cpwer_utils.py)
-- Source manifests: cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
+- Source manifests: IAD/ORD cluster `eval_manifests/{under20s_eval_set,60s_90s_eval_set,120s_180s_eval_set,full_length_eval_set,libri_speech_mix}`
+- Pinned under-20s AMI IHM dev source: `under20s_eval_set/ami_ihm_dev_10-20s.json`, 476 rows, SHA-256 `e8ebe7f8e5c285f6b3e3ef3961c3ecf9c8766bb32c294c86bead1c0ee74250c9`
+- DFW has no default raw manifest/audio mirror; cross-cluster preparation must follow the immutable-closure procedure below.
 
 ### Supported Benchmarks
 
@@ -1031,6 +1064,28 @@ Manifests are converted from the shared multispeaker eval manifest root. Audio s
 
 ```bash
 ns prepare_data multispeaker-sot --cluster=iad --data_dir=/path/to/data
+```
+
+DFW must not fall back to the IAD path. Copying only
+`under20s_eval_set/ami_ihm_dev_10-20s.json` is insufficient because its rows
+reference the raw AMI audio tree. The safe cross-cluster contract is:
+
+1. Prepare into a new immutable data root on IAD, where both the pinned source
+   manifests and referenced raw audio are authoritative.
+2. Seal every prepared leaf/group manifest hash and row count, plus the exact
+   closure of referenced, readable, non-empty audio files.
+3. Mirror that self-contained prepared closure directly from IAD durable storage
+   to a fresh DFW durable-storage destination. Do not stage through a home directory.
+4. Recompute the same hashes/counts on DFW before publishing a READY receipt or
+   launching evaluation.
+
+A site may instead expose a complete, hash-verified raw mirror on DFW. Both the
+manifest and every referenced source audio file must be present; pass its root
+explicitly (there is intentionally no DFW default):
+
+```bash
+ns prepare_data multispeaker-sot --cluster=dfw \
+    --manifest-root=/lustre/.../verified/eval_manifests --data_dir=/path/to/data
 ```
 
 The merged group benchmarks above need one extra step, which concatenates the already-prepared member `test.jsonl` files (no audio is touched). Group membership is read from the dataset package, so the data dir only needs the prepared member sets:
@@ -1479,6 +1534,12 @@ Output:
 
 CER (rather than WER) is used for these locales: `cmn_hans_cn`, `yue_hant_hk`, `ja_jp`, `th_th`, `lo_la`, `my_mm`, `km_kh`, `ko_kr`, `vi_vn`.
 
+Mandarin (`cmn_hans_cn`) and Cantonese (`yue_hant_hk`) ASR records explicitly
+set `cer_whitespace_mode: han_adjacent`. Their CER ignores character-segmentation
+spaces adjacent to Han while retaining word boundaries inside embedded Latin
+text. Other FLEURS locales and other datasets keep their existing whitespace
+behavior unless they opt in through their own record metadata.
+
 ### Dataset Location
 
 - Benchmark group is defined in [`nemo_skills/dataset/fleurs/__init__.py`](https://github.com/NVIDIA-NeMo/Skills/blob/main/nemo_skills/dataset/fleurs/__init__.py); per-subtask config lives in `fleurs/asr/__init__.py` and `fleurs/st/__init__.py`.
@@ -1489,6 +1550,8 @@ CER (rather than WER) is used for these locales: `cmn_hans_cn`, `yue_hant_hk`, `
 Audio is downloaded automatically from HuggingFace. A single `prepare_data fleurs` run produces both subtasks at once — `fleurs/asr/{split}.jsonl` and `fleurs/st/{split}.jsonl`. There is no `--task` flag; pass the parent group name (`fleurs`), not the dotted subtask names.
 
 The `--languages` flag selects which FLEURS locales are prepared. ASR records are emitted for the listed locales. ST records are emitted for every (`en_us` → locale) and (locale → `en_us`) pair touching the listed locales — even if `en_us` is not itself in `--languages`, since it is the pivot. Omit `--languages` to prepare all 102 locales.
+
+For the Nemotron ASR product reporting set from the 40-row language table, use `--language-set nemotron-asr`.
 
 ```bash
 ns prepare_data fleurs \
@@ -1515,7 +1578,7 @@ Output:
 
 **Splits:** `test`
 
-**Scoring — Mixed Error Rate (MER).** Because each utterance mixes two scripts, a single per-utterance CER-or-WER choice mis-scores it (e.g. whole-utterance CER over a `cmn-eng` sentence scores the embedded English at the character level). Instead, records set `use_mer=true` and the audio evaluator computes a Mixed Error Rate: scriptio-continua scripts (Han / kana / Hangul / Thai / Lao / Myanmar / Khmer) are counted by character and space-delimited scripts (e.g. Latin) by word, within the same utterance, then scored with the standard word-level edit distance. This matches the standard MER used for Mandarin-English code-switching (e.g. SEAME). The mixed figure is reported in the headline `wer*` column. `subset_for_metrics` is the code-switched pair (e.g. `ara-eng`), giving a per-pair breakdown; the group score module adds a per-test-set and overall entry-weighted figure. MER only affects CS-FLEURS — it is gated behind `use_mer`, which monolingual benchmarks (including `fleurs`) never set, so their CER/WER behavior is unchanged.
+**Scoring — Mixed Error Rate (MER).** Because each utterance mixes two scripts, a single per-utterance CER-or-WER choice mis-scores it (e.g. whole-utterance CER over a `cmn-eng` sentence scores the embedded English at the character level). Instead, records set `use_mer=true` and the audio evaluator computes a Mixed Error Rate: scriptio-continua scripts (Han / kana / Hangul / Thai / Lao / Myanmar / Khmer) are counted by character and space-delimited scripts (e.g. Latin) by word, within the same utterance, then scored with the standard word-level edit distance. The mismatch-region compound normalizer is disabled for MER because it can erase meaningful Latin word boundaries before tokenization. Consequently, `eis creme` and `eiscreme`, for example, remain distinct. This matches the standard MER used for Mandarin-English code-switching (e.g. SEAME). The mixed figure is reported in the headline `wer*` column. `subset_for_metrics` is the code-switched pair (e.g. `ara-eng`), giving a per-pair breakdown; the group score module adds a per-test-set and overall entry-weighted figure. MER only affects CS-FLEURS — it is gated behind `use_mer`, which monolingual benchmarks never set.
 
 In addition, a parallel **CER** column (`cer*`) is emitted for direct comparison with the [CS-FLEURS paper](https://arxiv.org/abs/2509.14161), which reports *"case insensitive and unpunctuated character error rate"*. So each pair gets both a code-switching-aware MER (`wer*`) and a paper-comparable CER (`cer*`); see the note below for how the normalization keeps them faithful.
 
@@ -1523,9 +1586,13 @@ In addition, a parallel **CER** column (`cer*`) is emitted for direct comparison
     The shared `multilingual` normalization removes Unicode combining marks (category `Mn`, and turns `Mc` into spaces) as "diacritics" — correct for Latin accents, but it **destroys meaning-bearing vowel and tone marks in Thai/Myanmar** (e.g. `ที่` → `ท`). CS-FLEURS opts out of this so both metrics score those marks:
 
     - **MER (`wer*`)** uses `multilingual` normalization with the `preserve_marks` option (marks kept, `num2words` and other steps retained); `mer_grapheme` grapheme-clustering is therefore effective for Thai/Myanmar.
-    - **CER (`cer*`)** uses `lower_nopunct` (lowercase + unpunctuated, marks kept) plus `strip_whitespace` (spaces not counted), matching the paper's character-level CER.
+    - **CER (`cer*`)** uses `lower_nopunct` (lowercase + unpunctuated, marks kept); `use_mer` also selects the `all` whitespace mode (spaces not counted), matching the paper's character-level CER.
 
-    Both are gated on `use_mer`, so **monolingual benchmarks (`fleurs`, `covost2`) are unchanged** — they keep the default mark-stripping. Whether that shared default should itself become script-aware (preserve `Mn`/`Mc` for abugida scripts everywhere, which would change `fleurs` numbers) is a separate upstream question, left to maintainer guidance.
+    Both mark-preserving paths are gated on `use_mer`, so monolingual benchmarks
+    keep the default mark-stripping. FLEURS Mandarin/Cantonese separately opt in
+    to Han-adjacent whitespace handling as described above; CoVoST2 and other
+    datasets do not inherit it by language code. Whether shared mark handling
+    should itself become script-aware is a separate upstream question.
 
 ### Dataset Location
 
@@ -1557,6 +1624,10 @@ Output:
 ### Baseline results
 
 Reference numbers from **Whisper `large-v3`** (an external multilingual ASR model, *not* a SpeechLM/SALM model), transcribing the full `cs-fleurs.read` subset (5,818 utterances, greedy decoding) and scored through this benchmark's evaluator. Both the code-switching-aware **MER** (`wer` column, mark-preserving) and the paper-comparable **CER** (`cer` column) are shown per language pair (`subset_for_metrics`). These are a sanity-check baseline, not a tuned result.
+
+The table below predates the boundary-preserving MER change. Its CER values are
+still comparable because the all-whitespace CER is unaffected, but MER values
+may differ and should be refreshed before they are used as exact regressions.
 
 Example output:
 

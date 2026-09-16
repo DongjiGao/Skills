@@ -25,7 +25,7 @@ from .base import BackendConfig, GenerationRequest, GenerationResult, InferenceB
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ASR_PROMPT = "Transcribe the following:"
+DEFAULT_ASR_PROMPT = "Produce a verbatim transcript of the audio."
 
 
 @dataclass

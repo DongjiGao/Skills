@@ -14,20 +14,22 @@
 
 """Prepare ASR Leaderboard datasets for evaluation.
 
-Datasets are sourced from the official HuggingFace Open ASR Leaderboard dataset
-(hf-audio/open-asr-leaderboard), using the leaderboard's own config names so the
-prepared data matches the leaderboard exactly. In particular the 2026 protocol
-update is reflected by consuming the pre-cleaned configs directly:
+Datasets are sourced from the repositories used by the HuggingFace Open ASR
+Leaderboard, using the leaderboard's own config names and session-level scoring
+protocol so the prepared data matches the leaderboard exactly. In particular the
+2026 protocol updates are reflected by consuming the pre-cleaned configs directly:
 
     - ami          -> config "ami_cleaned"          (sub-1s clips removed upstream)
     - gigaspeech   -> config "gigaspeech_cleaned"   (sub-1s clips removed upstream)
     - voxpopuli_aa -> config "voxpopuli_cleaned_aa" (Artificial Analysis cleaned refs)
+    - earnings22_aa -> ArtificialAnalysis/Earnings22-Cleaned-AA-chunked
 
-The friendly subset key (used for per-dataset metrics and the JSONL filename) is
-kept stable (ami, gigaspeech, voxpopuli_aa) even though it maps to a cleaned
-config, so the reported leaderboard breakdown reads naturally.
+AA-Earnings22 contains 341 VAD-derived audio chunks but only six parent-call
+references. Every prepared chunk carries parent_id and chunk_index;
+OpenASRLeaderboardMetrics concatenates predictions in chunk order and scores one
+transcript per call, matching open_asr_leaderboard PR #202.
 
-Audio paths in JSONL: /dataset/asr-leaderboard/data/{dataset}/{sample_id}.flac
+Audio paths in JSONL: {NEMO_SKILLS_AUDIO_ROOT}/asr-leaderboard/data/{dataset}/{sample_id}.flac
 
 Usage:
     ns prepare_data asr-leaderboard                          # full leaderboard set
@@ -38,41 +40,71 @@ Usage:
 import argparse
 import io
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from datasets import Audio, load_dataset
+from huggingface_hub import snapshot_download
 from tqdm import tqdm
+
+from nemo_skills.evaluation.evaluator.open_asr_normalizer import OpenASREnglishTextNormalizer
 
 LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard"
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 AUDIO_SAMPLE_RATE = 16000
+AUDIO_ROOT = os.environ.get("NEMO_SKILLS_AUDIO_ROOT", "/data").rstrip("/")
 
 
 @dataclass
 class DatasetSpec:
     """A leaderboard dataset: which HF config/split to read and its fields."""
 
-    config: str
+    config: str | None
     split: str
     text_field: str = "text"
     id_field: str = "id"
     repo: str = LEADERBOARD_REPO
+    parent_repo: str | None = None
+    parent_text_field: str = "transcript"
+    parent_id_field: str = "parent_id"
+    audio_dir: str | None = None
+    audio_filename_field: str = "file_name"
+    chunk_index_field: str = "chunk_index"
+
+    @property
+    def is_chunked(self) -> bool:
+        return self.parent_repo is not None
 
 
-# key = subset_for_metrics (friendly leaderboard name); config = official config.
-# ami/gigaspeech/voxpopuli_aa map to the pre-cleaned configs (2026 protocol).
+# Friendly subset keys map to the official 2026 public leaderboard sources.
 DATASET_CONFIGS = {
     "librispeech_clean": DatasetSpec("librispeech", "test.clean"),
     "librispeech_other": DatasetSpec("librispeech", "test.other"),
     "voxpopuli_aa": DatasetSpec("voxpopuli_cleaned_aa", "test"),
     "gigaspeech": DatasetSpec("gigaspeech_cleaned", "test"),
     "spgispeech": DatasetSpec("spgispeech", "test"),
-    "earnings22": DatasetSpec("earnings22", "test"),
+    "earnings22_aa": DatasetSpec(
+        None,
+        "test",
+        repo="ArtificialAnalysis/Earnings22-Cleaned-AA-chunked",
+        parent_repo="ArtificialAnalysis/Earnings22-Cleaned-AA",
+        audio_dir="audio",
+    ),
     "ami": DatasetSpec("ami_cleaned", "test"),
 }
+
+_NORMALIZER = OpenASREnglishTextNormalizer()
+
+
+def is_target_text_in_range(text: str) -> bool:
+    """Apply the current Open ASR Leaderboard reference filter."""
+    if text.strip() == "ignore time segment in scoring":
+        return False
+    return bool(_NORMALIZER(text).strip())
 
 
 def extract_audio(audio_info):
@@ -85,8 +117,18 @@ def extract_audio(audio_info):
     """
     if audio_info is None:
         return None, None
+    if isinstance(audio_info, (str, Path)):
+        audio_array, sampling_rate = sf.read(str(audio_info), dtype="float32")
+        if getattr(audio_array, "ndim", 1) > 1:
+            audio_array = audio_array.mean(axis=1)
+        return np.asarray(audio_array), int(sampling_rate)
     if isinstance(audio_info, dict) and audio_info.get("bytes") is not None:
         audio_array, sampling_rate = sf.read(io.BytesIO(audio_info["bytes"]), dtype="float32")
+        if getattr(audio_array, "ndim", 1) > 1:
+            audio_array = audio_array.mean(axis=1)
+        return np.asarray(audio_array), int(sampling_rate)
+    if isinstance(audio_info, dict) and audio_info.get("path"):
+        audio_array, sampling_rate = sf.read(str(audio_info["path"]), dtype="float32")
         if getattr(audio_array, "ndim", 1) > 1:
             audio_array = audio_array.mean(axis=1)
         return np.asarray(audio_array), int(sampling_rate)
@@ -96,26 +138,30 @@ def extract_audio(audio_info):
         return None, None
 
 
-def format_entry(entry, dataset_name, audio_dir, spec, with_audio):
+def format_entry(entry, dataset_name, audio_dir, spec, with_audio, reference_text=None, audio_info=None):
     """Format a dataset entry into JSONL and optionally save the audio file."""
-    text = entry[spec.text_field].strip()
-    if not text:
+    text = (entry[spec.text_field] if reference_text is None else reference_text).strip()
+    if not is_target_text_in_range(text):
         return None
 
     sample_id = str(entry[spec.id_field]).replace("/", "_").replace(":", "_")
     audio_filename = f"{Path(sample_id).stem}.flac"
 
-    audio_array, sampling_rate = extract_audio(entry.get("audio"))
+    audio_array, sampling_rate = extract_audio(entry.get("audio") if audio_info is None else audio_info)
     duration = None
     if audio_array is not None and sampling_rate is not None:
+        if sampling_rate != AUDIO_SAMPLE_RATE:
+            raise ValueError(
+                f"Expected {AUDIO_SAMPLE_RATE} Hz leaderboard audio, got {sampling_rate} Hz for {sample_id}"
+            )
         duration = len(audio_array) / sampling_rate
         if with_audio:
             sf.write(str(audio_dir / audio_filename), audio_array, sampling_rate)
-    elif entry.get("audio_length_s") is not None:
-        duration = float(entry["audio_length_s"])
+    elif entry.get("audio_length_s", entry.get("duration")) is not None:
+        duration = float(entry.get("audio_length_s", entry.get("duration")))
 
     user_message = {"role": "user", "content": "Transcribe the following audio."}
-    audio_meta = {"path": f"/dataset/asr-leaderboard/data/{dataset_name}/{audio_filename}"}
+    audio_meta = {"path": f"{AUDIO_ROOT}/asr-leaderboard/data/{dataset_name}/{audio_filename}"}
     if duration is not None:
         audio_meta["duration"] = float(duration)
     user_message["audio"] = audio_meta
@@ -129,8 +175,26 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio):
     }
     if "speaker_id" in entry:
         formatted["speaker_id"] = entry["speaker_id"]
+    if spec.is_chunked:
+        formatted["parent_id"] = entry[spec.parent_id_field]
+        formatted["chunk_index"] = int(entry[spec.chunk_index_field])
 
     return formatted
+
+
+def load_source_dataset(spec: DatasetSpec):
+    """Load a regular or chunked leaderboard dataset without decoding audio."""
+    if spec.config is None:
+        return load_dataset(spec.repo, split=spec.split)
+    return load_dataset(spec.repo, spec.config, split=spec.split)
+
+
+def load_parent_references(spec: DatasetSpec) -> dict[str, str]:
+    """Load one transcript per parent session for a chunked dataset."""
+    if not spec.is_chunked:
+        return {}
+    parent_dataset = load_dataset(spec.parent_repo, split=spec.split)
+    return {str(entry[spec.id_field]): entry[spec.parent_text_field] for entry in parent_dataset}
 
 
 def prepare_dataset(dataset_name, output_dir, with_audio=True):
@@ -141,10 +205,29 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     spec = DATASET_CONFIGS[dataset_name]
 
     print(f"Loading {dataset_name} from {spec.repo} (config={spec.config}, split={spec.split})...")
-    dataset = load_dataset(spec.repo, spec.config, split=spec.split)
+    dataset = load_source_dataset(spec)
     if with_audio and "audio" in dataset.column_names:
         # decode=False -> raw encoded bytes, read with soundfile (no torchcodec).
         dataset = dataset.cast_column("audio", Audio(decode=False))
+
+    parent_references = load_parent_references(spec)
+    if spec.is_chunked:
+        missing_parent_ids = sorted({str(entry[spec.parent_id_field]) for entry in dataset} - set(parent_references))
+        if missing_parent_ids:
+            raise ValueError(
+                f"No transcript found in {spec.parent_repo} for parent id(s) {missing_parent_ids}. "
+                "The chunked and parent datasets are out of sync."
+            )
+
+    audio_root = None
+    if with_audio and spec.audio_dir is not None:
+        audio_root = Path(
+            snapshot_download(
+                repo_id=spec.repo,
+                repo_type="dataset",
+                allow_patterns=[f"{spec.audio_dir}/*"],
+            )
+        )
 
     output_file = output_dir / f"{dataset_name}.jsonl"
     audio_dir = output_dir / "data" / dataset_name
@@ -155,13 +238,34 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
     count = 0
     with open(output_file, "w", encoding="utf-8") as fout:
         for entry in tqdm(dataset, desc=dataset_name):
-            formatted = format_entry(entry, dataset_name, audio_dir, spec, with_audio)
+            reference_text = None
+            audio_info = None
+            if spec.is_chunked:
+                reference_text = parent_references[str(entry[spec.parent_id_field])]
+                if audio_root is not None:
+                    audio_info = audio_root / spec.audio_dir / entry[spec.audio_filename_field]
+            formatted = format_entry(
+                entry,
+                dataset_name,
+                audio_dir,
+                spec,
+                with_audio,
+                reference_text=reference_text,
+                audio_info=audio_info,
+            )
             if formatted is None:
                 continue
             fout.write(json.dumps(formatted) + "\n")
             count += 1
 
     print(f"Saved {count} samples to {output_file}")
+    # Dotted evaluation targets resolve to
+    # ``asr-leaderboard/<subset>/test.jsonl``. Publish the exact same rows there
+    # so a subset can be regenerated with its own prompt without rerunning the
+    # other six leaderboard datasets.
+    leaf_dir = output_dir / dataset_name
+    leaf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(output_file, leaf_dir / "test.jsonl")
     return count
 
 

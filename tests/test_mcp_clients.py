@@ -487,7 +487,8 @@ async def test_streamable_http_client_list_and_call_tool(monkeypatch):
 
     class FakeHttpCtx:
         async def __aenter__(self):
-            return ("r", "w", None)
+            # MCP 2.0 yields two streams.
+            return ("r", "w")
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -543,6 +544,7 @@ async def test_streamable_http_client_enforcement(monkeypatch):
 
     class FakeHttpCtx:
         async def __aenter__(self):
+            # MCP <2.0 yields two streams and a session callback.
             return ("r", "w", None)
 
         async def __aexit__(self, exc_type, exc, tb):

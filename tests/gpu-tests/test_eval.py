@@ -50,6 +50,8 @@ EXCLUDED_DATASETS = {
     "mbpp",
     "mmau-pro",
     "asr-leaderboard",
+    "asr-leaderboard-longform",
+    "asr-leaderboard-multilingual",
     "mrcr",
     "audiobench",
     "fleurs",

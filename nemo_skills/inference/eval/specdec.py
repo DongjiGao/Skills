@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import hydra
@@ -388,33 +389,28 @@ def compute_vllm_spec_decode_delta(
 
 
 # ---------------------------------------------------------------------------
-# Generation config & task
+# Base speculative-decoding config & task
 # ---------------------------------------------------------------------------
 
 
 @nested_dataclass(kw_only=True)
 class SpecdecGenerationConfig(GenerationTaskConfig):
-    """SPEED-Bench generation config for speculative decoding evaluation.
+    """Config for speculative-decoding evaluation with acceptance metrics.
 
-    Extends the standard generation config to inject server connection
-    information into the evaluator so it can query the server's ``/metrics``
-    Prometheus endpoint after generation completes.
+    Generation is byte-for-byte identical to the standard pipeline — no prompt
+    or output schema changes — so evaluation results (WER, BLEU, etc.) are
+    directly comparable with a non-speculative baseline.  Works with any
+    speculative method the server supports (MTP, EAGLE, ngram, draft model...).
 
-    For the full list of supported parameters, use
-    ``python -m nemo_skills.inference.generate --help``
+    Restricts server type to those that expose Prometheus spec-decode counters.
+    Subclasses can extend (e.g. SPEED-Bench adds an SGLang metrics dir).
     """
-
-    # Directory to write SGLang metrics to.  If not specified, will use a
-    # temporary directory created at launch.  This is the only reliable way
-    # to share the tempdir between the pipeline process (which builds the
-    # server command) and this generation worker process.
-    metrics_file_dir: str | None = None
-    max_concurrent_requests: int = 32
 
     def _post_init_validate_server(self):
         super()._post_init_validate_server()
-        assert self.server["server_type"] in ["sglang", "vllm"], (
-            f"server_type must be either 'sglang' or 'vllm' for specdec generation, got '{self.server['server_type']}'"
+        assert self.server["server_type"] in ("sglang", "vllm", "vllm_multimodal"), (
+            f"server_type must be 'sglang', 'vllm', or 'vllm_multimodal' for "
+            f"speculative-decoding generation, got '{self.server['server_type']}'"
         )
 
 
@@ -423,340 +419,96 @@ cs.store(name="base_specdec_generation_config", node=SpecdecGenerationConfig)
 
 
 class SpecdecGenerationTask(GenerationTask):
-    """Custom generation task for SPEED-Bench speculative decoding evaluation.
+    """Standard generation task that additionally reports spec-decode acceptance stats.
 
-    Captures speculative decoding counters from the server's ``/metrics``
-    Prometheus endpoint *before* and *after* generation, then computes the
-    delta to derive accurate acceptance length (AL), acceptance rate, and
-    per-position conditional acceptance rates.
+    Captures Prometheus spec-decode counters from the server's ``/metrics``
+    endpoint *before* generation starts (in ``wait_for_server``) and again in
+    ``postprocess``; the delta isolates acceptance stats to the current run and
+    is saved to ``specdec_metrics.json`` next to the output file.
+    ``average acceptance length`` is ``1 + accepted_tokens / num_drafts``
+    (the "+1" is the target model's verified token, emitted even on full rejection).
+
+    Supports both vLLM (``vllm:spec_decode_*`` counters) and SGLang
+    (``sglang:spec_accept_*`` gauges).
     """
-
-    _sglang_metrics_dir: str | None = None
 
     def __init__(self, cfg: SpecdecGenerationConfig):
         super().__init__(cfg)
         self._before_metrics: SpecDecodeMetrics | None = None
 
-    @classmethod
-    def _ensure_sglang_metrics_dir(cls) -> str:
-        """Return (and lazily create) a unique temp directory for SGLang metrics."""
-        if cls._sglang_metrics_dir is None:
-            import tempfile
-
-            cls._sglang_metrics_dir = tempfile.mkdtemp(prefix="sglang-metrics-")
-            LOG.info("Created SGLang metrics temp directory: %s", cls._sglang_metrics_dir)
-        return cls._sglang_metrics_dir
-
-    @classmethod
-    def get_generation_default_args(cls) -> str:
-        """Pass the SGLang metrics temp-directory to the generation worker.
-
-        Called in the **pipeline** process.  The returned hydra override is
-        appended to the generation command, so the worker can read the same
-        path from ``self.cfg.server.metrics_file_dir``.
-        """
-        metrics_dir = cls._ensure_sglang_metrics_dir()
-        return f"++metrics_file_dir={metrics_dir}"
-
-    @classmethod
-    def get_server_command_fn(cls) -> callable:
-        """Return a wrapper around the default server command builder.
-
-        When the server type is ``sglang``, the wrapper automatically appends
-        ``--enable-metrics --export-metrics-to-file --export-metrics-to-file-dir``
-        so that SGLang writes per-request speculative decoding metrics that the
-        evaluator can aggregate after generation.
-        """
-        from nemo_skills.pipeline.utils import get_server_command
-
-        metrics_dir = cls._ensure_sglang_metrics_dir()
-        sglang_metrics_args = f"--enable-metrics --export-metrics-to-file --export-metrics-to-file-dir {metrics_dir}"
-
-        def specdec_server_command(
-            server_type,
-            num_gpus,
-            num_nodes,
-            model_path,
-            cluster_config,
-            server_port,
-            server_args="",
-            server_entrypoint=None,
-        ):
-            if server_type == "sglang":
-                server_args = f"{server_args} {sglang_metrics_args}".strip()
-            return get_server_command(
-                server_type=server_type,
-                num_gpus=num_gpus,
-                num_nodes=num_nodes,
-                model_path=model_path,
-                cluster_config=cluster_config,
-                server_port=server_port,
-                server_args=server_args,
-                server_entrypoint=server_entrypoint,
-            )
-
-        return specdec_server_command
-
-    def inject_sglang_metrics(
-        self,
-        metrics_file_path: str,
-    ) -> dict[str, Any] | None:
-        """Inject SGLang metrics into the generation output.
-
-        SGLang writes per-request metrics as JSON lines when launched with
-        ``--export-metrics-to-file``.  Each line contains:
-
-        - ``id``: Request ID (matches the ``rid`` in request_parameters)
-        - ``spec_accept_length``: Acceptance length for this request
-        - ``spec_accept_rate``: Acceptance rate for this request
-        - ``spec_accept_token_num``: Number of accepted tokens
-        - ``spec_draft_token_num``: Number of draft tokens
-        - ``spec_verify_ct``: Number of verification steps (drafts)
-
-        Args:
-            metrics_file_path: Path to the SGLang metrics JSONL file.
-            request_ids: Optional set of request IDs to filter by.  If ``None``,
-                **all** entries in the file are aggregated (useful when the
-                server is dedicated to the benchmark).
-
-        Returns:
-            Dictionary with aggregated spec decode statistics, or ``None`` if no
-            matching requests were found or metrics are unavailable.
-        """
-        if not os.path.exists(metrics_file_path):
-            LOG.warning("SGLang metrics file not found: %s, skipping metrics injection", metrics_file_path)
-            return None
-
-        metrics: dict[str, Any] = {}
-        with open(metrics_file_path, "rt", encoding="utf-8") as fin:
-            for i, line in enumerate(fin):
-                try:
-                    metric = json.loads(line)
-                    metrics[metric["id"]] = {
-                        "acceptance_length": metric["spec_accept_length"],
-                        "acceptance_rate": metric["spec_accept_rate"] * 100,
-                        "accepted_tokens": metric["spec_accept_token_num"],
-                        "draft_tokens": metric["spec_draft_token_num"],
-                        "num_drafts": metric["spec_verify_ct"],
-                    }
-                except json.JSONDecodeError:
-                    LOG.warning(f"Failed to parse JSON line {i} for metrics injection, skipping")
-                    continue
-
-        data_points = []
-        with open(self.cfg.output_file, "rt", encoding="utf-8") as fin:
-            for i, line in enumerate(fin):
-                try:
-                    data_points.append(json.loads(line))
-                except json.JSONDecodeError:
-                    LOG.warning(f"Failed to parse JSON line {i} for metrics injection, skipping")
-                    continue
-
-        with open(self.cfg.output_file, "wt", encoding="utf-8") as fout:
-            for data_point in data_points:
-                if all(response_id in metrics for response_id in data_point["response_ids"]):
-                    data_point.update(
-                        {
-                            "num_drafts": sum(
-                                metrics[response_id]["num_drafts"] for response_id in data_point["response_ids"]
-                            ),
-                            "draft_tokens": sum(
-                                metrics[response_id]["draft_tokens"] for response_id in data_point["response_ids"]
-                            ),
-                            "accepted_tokens": sum(
-                                metrics[response_id]["accepted_tokens"] for response_id in data_point["response_ids"]
-                            ),
-                            "acceptance_rate": sum(
-                                metrics[response_id]["acceptance_rate"] for response_id in data_point["response_ids"]
-                            )
-                            / len(data_point["response_ids"]),
-                            "acceptance_length": sum(
-                                metrics[response_id]["acceptance_length"] for response_id in data_point["response_ids"]
-                            )
-                            / len(data_point["response_ids"]),
-                        }
-                    )
-                else:
-                    LOG.warning(
-                        "No metrics found for response_ids: %s, skipping data point", data_point["response_ids"]
-                    )
-                fout.write(json.dumps(data_point) + "\n")
-
-        try:
-            return_value = {
-                "num_drafts": sum([data_point["num_drafts"] for data_point in data_points]),
-                "draft_tokens": sum([data_point["draft_tokens"] for data_point in data_points]),
-                "accepted_tokens": sum([data_point["accepted_tokens"] for data_point in data_points]),
-                "acceptance_rate": sum([data_point["acceptance_rate"] for data_point in data_points])
-                / len(data_points),
-                "acceptance_length": sum([data_point["acceptance_length"] for data_point in data_points])
-                / len(data_points),
-                "per_position_acceptance_rates": [],
-            }
-        except KeyError:
-            LOG.warning("Metrics injection failed for some data points, skipping")
-            return None
-        return return_value
-
-    async def process_single_datapoint(self, data_point, all_data, prompt_format="openai"):
-        """Handle single-turn and multi-turn generation.
-
-        For single-turn data points (or when ``multiturn`` is ``False``), this
-        falls through to the base-class implementation.
-
-        For multi-turn data points, it loops through every turn, building up
-        the conversation and accumulating token counts.
-
-        Also tracks request IDs for SGLang metrics matching.
-        """
-
-        messages = []
-        responses = []
-
-        for message in data_point["messages"]:
-            messages.append(message)
-            new_data_point = {"messages": messages}
-            current_response = await super().process_single_datapoint(
-                new_data_point, all_data, prompt_format=prompt_format
-            )
-            if "response" in current_response:
-                raw_response = current_response.pop("response")
-                current_response["response_id"] = raw_response.id
-            responses.append(current_response)
-            messages.append({"role": "assistant", "content": current_response["generation"]})
-
-        # Return aggregated results
-        return {
-            "generation": [response["generation"] for response in responses],
-            "num_generated_tokens": sum([response["num_generated_tokens"] for response in responses]),
-            "response_ids": [response["response_id"] for response in responses],
-        }
-
     def _get_server_base_address(self) -> str:
-        """Derive the server base address from the config.
-
-        Returns:
-            Server base address string, e.g. ``http://127.0.0.1:5000``.
-        """
         return self.cfg.server.get("base_url") or f"http://{self.cfg.server['host']}:{self.cfg.server['port']}"
 
     def wait_for_server(self):
-        """Wait for the server, then snapshot speculative decoding counters.
-
-        For VLLM: Captures the "before" VLLM Prometheus counters
-        (``vllm:spec_decode_*``) so that after generation we can compute a
-        clean delta isolated to our generation run.
-
-        For SGLang: Captures the "before" SGLang Prometheus gauges
-        (``sglang:spec_accept_length``, ``sglang:spec_accept_rate``) and
-        counters (``sglang:num_requests_total``, etc.) for the same purpose.
-        If the metrics file (``--export-metrics-to-file``) is available after
-        generation, it takes priority over the Prometheus delta.
-        """
+        """Wait for the server, then snapshot spec-decode counters (before)."""
         super().wait_for_server()
         server_type = self.cfg.server["server_type"]
         base_url = self._get_server_base_address()
+        try:
+            if server_type == "sglang":
+                LOG.info("Fetching BEFORE SGLang spec-decode metrics from %s/metrics", base_url)
+                self._before_metrics = fetch_sglang_spec_decode_metrics(base_url)
+                LOG.info(
+                    "SGLang before snapshot: accept_length=%.4f, accept_rate=%.4f, "
+                    "num_requests=%d, gen_tokens=%d",
+                    self._before_metrics.spec_accept_length,
+                    self._before_metrics.spec_accept_rate,
+                    self._before_metrics.num_requests,
+                    self._before_metrics.generation_tokens,
+                )
+            else:
+                LOG.info("Fetching BEFORE vLLM spec-decode metrics from %s/metrics", base_url)
+                self._before_metrics = fetch_vllm_spec_decode_metrics(base_url)
+                LOG.info(
+                    "Before snapshot: drafts=%d, draft_tokens=%d, accepted=%d, per_pos_keys=%s",
+                    self._before_metrics.num_drafts,
+                    self._before_metrics.num_draft_tokens,
+                    self._before_metrics.num_accepted_tokens,
+                    sorted(self._before_metrics.accepted_per_pos.keys()),
+                )
+        except SpecDecodeMetricsError:
+            LOG.warning("Spec-decode metrics unavailable (speculative decoding may not be enabled); skipping.")
+            self._before_metrics = None
 
-        if server_type == "sglang":
-            # SGLang: Fetch "before" snapshot from Prometheus /metrics
-            LOG.info("Fetching BEFORE SGLang spec-decode metrics from %s/metrics", base_url)
-            self._before_metrics = fetch_sglang_spec_decode_metrics(base_url)
-            LOG.info(
-                "SGLang before snapshot: accept_length=%.4f, accept_rate=%.4f, num_requests=%d, gen_tokens=%d",
-                self._before_metrics.spec_accept_length,
-                self._before_metrics.spec_accept_rate,
-                self._before_metrics.num_requests,
-                self._before_metrics.generation_tokens,
-            )
-            return
-
-        # VLLM: Fetch before snapshot
-        LOG.info("Fetching BEFORE VLLM spec-decode metrics from %s/metrics", base_url)
-        self._before_metrics = fetch_vllm_spec_decode_metrics(base_url)
-        LOG.info(
-            "Before snapshot: drafts=%d, draft_tokens=%d, accepted=%d, per_pos_keys=%s",
-            self._before_metrics.num_drafts,
-            self._before_metrics.num_draft_tokens,
-            self._before_metrics.num_accepted_tokens,
-            sorted(self._before_metrics.accepted_per_pos.keys()),
-        )
-
-    def run_batch_evaluation(self):
-        """Fetch after-metrics, compute delta, then run the evaluator.
-
-        For **VLLM**: Uses Prometheus ``/metrics`` endpoint with before/after
-        delta on the ``vllm:spec_decode_*`` counters.
-
-        For **SGLang**: Two strategies are attempted in order:
-
-        1. **Metrics file (preferred)** — if the SGLang server was launched
-           with ``--export-metrics-to-file``, read the per-request JSONL log
-           and aggregate speculative decoding statistics.
-        2. **Prometheus before/after fallback** — fetch
-           ``sglang:spec_accept_length``, ``sglang:spec_accept_rate`` (gauges)
-           and ``sglang:num_requests_total`` (counter) *before* and *after*
-           generation, then back out the benchmark-specific averages from the
-           weighted delta.
-
-        The ``eval_specdec`` evaluator receives the pre-computed stats in
-        ``eval_config["specdec_stats"]`` and stamps them onto each data point
-        in the output JSONL.
-        """
-        server_address = self._get_server_base_address()
+    def _fetch_spec_decode_delta(self) -> dict[str, Any] | None:
+        """Fetch the after-snapshot and compute the delta vs the before-snapshot."""
+        if self._before_metrics is None:
+            return None
+        base_url = self._get_server_base_address()
         server_type = self.cfg.server["server_type"]
+        LOG.info("Fetching AFTER %s spec-decode metrics from %s/metrics", server_type, base_url)
+        try:
+            if server_type == "sglang":
+                after_metrics = fetch_sglang_spec_decode_metrics(base_url)
+                return compute_sglang_spec_decode_delta(self._before_metrics, after_metrics)
+            after_metrics = fetch_vllm_spec_decode_metrics(base_url)
+            return compute_vllm_spec_decode_delta(self._before_metrics, after_metrics)
+        except SpecDecodeMetricsError:
+            LOG.warning("Spec-decode metrics unavailable after generation; skipping.")
+            return None
 
-        specdec_stats: dict[str, Any] | None = None
-
-        if server_type == "sglang":
-            # ----- Strategy 1: Metrics file (preferred) -----
-            metrics_dir = getattr(self.cfg, "metrics_file_dir", None)
-            if metrics_dir:
-                metrics_file = find_sglang_metrics_file(metrics_dir)
-                if metrics_file:
-                    specdec_stats = self.inject_sglang_metrics(metrics_file)
-                else:
-                    LOG.warning("Could not find SGLang metrics file in %s", metrics_dir)
-
-            # ----- Strategy 2: Prometheus before/after fallback -----
-            if specdec_stats is None:
-                LOG.info("Falling back to SGLang Prometheus before/after delta…")
-                LOG.info("Fetching AFTER SGLang spec-decode metrics from %s/metrics", server_address)
-                after_sglang = fetch_sglang_spec_decode_metrics(server_address)
-
-                specdec_stats = compute_sglang_spec_decode_delta(self._before_metrics, after_sglang)
-                LOG.info(
-                    "SGLang Prometheus delta: acceptance_length=%.4f, "
-                    "acceptance_rate=%.2f%%, requests=%d, gen_tokens=%d",
-                    specdec_stats["acceptance_length"],
-                    specdec_stats["acceptance_rate"],
-                    specdec_stats["num_drafts"],
-                    specdec_stats["draft_tokens"],
-                )
-        else:
-            # VLLM: Fetch "after" snapshot and compute delta
-            LOG.info("Fetching AFTER spec-decode metrics from %s/metrics", server_address)
-            after_metrics = fetch_vllm_spec_decode_metrics(server_address)
-
-            specdec_stats = compute_vllm_spec_decode_delta(self._before_metrics, after_metrics)
+    def postprocess(self):
+        super().postprocess()
+        stats = self._fetch_spec_decode_delta()
+        if stats is None:
+            return
+        LOG.info(
+            "Speculative decoding stats for this run: average acceptance_length=%.4f, "
+            "acceptance_rate=%.2f%%, drafts=%d, draft_tokens=%d, accepted_tokens=%d",
+            stats["acceptance_length"],
+            stats["acceptance_rate"],
+            stats["num_drafts"],
+            stats["draft_tokens"],
+            stats["accepted_tokens"],
+        )
+        if stats["per_position_acceptance_rates"]:
             LOG.info(
-                "Spec-decode delta: drafts=%d, draft_tokens=%d, accepted=%d, "
-                "acceptance_rate=%.2f%%, acceptance_length=%.4f",
-                specdec_stats["num_drafts"],
-                specdec_stats["draft_tokens"],
-                specdec_stats["accepted_tokens"],
-                specdec_stats["acceptance_rate"],
-                specdec_stats["acceptance_length"],
+                "Per-position acceptance rates: %s",
+                [f"{r:.4f}" for r in stats["per_position_acceptance_rates"]],
             )
-            if specdec_stats["per_position_acceptance_rates"]:
-                LOG.info(
-                    "Per-position acceptance rates: %s",
-                    [f"{r:.4f}" for r in specdec_stats["per_position_acceptance_rates"]],
-                )
-
-        # Inject into eval_config for the evaluator
-        self.cfg.eval_config["specdec_stats"] = specdec_stats
-
-        super().run_batch_evaluation()
+        metrics_path = Path(self.cfg.output_file).parent / "specdec_metrics.json"
+        metrics_path.write_text(json.dumps(stats, indent=2))
+        LOG.info("Saved spec-decode metrics to %s", metrics_path)
 
 
 GENERATION_TASK_CLASS = SpecdecGenerationTask

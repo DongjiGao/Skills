@@ -94,3 +94,41 @@ Example evaluation metrics:
 evaluation_mode | num_entries | avg_tokens | gen_seconds | spec_acceptance_length | spec_acceptance_rate
 pass@1          | 880         | 463        | 104         | 2.37                   | 45.52
 ```
+
+## Acceptance metrics on any benchmark
+
+Any benchmark can additionally report SD acceptance metrics by passing
+`--generation_module=nemo_skills.inference.eval.specdec` to `ns eval`.
+Generation is byte-for-byte identical to the standard pipeline, so the benchmark's own
+metrics (WER, BLEU, etc.) remain directly comparable with a non-speculative baseline.
+Works with vLLM and SGLang servers and any speculative method they support
+(MTP, EAGLE, ngram, draft model, ...).
+
+```bash
+ns eval \
+    --cluster=<cluster config> \
+    --output_dir=<any mounted output location> \
+    --benchmarks=<any benchmark> \
+    --model=<model> \
+    --server_type=vllm \
+    --server_gpus=8 \
+    --server_args="--speculative-config '{\"method\": \"mtp\", \"num_speculative_tokens\": 3}'" \
+    --generation_module=nemo_skills.inference.eval.specdec
+```
+
+The `/metrics` before/after delta is saved to `specdec_metrics.json` next to the output file:
+
+```json
+{
+  "num_drafts": 491,
+  "draft_tokens": 1469,
+  "accepted_tokens": 547,
+  "acceptance_rate": 37.24,
+  "acceptance_length": 2.11,
+  "per_position_acceptance_rates": [0.52, 0.32, 0.27]
+}
+```
+
+!!! note
+    Counters are aggregated per server, so run one benchmark per `ns eval` call if you
+    need acceptance metrics isolated per benchmark.

@@ -15,7 +15,10 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from nemo_skills.pipeline.utils.generation import get_generation_cmd
+from nemo_skills.pipeline.utils.generation import (
+    get_generation_cmd,
+    replace_server_endpoint_overrides,
+)
 from nemo_skills.pipeline.utils.scripts.base import BaseJobScript
 from nemo_skills.pipeline.utils.scripts.server import SandboxScript, ServerScript
 from nemo_skills.pipeline.utils.server import wrap_python_path
@@ -33,6 +36,19 @@ def _combine_cmds(cmds: List[str], single_node_mode: str) -> str:
         launch_cmds = " ".join(f"( {cmd} ) & pids+=($!);" for cmd in cmds)
         return f'pids=(); {launch_cmds} rc=0; for pid in "${{pids[@]}}"; do wait "$pid" || rc=$?; done; exit "$rc"'
     raise ValueError(f"Unknown single_node_mode: {single_node_mode}")
+
+
+def _combine_parallel_chunks(cmds: List[str], output_dirs: List[str]) -> str:
+    """Parallelize chunks of one output while sequencing distinct outputs."""
+    grouped: Dict[str, List[str]] = {}
+    for output_dir, cmd in zip(output_dirs, cmds, strict=True):
+        grouped.setdefault(output_dir, []).append(cmd)
+    # _combine_cmds(parallel) ends with `exit`, so isolate each benchmark in a
+    # subshell before chaining the next benchmark on successful completion.
+    return " && ".join(
+        f"( {_combine_cmds(group_cmds, 'parallel')} )"
+        for group_cmds in grouped.values()
+    )
 
 
 def _inject_if_missing(extra_arguments: str, needle: str, insertion: str) -> str:
@@ -61,9 +77,7 @@ def _inject_single_server_overrides(
     extra_arguments = _inject_if_missing(extra_arguments, "++server.model=", f"++server.model={model_name} ")
 
     if host is not None and port is not None:
-        extra_arguments = _inject_if_missing(extra_arguments, "++server.host=", f"++server.host={host} ")
-        extra_arguments = _inject_if_missing(extra_arguments, "++server.port=", f"++server.port={port} ")
-        return extra_arguments
+        return replace_server_endpoint_overrides(extra_arguments, host=host, port=port)
 
     if base_url is not None:
         extra_arguments = _inject_if_missing(extra_arguments, "++server.base_url=", f"++server.base_url={base_url} ")
@@ -113,9 +127,11 @@ class EvalClientScript(BaseJobScript):
                     server_addresses.append(addr)
 
             cmds: List[str] = []
+            output_dirs: List[str] = []
             is_multi_model = bool(self.model_names) and len(self.model_names) > 1
             for unit in self.units:
                 unit = dict(unit)
+                output_dirs.append(str(unit.get("output_dir", "")))
 
                 if self.model_names and len(self.model_names) == 1:
                     server_type = self.server_types[0] if self.server_types else ""
@@ -146,7 +162,10 @@ class EvalClientScript(BaseJobScript):
                     )
                 )
 
-            combined = _combine_cmds(cmds, self.single_node_mode)
+            if self.single_node_mode == "parallel_chunks":
+                combined = _combine_parallel_chunks(cmds, output_dirs)
+            else:
+                combined = _combine_cmds(cmds, self.single_node_mode)
             combined = wrap_python_path(combined)
             return combined, {"environment": env_vars}
 

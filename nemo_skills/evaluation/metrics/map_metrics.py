@@ -15,8 +15,10 @@ import functools
 
 from nemo_skills.dataset.utils import locate
 from nemo_skills.evaluation.metrics.aalcr_metrics import AALCRMetrics
+from nemo_skills.evaluation.metrics.air_bench_foundation_metrics import AIRBenchFoundationMetrics
 from nemo_skills.evaluation.metrics.answer_judgement_metrics import AnswerJudgementMetrics
 from nemo_skills.evaluation.metrics.arena_metrics import ArenaMetrics
+from nemo_skills.evaluation.metrics.ascend_metrics import ASCENDMetrics
 from nemo_skills.evaluation.metrics.audio_metrics import AudioMetrics
 from nemo_skills.evaluation.metrics.bfcl_metrics import BFCLMetrics
 from nemo_skills.evaluation.metrics.bird_metrics import BirdMetrics
@@ -33,6 +35,7 @@ from nemo_skills.evaluation.metrics.code_metrics import (
 from nemo_skills.evaluation.metrics.contextasr_metrics import ContextASRMetrics
 from nemo_skills.evaluation.metrics.contextual_earnings22_metrics import ContextualEarnings22Metrics
 from nemo_skills.evaluation.metrics.critpt_metrics import CritPtMetrics
+from nemo_skills.evaluation.metrics.fleurs_lid_metrics import FleursLIDMetrics
 from nemo_skills.evaluation.metrics.gradingbench_metrics import GradingBenchMetrics
 from nemo_skills.evaluation.metrics.graphwalks_metrics import GraphWalksMetrics
 from nemo_skills.evaluation.metrics.halas_metrics import HALASMetrics
@@ -41,19 +44,25 @@ from nemo_skills.evaluation.metrics.hotpotqa_metrics import HotpotQAMetrics
 from nemo_skills.evaluation.metrics.icpc_metrics import ICPCMetrics
 from nemo_skills.evaluation.metrics.if_metrics import IFMetrics
 from nemo_skills.evaluation.metrics.ioi_metrics import IOIMetrics
+from nemo_skills.evaluation.metrics.language_id_metrics import LanguageIDMetrics
 from nemo_skills.evaluation.metrics.lean4_metrics import Lean4Metrics
+from nemo_skills.evaluation.metrics.mandarin_meeting_metrics import MandarinMeetingMetrics
 from nemo_skills.evaluation.metrics.math_metrics import MathMetrics
 from nemo_skills.evaluation.metrics.mcq_multilingual_metrics import MCQMultilingualMetrics
 from nemo_skills.evaluation.metrics.mmau_pro_metrics import MMAUProMetrics
 from nemo_skills.evaluation.metrics.mrcr_metrics import MRCRMetrics
 from nemo_skills.evaluation.metrics.omni_metrics import OmniMetrics
+from nemo_skills.evaluation.metrics.open_asr_metrics import OpenASRLeaderboardMetrics
 from nemo_skills.evaluation.metrics.physics_metrics import PhysicsMetrics
 from nemo_skills.evaluation.metrics.ruler2_metrics import Ruler2Metrics
 from nemo_skills.evaluation.metrics.ruler_metrics import RulerMetrics
+from nemo_skills.evaluation.metrics.set_token_mcq_metrics import SetTokenMCQMetrics
 from nemo_skills.evaluation.metrics.simpleqa_metrics import SimpleQAMetrics
 from nemo_skills.evaluation.metrics.specdec_metrics import SpecdecMetrics
 from nemo_skills.evaluation.metrics.translation_metrics import TranslationMetrics
 from nemo_skills.evaluation.metrics.ugphysics_metrics import UGPhysicsMetrics
+from nemo_skills.evaluation.metrics.voice_code_bench_metrics import VoiceCodeBenchMetrics
+from nemo_skills.evaluation.metrics.voicebench_metrics import VoiceBenchMetrics
 from nemo_skills.evaluation.metrics.weighted_math_metrics import WeightedMathMetrics
 
 METRICS_MAP = {
@@ -71,6 +80,13 @@ METRICS_MAP = {
     "answer-judgement": AnswerJudgementMetrics,
     "arena": ArenaMetrics,
     "audio": AudioMetrics,
+    "ascend": ASCENDMetrics,
+    "fleurs_lid": FleursLIDMetrics,
+    "language_id": LanguageIDMetrics,
+    "mandarin_meeting": MandarinMeetingMetrics,
+    "voice_code_bench": VoiceCodeBenchMetrics,
+    "voicebench": VoiceBenchMetrics,
+    "open_asr_leaderboard": OpenASRLeaderboardMetrics,
     "speechlm": AudioMetrics,  # Alias for backward compatibility
     "bfcl": BFCLMetrics,
     "bird": BirdMetrics,
@@ -97,6 +113,8 @@ METRICS_MAP = {
     "mmau_pro_closed_form": MMAUProMetrics,
     "mmau_pro_open_ended": MMAUProMetrics,
     "mmau_pro_instruction_following": MMAUProMetrics,
+    "set_token_mcq": SetTokenMCQMetrics,
+    "air_bench_foundation": AIRBenchFoundationMetrics,
     "omniscience": OmniMetrics,
     "compute-eval": ComputeEvalMetrics,
     "gradingbench": GradingBenchMetrics,

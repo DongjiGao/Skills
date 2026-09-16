@@ -12,46 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MUSAN: A Music, Speech, and Noise Corpus
+"""Official NeMo Gym MUSAN hallucination benchmark.
 
-MUSAN is a corpus of music, speech, and noise recordings designed for training
-models for voice activity detection and music/speech discrimination.
+The default preparation uses all OpenSLR-17 noise, music, and speech files.
+Every reference is empty.  Four independently seeded generations are scored;
+an output is a hallucination only when its character rate is strictly greater
+than 1500 characters/minute.  The prompt and protocol match NeMo Gym revision
+``68cb9969d656d259846c45e7369acfe6529f0e97``.
 
-DOWNLOAD OPTIONS:
-
-1. HuggingFace (default - INCOMPLETE):
-   - 774 samples, 5h 4m total
-   - Noise: 728 samples (78% complete)
-   - Fast, no API key needed
-
-2. Kaggle (RECOMMENDED - COMPLETE): ✓
-   - 10.3 GB, 2,016 WAV files
-   - Noise: 930 files (99.8% complete!)
-   - Music: 660 files, Speech: 426 files
-   - Requires Kaggle API key (one-time setup)
-
-3. OpenSLR (official - COMPLETE):
-   - 11 GB, full dataset
-   - No API key needed
-
-Reference:
-    David Snyder, Guoguo Chen, and Daniel Povey
-    "MUSAN: A Music, Speech, and Noise Corpus"
-    arXiv:1510.08484, 2015
+This no-speech/non-target-speech protocol is intentionally distinct from the
+``librispeech-test-clean-musan-freesound-0db`` noisy-ASR benchmark.
 """
 
 REQUIRES_DATA_DIR = True
-IS_BENCHMARK_GROUP = True
 SCORE_MODULE = "nemo_skills.evaluation.metrics.audio_metrics"
 METRICS_TYPE = "audio"
+NUM_SAMPLES = 4
 
-# Evaluation settings
-EVAL_ARGS = "++eval_type=audio "
-
-# Generation settings - OpenAI format for audio-language models
-GENERATION_ARGS = "++prompt_format=openai "
-
-# Benchmark - single test.jsonl contains all noise samples at top level
-BENCHMARKS = {
-    "musan": {},
-}
+EVAL_ARGS = "++eval_type=audio"
+GENERATION_ARGS = "++prompt_format=openai ++enable_audio=true"

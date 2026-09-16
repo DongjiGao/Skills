@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "benchmark": "garak",
+  "display_name": "garak LLM vulnerability scanner",
+  "status": "product-decision-required",
+  "classification": "scanner-no-fixed-product-benchmark",
+  "runnable": false,
+  "comparable": false,
+  "public_artifacts": [
+    {
+      "kind": "git_repository",
+      "repository": "https://github.com/NVIDIA/garak.git",
+      "tag": "v0.16.0",
+      "revision": "dbe4515d12664f2e34ac2cea295f055c22fe82b4",
+      "license": "Apache-2.0",
+      "requires_python": ">=3.10"
+    },
+    {
+      "kind": "huggingface_dataset",
+      "repository": "garak-llm/audio_achilles_heel",
+      "observed_revision": "2d08e441a61f584510886ccfa15bf5b94f37480f",
+      "selection_status": "not_protocol_approved",
+      "upstream_loader_revision": null
+    }
+  ],
+  "source_evidence": [
+    {
+      "path": "FAQ.md",
+      "sha256": "bfe90e7e22637ddae0098108e2b495c49a1a92c5e605dbc2331e01e72edda014",
+      "claim": "garak describes itself as a security scanner, not a toxicity or safety benchmark, and says probe scores are not normalized or comparable across probes."
+    },
+    {
+      "path": "garak/probes/audio.py",
+      "sha256": "030dbf86de7461cad7758fa37aa5b29cd70bd5a0bd5e609fde382e20c1566613",
+      "claim": "AudioAchillesHeel is an inactive, unlisted text-plus-audio probe using mitigation.MitigationBypass; its Hugging Face payload is loaded without a revision."
+    },
+    {
+      "path": "garak/generators/nim.py",
+      "sha256": "fccb52220a7e0a61d81fe8abc50740ab7040e35d35cd519869c3849c225cfb73",
+      "claim": "v0.16.0 provides an audio-capable NVMultimodal NIM generator, not an adapter for NeMo Skills pooled SpeechLM vLLM requests."
+    },
+    {
+      "path": "garak/resources/garak.core.yaml",
+      "sha256": "ebbaf52c5c7a42561dcef9df1ae80df91ba32b2ca9af72c2184205e86aaa2edf",
+      "claim": "Release defaults leave the seed unset, request five generations, and display a lower-quartile group aggregate; these defaults are observations, not an approved product protocol."
+    }
+  ],
+  "missing_product_decisions": [
+    {
+      "id": "target_policy",
+      "question": "Is the deployed target expected to transcribe unsafe audio verbatim, refuse it, classify it, or answer it under a specific assistant safety policy?"
+    },
+    {
+      "id": "speechlm_adapter",
+      "question": "What exact garak generator adapter maps Message text/audio inputs onto the pooled SpeechLM vLLM request schema and maps every terminal/error response back?"
+    },
+    {
+      "id": "probe_allowlist",
+      "question": "Which exact active or inactive probe classes at the pinned revision are in scope?"
+    },
+    {
+      "id": "detector_allowlist",
+      "question": "Which exact detector classes, model/resource revisions, thresholds, and extended-detector settings are authoritative for each probe?"
+    },
+    {
+      "id": "run_contract",
+      "question": "What seed, generations per prompt, system prompt, decoding parameters, concurrency, buffs, dependency lock, and failure policy must be frozen?"
+    },
+    {
+      "id": "audio_payload",
+      "question": "Will the audio_achilles_heel dependency be adopted, and if so at which immutable revision with what row, waveform, and license validation contract?"
+    },
+    {
+      "id": "reporting_contract",
+      "question": "Which per-probe/per-detector pass rates and confidence intervals must be reported, with cross-probe aggregation explicitly disabled?"
+    }
+  ],
+  "prohibited_claims": [
+    "Do not publish one overall garak safety score or make cross-probe numeric comparisons.",
+    "Do not interpret faithful transcription of an unsafe audio instruction as a detector failure unless the approved target policy explicitly requires refusal or classification.",
+    "Do not use all currently active probes, automatic detectors, null seed, or garak display aggregates as an implicit product protocol.",
+    "Do not call an NIM-only multimodal path comparable to this repository's pooled SpeechLM vLLM path without an accepted adapter and parity tests.",
+    "Do not download an unpinned mutable audio_achilles_heel payload for a release evaluation."
+  ],
+  "data_preparation_requirements": [
+    "After protocol approval, stage garak from revision dbe4515d12664f2e34ac2cea295f055c22fe82b4 and record an immutable Python/dependency lock.",
+    "Freeze an explicit probe and detector inventory, including each plugin's resources and model revisions; never use auto-discovery as the release contract.",
+    "If AudioAchillesHeel is selected, mirror its payload at the approved revision and validate a frozen row inventory plus every waveform hash before scanning.",
+    "Store the exact garak config, generator-adapter code revision, raw JSONL report, hit log, and per-probe/per-detector summaries; do not produce a cross-probe aggregate."
+  ],
+  "operator_action": "Product Security and Content Safety owners must freeze target behavior and the complete adapter/probe/detector/run/reporting contract before any scan is accepted as a PRD benchmark."
+}
