@@ -114,6 +114,7 @@ def test_audio_metrics_accumulates_cpwer():
         "cpwer_insertions": 0,
         "cpwer_deletions": 0,
         "cpwer_ref_words": 10,
+        "subset_for_metrics": "turing-diarization-v1-en",
         "is_correct": False,
     }
     metrics.update([sample])
@@ -133,6 +134,13 @@ def test_audio_metrics_accumulates_cpwer():
     assert output["cpwer_macro"] == 15.0
     assert output["cpwer_errors"] == 3
     assert output["cpwer_ref_words"] == 20
+    assert output["cpwer::turing-diarization-v1-en"] == 15.0
+    assert output["cpwer::turing-diarization-v1-en_errors"] == 3
+    assert output["cpwer::turing-diarization-v1-en_substitutions"] == 1
+    assert output["cpwer::turing-diarization-v1-en_insertions"] == 2
+    assert output["cpwer::turing-diarization-v1-en_deletions"] == 0
+    assert output["cpwer::turing-diarization-v1-en_ref_words"] == 20
+    assert output["cpwer::turing-diarization-v1-en_num_entries"] == 2
 
 
 @pytest.mark.parametrize(

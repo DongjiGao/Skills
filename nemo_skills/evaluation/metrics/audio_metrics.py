@@ -584,6 +584,10 @@ class AudioMetrics(BaseMetrics):
             for subset, totals in sorted(self.cpwer_subset_totals.items()):
                 if totals["ref_words"] > 0:
                     agg_metrics[f"cpwer::{subset}"] = round(100.0 * totals["errors"] / totals["ref_words"], 2)
+                    agg_metrics[f"cpwer::{subset}_errors"] = totals["errors"]
+                    agg_metrics[f"cpwer::{subset}_substitutions"] = totals["substitutions"]
+                    agg_metrics[f"cpwer::{subset}_insertions"] = totals["insertions"]
+                    agg_metrics[f"cpwer::{subset}_deletions"] = totals["deletions"]
                     agg_metrics[f"cpwer::{subset}_ref_words"] = totals["ref_words"]
                     agg_metrics[f"cpwer::{subset}_num_entries"] = totals["num_entries"]
             for wer_name, totals in self.structured_wer_totals.items():

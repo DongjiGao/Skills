@@ -20,6 +20,7 @@ Example::
         --model /path/to/Sound_Expert.nemo \\
         --cluster oci_iad \\
         --data_dir /path/to/skills-data \\
+        --nemo_code_path /path/to/NeMo \\
         --output_dir /path/to/results
 """
 
@@ -39,9 +40,6 @@ from nemo_skills.pipeline.cli import wrap_arguments
 
 DEFAULT_SERVER_CONTAINER = "nvcr.io/nvidia/nemo:25.11"
 DEFAULT_INSTALLATION_COMMAND = "pip install -r requirements/audio.txt"
-DEFAULT_NEMO_CODE_PATH = (
-    "/lustre/fs12/portfolios/llmservice/users/taejinp/projects/moe_pee_ggemm/Speech"
-)
 BENCHMARKS = (
     "rich_transcription_asr.d8_test",
     "rich_transcription_asr.val",
@@ -87,7 +85,7 @@ def main() -> None:
     parser.add_argument("--server_container", default=DEFAULT_SERVER_CONTAINER)
     parser.add_argument(
         "--nemo_code_path",
-        default=DEFAULT_NEMO_CODE_PATH,
+        required=True,
         help="Speech checkout containing the TransformerEncoder used by the Sound Expert checkpoint.",
     )
     parser.add_argument("--server_gpus", type=int, default=1)
