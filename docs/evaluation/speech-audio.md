@@ -1652,3 +1652,11 @@ overall        | 5818        | 24.51 | 17.72
 ```
 
 Numbers track expected difficulty: low for high-resource European pairs (spa/deu/ita), higher for distinct-script or low-resource languages (tel/jpn/hin/kor). The overall `cer` shown is corpus-pooled (micro) = 17.72%; macro-averaged over the 14 pairs it is **19.54%**, matching the paper's ~19.8% read-test CER (residual gap: greedy vs beam decoding and inference stack). A SpeechLM model evaluated through the standard pipeline reports the same metrics.
+### CTC word-timestamp evaluation
+
+The `ctc-timestamp-eval` benchmark group provides speaker-aware word start/end evaluation for selected CHAES,
+AMI IHM, balanced LibriSpeechMix 1mix/2mix/3mix, and language-mapped D12a audio. It
+reports speaker-permuted WER, boundary MAE, timestamp precision/recall/F1 at 120, 240, and 360 ms, and their
+unweighted average F1. See
+[`nemo_skills/dataset/ctc-timestamp-eval/README.md`](../../nemo_skills/dataset/ctc-timestamp-eval/README.md) for
+data preparation, the prediction schema, exact selections, and standalone scoring.
