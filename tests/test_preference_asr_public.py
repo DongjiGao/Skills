@@ -43,11 +43,12 @@ def _small_contract(rows):
         row_duration_seconds=sum(row["duration"] for row in rows),
         empty_preference_text=sum(not row["preference_text"].strip() for row in rows),
         corpus_rows=tuple(sorted(__import__("collections").Counter(row["dataset"] for row in rows).items())),
-        category_rows=tuple(
-            sorted(__import__("collections").Counter(row["preference_type"] for row in rows).items())
-        ),
+        category_rows=tuple(sorted(__import__("collections").Counter(row["preference_type"] for row in rows).items())),
         direction_rows=tuple(
-            sorted(__import__("collections").Counter(row.get("direction") for row in rows).items(), key=lambda x: str(x[0]))
+            sorted(
+                __import__("collections").Counter(row.get("direction") for row in rows).items(),
+                key=lambda x: str(x[0]),
+            )
         ),
     )
 
@@ -101,7 +102,10 @@ def test_default_and_instructed_records_use_request_scoped_prompts(monkeypatch):
     assert instructed_record["messages"][0]["content"] == row["instruction"]
     assert default_record["expected_answer"] == row["preference_text"]
     assert instructed_record["expected_answer"] == row["preference_text"]
-    assert default_record["messages"][0]["audio"] == {"path": "/data/preference-asr-public/audio/ami/clip.wav", "duration": 1.0}
+    assert default_record["messages"][0]["audio"] == {
+        "path": "/data/preference-asr-public/audio/ami/clip.wav",
+        "duration": 1.0,
+    }
     assert default_record["preference_prompt_variant"] == "default"
     assert instructed_record["preference_prompt_variant"] == "instructed"
 
@@ -231,9 +235,7 @@ def test_group_profiles_evaluator_and_metrics_resolution():
         assert "PreferenceASREvaluator" in module.EVAL_ARGS
         assert isinstance(get_metrics(module.METRICS_TYPE, max_k=1), scorer.PreferenceASRMetrics)
         assert isinstance(
-            get_evaluator_class(
-                "nemo_skills.dataset.preference-asr-public.scorer::PreferenceASREvaluator", {}
-            ),
+            get_evaluator_class("nemo_skills.dataset.preference-asr-public.scorer::PreferenceASREvaluator", {}),
             scorer.PreferenceASREvaluator,
         )
 
@@ -251,3 +253,13 @@ def test_group_score_keeps_conditions_separate():
             "instructed": {"preference_wer": 8.0},
         }
     }
+
+
+def test_instructed_opening_repair_preserves_release_instruction_and_census():
+    row = _row()
+    row["instruction"] = "Transcribe the speech in the input audio. Write numbers as digits."
+    record = prepare._build_record(row, 1, "instructed")
+    assert record["messages"][0]["content"] == "Transcribe this recording. Write numbers as digits."
+    assert record["source_instruction"] == row["instruction"]
+    assert record["prompt_policy"] == "preference-asr-recording-prefix-v1"
+    assert prepare.MANIFEST_CONTRACT.rows == 2822
