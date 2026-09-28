@@ -1,6 +1,8 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Licensed under the Apache License, Version 2.0.
 
+from __future__ import annotations
+
 import gzip
 import json
 import re

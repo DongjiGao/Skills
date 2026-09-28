@@ -18,6 +18,8 @@ the requested format. Empty references for disfluency removal remain valid.
 Named-entity-only metrics are not applicable to this style-rewrite benchmark.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
