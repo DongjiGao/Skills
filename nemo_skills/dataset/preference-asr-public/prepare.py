@@ -28,6 +28,8 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
+from nemo_skills.dataset.preference_asr_prompts import PROMPT_POLICY, rewrite_instruction
+
 BENCHMARK_NAME = "preference-asr-public"
 GITHUB_REPO = "nithinraok/preference-asr-bench"
 GITHUB_REVISION = "efa5cae9aecb56ce28aeea6105425ded654acbdd"
@@ -150,7 +152,12 @@ def _validate_manifest(rows: list[dict], contract: ManifestContract = MANIFEST_C
             raise ValueError(f"Preference-ASR row {row_number} is missing fields: {sorted(missing)}")
         corpus, _ = _source_audio_parts(row)
         duration = row["duration"]
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
             raise ValueError(f"Preference-ASR row {row_number} has invalid duration: {duration!r}")
         for field in ("text", "instruction"):
             if not isinstance(row[field], str) or not row[field].strip():
@@ -255,12 +262,16 @@ def _validate_wav(path: Path, expected_duration: float) -> None:
             observed = (stream.samplerate, stream.channels, stream.subtype)
             expected = (TARGET_SAMPLE_RATE, TARGET_CHANNELS, TARGET_SUBTYPE)
             if observed != expected or stream.frames < MINIMUM_AUDIO_SAMPLES:
-                raise ValueError(f"Preference-ASR audio contract failed for {path}: {observed}, frames={stream.frames}")
+                raise ValueError(
+                    f"Preference-ASR audio contract failed for {path}: {observed}, frames={stream.frames}"
+                )
             duration = stream.frames / stream.samplerate
     except RuntimeError as error:
         raise ValueError(f"Preference-ASR audio has an unreadable header: {path}") from error
     if abs(duration - expected_duration) > 0.11:
-        raise ValueError(f"Preference-ASR audio duration drift for {path}: metadata={expected_duration}, WAV={duration}")
+        raise ValueError(
+            f"Preference-ASR audio duration drift for {path}: metadata={expected_duration}, WAV={duration}"
+        )
 
 
 def _atomic_wav(path: Path, samples: np.ndarray) -> None:
@@ -305,7 +316,9 @@ def _materialize_esb(corpus: str, needed: dict[str, tuple[Path, float]], token: 
         dataset = dataset.cast_column("audio", Audio(decode=False))
         required = {"id", "audio"}
         if not required.issubset(dataset.column_names):
-            raise ValueError(f"Preference-ASR {corpus} source fields missing: {sorted(required-set(dataset.column_names))}")
+            raise ValueError(
+                f"Preference-ASR {corpus} source fields missing: {sorted(required - set(dataset.column_names))}"
+            )
         for sample in dataset:
             name = _id_to_flac_name(str(sample["id"]))
             if name not in missing:
@@ -351,7 +364,7 @@ def materialize_audio(rows: list[dict], data_root: Path, token: str | None = Non
 def _build_record(row: dict, row_number: int, profile: str) -> dict:
     corpus, source_filename = _source_audio_parts(row)
     audio_path = f"{_audio_prefix()}/{corpus}/{_target_filename(source_filename)}"
-    prompt = DEFAULT_PROMPT if profile == "default" else row["instruction"].strip()
+    prompt = DEFAULT_PROMPT if profile == "default" else rewrite_instruction(row["instruction"].strip())
     target_case = ""
     if row["preference_type"] == "case":
         matches = [
@@ -381,6 +394,8 @@ def _build_record(row: dict, row_number: int, profile: str) -> dict:
         "target_case": target_case,
         "preference_source_dataset": row["dataset"],
         "preference_prompt_variant": profile,
+        "source_instruction": row["instruction"].strip(),
+        "prompt_policy": PROMPT_POLICY,
         "subset_for_metrics": row["preference_type"],
         "extra_fields": {
             "source_repo": GITHUB_REPO,
@@ -464,6 +479,7 @@ def write_manifests(rows: list[dict], profiles: tuple[str, ...] = PROFILES) -> d
             "protocol_notes": {
                 "condition": profile,
                 "default_prompt": DEFAULT_PROMPT,
+                "prompt_policy": PROMPT_POLICY,
                 "reference": "preference_text",
                 "metrics": ["corpus_micro_standard_wer", "corpus_micro_preference_aware_wer"],
                 "case_release_contract_repair": "target_case recovered from the sole case sub_category",
@@ -486,7 +502,9 @@ def prepare(manifest: Path | None, data_root: Path, profiles: tuple[str, ...], t
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=None, help="Optional local copy; exact released SHA is required")
+    parser.add_argument(
+        "--manifest", type=Path, default=None, help="Optional local copy; exact released SHA is required"
+    )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--profile", action="append", choices=PROFILES)
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
