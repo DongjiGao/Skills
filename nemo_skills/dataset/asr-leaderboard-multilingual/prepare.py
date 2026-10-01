@@ -63,7 +63,9 @@ _monsoon_prepare = importlib.import_module("nemo_skills.dataset.voicearena-monso
 MONSOON_HINDI_CONTRACT = _monsoon_prepare.SOURCE_CONTRACTS["hi-in.public"]
 
 
-# Matches the official public multilingual evaluation matrix.
+# Official seven-language matrix plus prospective Mandarin/Japanese FLEURS tests.
+# Report the seven-language WER/OIWER macro separately from the nine-language
+# mixed WER/OIWER/CER macro; Chinese/Japanese are not official leaderboard entries.
 DATASET_CONFIGS = {
     "fleurs_de": DatasetSpec("fleurs_de", "de"),
     "fleurs_fr": DatasetSpec("fleurs_fr", "fr"),
@@ -71,6 +73,10 @@ DATASET_CONFIGS = {
     "fleurs_es": DatasetSpec("fleurs_es", "es"),
     "fleurs_pt": DatasetSpec("fleurs_pt", "pt"),
     "fleurs_nl": DatasetSpec("fleurs_nl", "nl"),
+    "fleurs_zh": DatasetSpec(
+        "cmn_hans_cn", "zh", repo="google/fleurs", revision="70bb2e84b976b7e960aa89f1c648e09c59f894dd"
+    ),
+    "fleurs_ja": DatasetSpec("ja_jp", "ja", repo="google/fleurs", revision="70bb2e84b976b7e960aa89f1c648e09c59f894dd"),
     "mcv_de": DatasetSpec("mcv_de", "de"),
     "mcv_es": DatasetSpec("mcv_es", "es"),
     "mcv_fr": DatasetSpec("mcv_fr", "fr"),
@@ -97,6 +103,8 @@ LANGUAGE_DATASETS = {
     "pt": ("fleurs_pt", "mls_pt"),
     "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
     "hi": ("monsoon_hi",),
+    "zh": ("fleurs_zh",),
+    "ja": ("fleurs_ja",),
 }
 
 
@@ -169,7 +177,10 @@ def format_entry(entry, index, dataset_name, audio_dir, spec, with_audio):
     elif entry.get("audio_length_s") is not None:
         duration = float(entry["audio_length_s"])
 
-    user_message = {"role": "user", "content": "Transcribe the following audio."}
+    prompt = "Transcribe the following audio."
+    if dataset_name == "monsoon_hi":
+        prompt += " " + _monsoon_prepare.script_instruction("hi-in")
+    user_message = {"role": "user", "content": prompt}
     audio_meta = {"path": f"{AUDIO_ROOT}/asr-leaderboard-multilingual/data/{dataset_name}/{audio_filename}"}
     if duration is not None:
         audio_meta["duration"] = float(duration)
@@ -205,12 +216,50 @@ def format_entry(entry, index, dataset_name, audio_dir, spec, with_audio):
     return formatted
 
 
+def prepare_fleurs_extension(dataset_name, output_dir, with_audio=True):
+    """Use the pinned TSV/tar FLEURS loader (no removed HF dataset script)."""
+    fleurs = importlib.import_module("nemo_skills.dataset.fleurs.prepare")
+    spec = DATASET_CONFIGS[dataset_name]
+    audio_dir = output_dir / "data" / dataset_name
+    if with_audio:
+        audio_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(os.environ.get("HF_HOME", str(output_dir / ".source-cache"))) / "fleurs"
+    records = []
+    rows, source_artifact = fleurs._load_product_locale_source(spec.config, "test", cache_dir)
+    for row in rows:
+        audio, rate = row["samples"], row["sampling_rate"]
+        duration = len(audio) / rate
+        if with_audio:
+            fleurs.save_audio(audio, rate, audio_dir / row["wav_filename"])
+        record = fleurs._build_record(
+            expected_answer=row["transcription"],
+            instruction="Transcribe the following audio.",
+            container_audio_path=f"{AUDIO_ROOT}/asr-leaderboard-multilingual/data/{dataset_name}/{row['wav_filename']}",
+            duration=duration,
+            subset_for_metrics=dataset_name,
+            task_type="ASR",
+            extra_fields=fleurs._src_extra_fields(row, spec.config, for_asr=True),
+        )
+        record["id"] = f"{dataset_name}-{Path(row['wav_filename']).stem}"
+        record["extra_fields"].update(source_repo=spec.repo, source_revision=spec.revision, source_split="test")
+        records.append(record)
+    with (output_dir / f"{dataset_name}.jsonl").open("w", encoding="utf-8") as stream:
+        for record in records:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    (output_dir / f"{dataset_name}.provenance.json").write_text(
+        json.dumps({"repo": spec.repo, "revision": spec.revision, "split": "test", **source_artifact}, indent=2) + "\n"
+    )
+    return len(records)
+
+
 def prepare_dataset(dataset_name, output_dir, with_audio=True):
     """Download, decode, and write a single multilingual leaderboard config."""
     if dataset_name not in DATASET_CONFIGS:
         raise ValueError(f"Unknown dataset: {dataset_name}. Available: {list(DATASET_CONFIGS.keys())}")
 
     spec = DATASET_CONFIGS[dataset_name]
+    if dataset_name in {"fleurs_zh", "fleurs_ja"}:
+        return prepare_fleurs_extension(dataset_name, output_dir, with_audio)
 
     print(f"Loading {dataset_name} from {spec.repo} (config={spec.config}, split={spec.split})...")
     load_kwargs = {"split": spec.split}

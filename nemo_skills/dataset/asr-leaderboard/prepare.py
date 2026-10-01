@@ -22,6 +22,7 @@ protocol so the prepared data matches the leaderboard exactly. In particular the
     - ami          -> config "ami_cleaned"          (sub-1s clips removed upstream)
     - gigaspeech   -> config "gigaspeech_cleaned"   (sub-1s clips removed upstream)
     - voxpopuli_aa -> config "voxpopuli_cleaned_aa" (Artificial Analysis cleaned refs)
+    - monsoon_en   -> pinned VoiceArena English test set
     - earnings22_aa -> ArtificialAnalysis/Earnings22-Cleaned-AA-chunked
 
 AA-Earnings22 contains 341 VAD-derived audio chunks but only six parent-call
@@ -38,6 +39,7 @@ Usage:
 """
 
 import argparse
+import importlib
 import io
 import json
 import os
@@ -54,6 +56,9 @@ from tqdm import tqdm
 from nemo_skills.evaluation.evaluator.open_asr_normalizer import OpenASREnglishTextNormalizer
 
 LEADERBOARD_REPO = "hf-audio/open-asr-leaderboard"
+LEADERBOARD_REVISION = "b6bdcd0beb34f8975dc659796176d88f43aff502"
+_monsoon_prepare = importlib.import_module("nemo_skills.dataset.voicearena-monsoon.prepare")
+MONSOON_ENGLISH_CONTRACT = _monsoon_prepare.SOURCE_CONTRACTS["en-in.public"]
 SYSTEM_MESSAGE = "You are a helpful assistant. /no_think"
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_ROOT = os.environ.get("NEMO_SKILLS_AUDIO_ROOT", "/data").rstrip("/")
@@ -68,6 +73,8 @@ class DatasetSpec:
     text_field: str = "text"
     id_field: str = "id"
     repo: str = LEADERBOARD_REPO
+    revision: str = LEADERBOARD_REVISION
+    parent_revision: str | None = None
     parent_repo: str | None = None
     parent_text_field: str = "transcript"
     parent_id_field: str = "parent_id"
@@ -91,10 +98,18 @@ DATASET_CONFIGS = {
         None,
         "test",
         repo="ArtificialAnalysis/Earnings22-Cleaned-AA-chunked",
+        revision="27f7d0056d593231974a752ce03c1e965da69b3f",
         parent_repo="ArtificialAnalysis/Earnings22-Cleaned-AA",
+        parent_revision="5999936ee3d8d3cde160e3c65a8cc6ff5b7c5276",
         audio_dir="audio",
     ),
     "ami": DatasetSpec("ami_cleaned", "test"),
+    "monsoon_en": DatasetSpec(
+        None,
+        "test",
+        repo=MONSOON_ENGLISH_CONTRACT.repo,
+        revision=MONSOON_ENGLISH_CONTRACT.revision,
+    ),
 }
 
 _NORMALIZER = OpenASREnglishTextNormalizer()
@@ -145,9 +160,11 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio, reference_tex
         return None
 
     sample_id = str(entry[spec.id_field]).replace("/", "_").replace(":", "_")
-    audio_filename = f"{Path(sample_id).stem}.flac"
+    audio_filename = f"{Path(sample_id).stem}{'.wav' if dataset_name == 'monsoon_en' else '.flac'}"
 
     audio_array, sampling_rate = extract_audio(entry.get("audio") if audio_info is None else audio_info)
+    if dataset_name == "monsoon_en" and with_audio:
+        audio_array, sampling_rate = _monsoon_prepare._decode_audio(entry.get("audio"))
     duration = None
     if audio_array is not None and sampling_rate is not None:
         if sampling_rate != AUDIO_SAMPLE_RATE:
@@ -160,7 +177,10 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio, reference_tex
     elif entry.get("audio_length_s", entry.get("duration")) is not None:
         duration = float(entry.get("audio_length_s", entry.get("duration")))
 
-    user_message = {"role": "user", "content": "Transcribe the following audio."}
+    prompt = "Transcribe the following audio."
+    if dataset_name == "monsoon_en":
+        prompt += " " + _monsoon_prepare.script_instruction("en-in")
+    user_message = {"role": "user", "content": prompt}
     audio_meta = {"path": f"{AUDIO_ROOT}/asr-leaderboard/data/{dataset_name}/{audio_filename}"}
     if duration is not None:
         audio_meta["duration"] = float(duration)
@@ -185,15 +205,15 @@ def format_entry(entry, dataset_name, audio_dir, spec, with_audio, reference_tex
 def load_source_dataset(spec: DatasetSpec):
     """Load a regular or chunked leaderboard dataset without decoding audio."""
     if spec.config is None:
-        return load_dataset(spec.repo, split=spec.split)
-    return load_dataset(spec.repo, spec.config, split=spec.split)
+        return load_dataset(spec.repo, split=spec.split, revision=spec.revision)
+    return load_dataset(spec.repo, spec.config, split=spec.split, revision=spec.revision)
 
 
 def load_parent_references(spec: DatasetSpec) -> dict[str, str]:
     """Load one transcript per parent session for a chunked dataset."""
     if not spec.is_chunked:
         return {}
-    parent_dataset = load_dataset(spec.parent_repo, split=spec.split)
+    parent_dataset = load_dataset(spec.parent_repo, split=spec.split, revision=spec.parent_revision)
     return {str(entry[spec.id_field]): entry[spec.parent_text_field] for entry in parent_dataset}
 
 
@@ -210,6 +230,11 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
         # decode=False -> raw encoded bytes, read with soundfile (no torchcodec).
         dataset = dataset.cast_column("audio", Audio(decode=False))
 
+    if dataset_name == "monsoon_en":
+        _monsoon_prepare._validate_metadata(
+            [dict(row) for row in dataset.remove_columns("audio")], MONSOON_ENGLISH_CONTRACT
+        )
+
     parent_references = load_parent_references(spec)
     if spec.is_chunked:
         missing_parent_ids = sorted({str(entry[spec.parent_id_field]) for entry in dataset} - set(parent_references))
@@ -225,6 +250,7 @@ def prepare_dataset(dataset_name, output_dir, with_audio=True):
             snapshot_download(
                 repo_id=spec.repo,
                 repo_type="dataset",
+                revision=spec.revision,
                 allow_patterns=[f"{spec.audio_dir}/*"],
             )
         )
