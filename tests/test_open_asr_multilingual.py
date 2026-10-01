@@ -282,13 +282,14 @@ def test_extended_macro_retains_official_language_comparison():
         "_all_": {"pass@1": {}},
         "fleurs_de": {"pass@1": {"wer": 6, "num_entries": 1}},
         "fleurs_zh": {"pass@1": {"wer": 3, "num_entries": 1}},
-        "fleurs_ja": {"pass@1": {"wer": 9, "num_entries": 1}},
+        "fleurs_ja": {"pass@1": {"wer": 12, "num_entries": 1}},
     }
     _set_asr_leaderboard_multilingual_macro_wer(metrics)
     assert metrics["_all_"]["pass@1"]["wer_official_languages"] == 6
-    assert metrics["_all_"]["pass@1"]["mixed_error_rate_extended"] == 6
+    assert metrics["_all_"]["pass@1"]["wer"] == 6
+    assert metrics["_all_"]["pass@1"]["mixed_error_rate_extended"] == 7
     assert metrics["zh"]["pass@1"]["wer"] == 3
-    assert metrics["ja"]["pass@1"]["wer"] == 9
+    assert metrics["ja"]["pass@1"]["wer"] == 12
 
 
 @pytest.mark.parametrize(

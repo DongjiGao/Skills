@@ -153,10 +153,14 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
         ]
         if official_wers:
             overall_metrics["wer_official_languages"] = round(sum(official_wers) / len(official_wers), 2)
+            overall_metrics["wer"] = overall_metrics["wer_official_languages"]
         if language_wers:
-            overall_metrics["wer"] = round(sum(language_wers) / len(language_wers), 2)
+            extended_mean = round(sum(language_wers) / len(language_wers), 2)
             if any(language in language_metrics_by_code for language in ("zh", "ja")):
-                overall_metrics["mixed_error_rate_extended"] = overall_metrics["wer"]
+                overall_metrics["mixed_error_rate_extended"] = extended_mean
+            if not official_wers:
+                # Extension-only selection has no official WER headline.
+                overall_metrics["wer"] = extended_mean
 
         for language, language_metrics in language_metrics_by_code.items():
             metrics.setdefault(language, {})[eval_mode] = language_metrics
