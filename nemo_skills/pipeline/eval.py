@@ -368,6 +368,17 @@ def eval(
         help="Additional sbatch kwargs for summarize-results tasks. Defaults to sbatch_kwargs when unset. "
         "Values should be provided as a JSON string or as a `dict` if invoking from code.",
     ),
+    summarize_mount_paths: str = typer.Option(
+        None,
+        help="Comma-separated src:dst[:ro|rw] mounts applied only to summarize-results and group-score tasks.",
+    ),
+    summarize_installation_command: str | None = typer.Option(
+        None,
+        help=(
+            "Installation/preflight command applied only to summarize-results "
+            "and group-score tasks. Defaults to installation_command when unset."
+        ),
+    ),
     extra_benchmark_map: str = typer.Option(
         None,
         help="Path to a JSON file mapping benchmark short names to directory paths. "
@@ -483,6 +494,14 @@ def eval(
     cluster_config = pipeline_utils.resolve_mount_paths(
         cluster_config, mount_paths, create_remote_dir=check_mounted_paths
     )
+    summarize_cluster_config = deepcopy(cluster_config)
+    if summarize_mount_paths:
+        summarize_cluster_config = pipeline_utils.resolve_mount_paths(
+            summarize_cluster_config,
+            summarize_mount_paths,
+            create_remote_dir=False,
+        )
+    summarize_installation_command = summarize_installation_command or installation_command
 
     env_vars = pipeline_utils.get_env_variables(cluster_config)
     data_dir = data_dir or env_vars.get("NEMO_SKILLS_DATA_DIR") or os.environ.get("NEMO_SKILLS_DATA_DIR")
@@ -927,8 +946,8 @@ def eval(
                     cmd=command,
                     task_name=f"{expname}-{benchmark}-summarize-results",
                     log_dir=f"{output_dir}/{benchmark_args.eval_subfolder}/summarized-results",
-                    container=cluster_config["containers"]["nemo-skills"],
-                    cluster_config=cluster_config,
+                    container=summarize_cluster_config["containers"]["nemo-skills"],
+                    cluster_config=summarize_cluster_config,
                     run_after=run_after,
                     reuse_code_exp=reuse_code_exp,
                     reuse_code=reuse_code,
@@ -936,7 +955,7 @@ def eval(
                     task_dependencies=(
                         dependent_tasks if cluster_config["executor"] == "slurm" else all_tasks + _task_dependencies
                     ),
-                    installation_command=installation_command,
+                    installation_command=summarize_installation_command,
                     skip_hf_home_check=skip_hf_home_check,
                     sbatch_kwargs=summarize_sbatch_kwargs,
                 )
@@ -962,8 +981,8 @@ def eval(
                     cmd=command,
                     task_name=f"{expname}-{group}-compute-score",
                     log_dir=f"{output_dir}/eval-results/{group}/compute-score-logs",
-                    container=cluster_config["containers"]["nemo-skills"],
-                    cluster_config=cluster_config,
+                    container=summarize_cluster_config["containers"]["nemo-skills"],
+                    cluster_config=summarize_cluster_config,
                     run_after=run_after,
                     reuse_code_exp=reuse_code_exp,
                     reuse_code=reuse_code,
@@ -971,7 +990,7 @@ def eval(
                     task_dependencies=(
                         group_tasks[group] if cluster_config["executor"] == "slurm" else all_tasks + _task_dependencies
                     ),
-                    installation_command=installation_command,
+                    installation_command=summarize_installation_command,
                     skip_hf_home_check=skip_hf_home_check,
                     sbatch_kwargs=summarize_sbatch_kwargs,
                 )

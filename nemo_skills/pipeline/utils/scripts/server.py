@@ -124,8 +124,16 @@ class ServerScript(BaseJobScript):
         # and obscures the allocator failure behind the server CLI's parser.
         # Assignment commands inherit the substitution's exit status, so the
         # ``&&`` chain fails before the server starts if allocation fails.
+        #
+        # Multi-node server commands execute once on every node. Only rank zero
+        # may probe and publish the frontend port because that is the node where
+        # the router binds it. If another rank wins the state-file lock, it can
+        # incorrectly approve a port that is already occupied on rank zero.
+        rank_expression = "${SLURM_NODEID:-${SLURM_PROCID:-0}}"
         cmd = (
-            f'NEMO_SKILLS_RUNTIME_PORT="$({allocation_command})" '
+            f'if [ "{rank_expression}" = "0" ]; then '
+            f'NEMO_SKILLS_RUNTIME_PORT="$({allocation_command})"; '
+            f'else NEMO_SKILLS_RUNTIME_PORT="{client_port}"; fi '
             f'&& test -n "$NEMO_SKILLS_RUNTIME_PORT" && {cmd}'
         )
         self.set_inline(cmd)

@@ -110,6 +110,9 @@ def test_server_script_uses_runtime_port_handoff_for_slurm_ports(monkeypatch, tm
     assert isinstance(script.inline, str)
     assert "python3 /nemo_run/code/nemo_skills/pipeline/utils/runtime_port.py allocate" in script.inline
     assert "--base-port $((20000+(${SLURM_JOB_ID:-0}*7919+2*1543" in script.inline
+    assert 'if [ "${SLURM_NODEID:-${SLURM_PROCID:-0}}" = "0" ]; then' in script.inline
+    assert script.inline.count("runtime_port.py allocate") == 1
+    assert script.inline.count("runtime_port.py wait") == 1
     assert '--port "${NEMO_SKILLS_RUNTIME_PORT}"' in script.inline
     assert '&& test -n "$NEMO_SKILLS_RUNTIME_PORT" &&' in script.inline
     assert "-2-0" in script.inline
@@ -224,3 +227,38 @@ def test_vllm_server_runtime_port_renders_and_matches_client(
     assert f"--port {served_port}" not in script.inline
     assert '--port "${NEMO_SKILLS_RUNTIME_PORT}"' in script.inline
     assert "python3 -m nemo_skills.pipeline" not in script.inline
+
+
+@pytest.mark.parametrize('rank', ['0', '1'])
+def test_only_rank_zero_can_allocate_runtime_frontend_port(monkeypatch, tmp_path, rank):
+    from nemo_skills.pipeline.utils.scripts import server as server_script
+
+    monkeypatch.setenv('NEMO_SKILLS_USE_SLURM_JOB_ID_PORTS', '1')
+    monkeypatch.setattr(server, '_SLURM_JOB_PORT_OFFSET', 0)
+    monkeypatch.setattr(
+        server_script, 'get_server_command',
+        lambda **kwargs: ('printf "STARTED:%s" ' + kwargs['server_port'], 1),
+    )
+    script = ServerScript(
+        server_type='vllm', model_path='fake-model', cluster_config={},
+        num_gpus=1, allocate_port=True,
+    )
+    allocation = script._runtime_port.server_allocation_command(str(tmp_path), 0)
+    local_runtime = Path(__file__).parents[1] / 'nemo_skills/pipeline/utils/runtime_port.py'
+    env = {**os.environ, 'SLURM_NODEID': rank, 'SLURM_JOB_ID': '7001'}
+    published = subprocess.check_output(
+        ['bash', '-c', allocation.replace(server.RUNTIME_PORT_SCRIPT, str(local_runtime))],
+        env=env, text=True,
+    ).strip()
+    script.configure_runtime_port(str(tmp_path))
+    command = script.inline.replace(allocation, 'echo ALLOCATION_ATTEMPT >&2; false')
+    command = command.replace(server.RUNTIME_PORT_SCRIPT, str(local_runtime))
+    result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True, timeout=5)
+    if rank == '0':
+        assert result.returncode != 0
+        assert 'ALLOCATION_ATTEMPT' in result.stderr
+        assert 'STARTED' not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert 'ALLOCATION_ATTEMPT' not in result.stderr
+        assert result.stdout == f'STARTED:{published}'

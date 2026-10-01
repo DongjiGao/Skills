@@ -18,9 +18,10 @@ The deterministic lattice-WER implementation below is a direct, dependency-
 free transcription of the MIT-licensed official scorer at revision
 ``af309592118b83fdf9b0ad896b564a142657aac8``. CTEM and TSR can use the offline
 ``deterministic_annotations_v1`` verifier, or the pinned release GPT-5.5
-verifier in explicit live/replay modes. The verifier ID and digest are carried
-into every metric artifact because values from the two verifiers are not
-interchangeable.
+verifier in the default live-fill mode. NVIDIA Inference Hub uses the same
+prompt and schema with a distinct endpoint, model alias, ID, and digest.
+The verifier ID and digest are carried into every metric artifact because
+values from these verifiers are not interchangeable.
 """
 
 import asyncio
@@ -30,7 +31,7 @@ import os
 import re
 import sys
 import typing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -46,6 +47,10 @@ from nemo_skills.utils import nested_dataclass
 
 OFFICIAL_REVISION = "af309592118b83fdf9b0ad896b564a142657aac8"
 FORMAT_INVARIANT_WER_REFERENCE = "acoustic_or_canonical_entity_lattice"
+PINNED_VERIFIER_ID = "openai_gpt_5_5_v1"
+NVIDIA_HUB_VERIFIER_ID = "nvidia_inference_hub_gpt_5_5_v1"
+NVIDIA_HUB_VERIFIER_MODEL = "openai/openai/gpt-5.5"
+NVIDIA_HUB_VERIFIER_ENDPOINT = "https://inference-api.nvidia.com/v1/chat/completions"
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
 TEMPLATE_ENTITY_RE = re.compile(r"<([^>]+)>")
 
@@ -227,8 +232,9 @@ def _load_official_package(data_dir: str) -> tuple[ModuleType, ModuleType, str]:
 
 @nested_dataclass(kw_only=True)
 class VoiceCodeBenchEvaluatorConfig(BaseEvaluatorConfig):
-    entity_verifier_mode: str = "deterministic"
-    verifier_id: str = "openai_gpt_5_5_v1"
+    entity_verifier_mode: str = "live-fill"
+    verifier_id: str = PINNED_VERIFIER_ID
+    verifier_provider: str = "nvidia-inference-hub"
     verifier_cache_path: str | None = None
     verifier_concurrency: int = 10
 
@@ -244,6 +250,8 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
             raise ValueError(
                 "entity_verifier_mode must be off, deterministic, live, replay, or live-fill"
             )
+        if self.eval_config.verifier_provider not in {"openai", "nvidia-inference-hub"}:
+            raise ValueError("verifier_provider must be openai or nvidia-inference-hub")
 
     async def eval_full(self) -> None:
         if not self.eval_config.input_file or not self.eval_config.data_dir:
@@ -251,9 +259,23 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
         official_root = str(_official_root(self.eval_config.data_dir))
         official_verifier: ModuleType | None = None
         verifier_config = None
+        verifier_provider = self.eval_config.verifier_provider
+        api_key_name = (
+            "NVIDIA_INFERENCE_HUB_API_KEY" if verifier_provider == "nvidia-inference-hub" else "OPENAI_API_KEY"
+        )
+        api_key = os.environ.get(api_key_name, "").strip()
         if self.eval_config.entity_verifier_mode in {"live", "replay", "live-fill"}:
             _, official_verifier, official_root = _load_official_package(self.eval_config.data_dir)
             verifier_config = official_verifier.load_verifier_config(self.eval_config.verifier_id)
+            if verifier_provider == "nvidia-inference-hub":
+                if verifier_config.id != PINNED_VERIFIER_ID or verifier_config.model != "gpt-5.5":
+                    raise ValueError("NVIDIA Inference Hub requires the pinned GPT-5.5 verifier config")
+                verifier_config = replace(
+                    verifier_config,
+                    id=NVIDIA_HUB_VERIFIER_ID,
+                    model=NVIDIA_HUB_VERIFIER_MODEL,
+                    endpoint_or_api=NVIDIA_HUB_VERIFIER_ENDPOINT,
+                )
         input_path = Path(self.eval_config.input_file)
         cache_path = Path(
             self.eval_config.verifier_cache_path
@@ -262,11 +284,11 @@ class VoiceCodeBenchEvaluator(BaseEvaluator):
         cache = None
         if official_verifier is not None and self.eval_config.entity_verifier_mode in {"replay", "live-fill"}:
             cache = official_verifier.VerifierCache(cache_path)
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if self.eval_config.entity_verifier_mode in {"live", "live-fill"} and not api_key:
             raise RuntimeError(
-                "VoiceCodeBench official CTEM/TSR requires OPENAI_API_KEY for the pinned GPT-5.5 verifier. "
-                "Use entity_verifier_mode=replay with a complete cache, or explicitly use off for WER-only diagnostics."
+                f"VoiceCodeBench GPT-5.5 CTEM/TSR requires {api_key_name} for {verifier_provider}. "
+                "Use entity_verifier_mode=replay with a complete cache, "
+                "or explicitly use off for WER-only diagnostics."
             )
 
         rows = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()]

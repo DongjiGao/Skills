@@ -16,12 +16,14 @@
 
 The model receives only raw audio and a generic transcription instruction.
 Format-invariant WER follows the released scorer. By default, CTEM/TSR use the
-offline, annotation-only ``deterministic_annotations_v1`` verifier. It accepts
-only exact canonical or expected-acoustic values after versioned formatting
-normalization. These deterministic scores are reproducible but are not
-interchangeable with release scores from ``openai_gpt_5_5_v1``. Use explicit
-``live``/``replay`` verifier settings when official-release comparability is
-required. Entity values and metadata remain scorer-only fields.
+pinned GPT-5.5 verifier prompt and schema in ``live-fill`` mode, reusing cached
+responses when available. The default NVIDIA Inference Hub route reads
+NVIDIA_INFERENCE_HUB_API_KEY. Set ``verifier_provider=openai`` to use the public
+OpenAI endpoint with OPENAI_API_KEY. The Hub route has a distinct verifier ID
+and cache digest; report its scores separately from direct OpenAI verifier scores.
+The offline ``deterministic_annotations_v1`` verifier remains available as an
+explicit diagnostic mode; its scores are not interchangeable with release
+scores. Entity values and metadata remain scorer-only fields.
 
 Dataset/scorer: https://huggingface.co/datasets/besimple-ai/voice-code-bench
 """
@@ -30,7 +32,9 @@ REQUIRES_DATA_DIR = True
 METRICS_TYPE = "voice_code_bench"
 EVAL_ARGS = (
     "++eval_type=voice_code_bench "
-    "++eval_config.entity_verifier_mode=deterministic"
+    "++eval_config.entity_verifier_mode=live-fill "
+    "++eval_config.verifier_id=openai_gpt_5_5_v1 "
+    "++eval_config.verifier_provider=nvidia-inference-hub"
 )
 GENERATION_ARGS = (
     "++prompt_format=openai ++enable_audio=true "
