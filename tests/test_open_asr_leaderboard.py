@@ -47,6 +47,7 @@ def test_public_dataset_membership_matches_current_leaderboard():
         "librispeech_other",
         "spgispeech",
         "voxpopuli_aa",
+        "monsoon_en",
     }
     spec = prepare.DATASET_CONFIGS["earnings22_aa"]
     assert spec.repo == "ArtificialAnalysis/Earnings22-Cleaned-AA-chunked"

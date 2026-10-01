@@ -36,6 +36,8 @@ def test_multilingual_leaderboard_config_matrix_matches_official_public_set():
         "fleurs_es",
         "fleurs_pt",
         "fleurs_nl",
+        "fleurs_zh",
+        "fleurs_ja",
         "mcv_de",
         "mcv_es",
         "mcv_fr",
@@ -48,9 +50,11 @@ def test_multilingual_leaderboard_config_matrix_matches_official_public_set():
         "mls_nl",
         "monsoon_hi",
     }
-    assert {spec.revision for name, spec in prepare.DATASET_CONFIGS.items() if name != "monsoon_hi"} == {
-        prepare.LEADERBOARD_REVISION
-    }
+    assert {
+        spec.revision
+        for name, spec in prepare.DATASET_CONFIGS.items()
+        if name not in {"monsoon_hi", "fleurs_zh", "fleurs_ja"}
+    } == {prepare.LEADERBOARD_REVISION}
     assert prepare.DATASET_CONFIGS["monsoon_hi"].revision == prepare.MONSOON_HINDI_CONTRACT.revision
     assert prepare.LANGUAGE_DATASETS == {
         "de": ("fleurs_de", "mcv_de"),
@@ -60,6 +64,8 @@ def test_multilingual_leaderboard_config_matrix_matches_official_public_set():
         "pt": ("fleurs_pt", "mls_pt"),
         "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
         "hi": ("monsoon_hi",),
+        "zh": ("fleurs_zh",),
+        "ja": ("fleurs_ja",),
     }
 
 
@@ -269,3 +275,41 @@ def test_multilingual_leaderboard_summary_adds_language_and_overall_means():
     assert metrics["nl"]["pass@1"]["wer"] == 8.0
     assert metrics["hi"]["pass@1"]["wer"] == 12.0
     assert metrics["_all_"]["pass@1"]["wer"] == 23.75
+
+
+def test_extended_macro_retains_official_language_comparison():
+    metrics = {
+        "_all_": {"pass@1": {}},
+        "fleurs_de": {"pass@1": {"wer": 6, "num_entries": 1}},
+        "fleurs_zh": {"pass@1": {"wer": 3, "num_entries": 1}},
+        "fleurs_ja": {"pass@1": {"wer": 12, "num_entries": 1}},
+    }
+    _set_asr_leaderboard_multilingual_macro_wer(metrics)
+    assert metrics["_all_"]["pass@1"]["wer_official_languages"] == 6
+    assert metrics["_all_"]["pass@1"]["wer"] == 6
+    assert metrics["_all_"]["pass@1"]["mixed_error_rate_extended"] == 7
+    assert metrics["zh"]["pass@1"]["wer"] == 3
+    assert metrics["ja"]["pass@1"]["wer"] == 12
+
+
+@pytest.mark.parametrize(
+    ("name", "locale", "text"), [("fleurs_zh", "cmn_hans_cn", "你好世界"), ("fleurs_ja", "ja_jp", "こんにちは世界")]
+)
+def test_fleurs_extensions_use_pinned_test_source_and_cer(name, locale, text, tmp_path, monkeypatch):
+    import json
+
+    fleurs = import_module("nemo_skills.dataset.fleurs.prepare")
+    calls = []
+
+    def load(src_locale, split, cache_dir):
+        calls.append((src_locale, split))
+        return ([{"id": 7, "transcription": text, "raw_transcription": text, "wav_filename": "sample.wav",
+                  "samples": [0] * 16000, "sampling_rate": 16000}], {"rows": 1})
+    monkeypatch.setattr(fleurs, "_load_product_locale_source", load)
+    assert prepare.prepare_fleurs_extension(name, tmp_path, with_audio=False) == 1
+    record = json.loads((tmp_path / f"{name}.jsonl").read_text())
+    assert calls == [(locale, "test")]
+    assert record["extra_fields"]["use_cer"] is True
+    assert record["extra_fields"]["source_revision"] == fleurs.HF_REVISION
+    assert record["expected_answer"] == text
+    assert record["id"] == f"{name}-sample"

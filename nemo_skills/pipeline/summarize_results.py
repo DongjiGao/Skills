@@ -66,6 +66,8 @@ ASR_LEADERBOARD_MULTILINGUAL_LANGUAGE_DATASETS = {
     "pt": ("fleurs_pt", "mls_pt"),
     "nl": ("fleurs_nl", "mcv_nl", "mls_nl"),
     "hi": ("monsoon_hi",),
+    "zh": ("fleurs_zh",),
+    "ja": ("fleurs_ja",),
 }
 
 ASR_LEADERBOARD_LONGFORM_PRIMARY_SUBSETS = ("earnings21", "earnings22", "tedlium")
@@ -98,7 +100,9 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
     """Add language averages and set _all_ WER to the official language mean.
 
     The HF multilingual leaderboard first averages dataset-level WER within each
-    language, then averages the seven language scores. Dataset-specific entries
+    language, then averages the language scores. Mandarin and Japanese are prospective
+    extensions scored with CER; retain the official seven-language mean separately.
+    Dataset-specific entries
     are retained and synthetic language entries are added for reporting.
     """
     if "_all_" not in metrics:
@@ -144,8 +148,19 @@ def _set_asr_leaderboard_multilingual_macro_wer(metrics: dict):
 
             language_metrics_by_code[language] = language_metrics
 
+        official_wers = [
+            value["wer"] for language, value in language_metrics_by_code.items() if language not in {"zh", "ja"}
+        ]
+        if official_wers:
+            overall_metrics["wer_official_languages"] = round(sum(official_wers) / len(official_wers), 2)
+            overall_metrics["wer"] = overall_metrics["wer_official_languages"]
         if language_wers:
-            overall_metrics["wer"] = round(sum(language_wers) / len(language_wers), 2)
+            extended_mean = round(sum(language_wers) / len(language_wers), 2)
+            if any(language in language_metrics_by_code for language in ("zh", "ja")):
+                overall_metrics["mixed_error_rate_extended"] = extended_mean
+            if not official_wers:
+                # Extension-only selection has no official WER headline.
+                overall_metrics["wer"] = extended_mean
 
         for language, language_metrics in language_metrics_by_code.items():
             metrics.setdefault(language, {})[eval_mode] = language_metrics

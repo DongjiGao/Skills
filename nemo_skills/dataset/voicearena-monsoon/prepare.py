@@ -172,9 +172,7 @@ def _resample_to_output_rate(samples: np.ndarray, source_rate: int) -> np.ndarra
         expected_frames = (source_frames * EXPECTED_SAMPLE_RATE + source_rate - 1) // source_rate
     samples = np.asarray(samples, dtype=np.float32)
     if samples.shape != (expected_frames,):
-        raise ValueError(
-            f"Monsoon deterministic resampler produced {samples.size} frames; expected {expected_frames}"
-        )
+        raise ValueError(f"Monsoon deterministic resampler produced {samples.size} frames; expected {expected_frames}")
     if samples.size < MINIMUM_AUDIO_SAMPLES or not np.isfinite(samples).all():
         raise ValueError(f"Monsoon canonical audio is invalid: shape={samples.shape}")
     return samples
@@ -248,6 +246,14 @@ def _materialize_audio(dataset, rows: list[dict], contract: SourceContract, data
         _validate_wav(path, float(metadata["audio_length_s"]))
 
 
+def script_instruction(language: str) -> str:
+    """Keep Monsoon transcripts in the evaluation language's writing system."""
+    return {
+        "en-in": "Use Latin script only.",
+        "hi-in": "Use Devanagari script for Hindi and Latin script for English words.",
+    }[language]
+
+
 def _build_record(row: dict, contract: SourceContract) -> dict:
     audio_path = f"{_audio_prefix(contract)}/{row['id']}.wav"
     if contract.reference_field == "text":
@@ -262,9 +268,9 @@ def _build_record(row: dict, contract: SourceContract) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": USER_PROMPT,
+                "content": f"{USER_PROMPT} {script_instruction(contract.language)}",
                 "audio": {"path": audio_path, "duration": float(row["audio_length_s"])},
-            }
+            },
         ],
         "expected_answer": expected_answer,
         "audio_filepath": audio_path,
