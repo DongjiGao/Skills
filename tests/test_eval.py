@@ -435,6 +435,66 @@ def test_eval_explicit_small_scorer_contract_has_no_time_min(monkeypatch, tmp_pa
     assert "time_min" not in captured[0]["sbatch_kwargs"]
 
 
+def test_eval_summarizer_uses_isolated_mounts_and_preflight(monkeypatch, tmp_path):
+    def benchmark_args():
+        return eval_utils.BenchmarkArgs(
+            name="gsm8k",
+            input_file="/tmp/gsm8k.jsonl",
+            generation_args="",
+            judge_args="",
+            judge_pipeline_args={},
+            requires_sandbox=False,
+            keep_mounts_for_sandbox=False,
+            generation_module="nemo_skills.inference.generate",
+            num_samples=0,
+            num_chunks=None,
+            eval_subfolder="eval-results/gsm8k",
+            metrics_type="math",
+        )
+
+    _patch_eval_for_sbatch_tests(monkeypatch, benchmark_args)
+    mount_calls = []
+
+    def resolve_mounts(config, mounts, create_remote_dir=False):
+        mount_calls.append((id(config), mounts, create_remote_dir))
+        if mounts:
+            config.setdefault("mounts", []).append(mounts)
+        return config
+
+    monkeypatch.setattr(
+        eval_pipeline.pipeline_utils, "resolve_mount_paths", resolve_mounts
+    )
+    captured = []
+
+    def fake_add_task(*args, **kwargs):
+        captured.append(kwargs)
+        return f"task-{len(captured)}"
+
+    monkeypatch.setattr(eval_pipeline.pipeline_utils, "add_task", fake_add_task)
+    scorer_mount = "/immutable/ipadic:/opt/venv/site-packages/ipadic/dicdir:ro"
+    eval_pipeline.eval(
+        ctx=SimpleNamespace(args=[]),
+        cluster="test-cluster",
+        output_dir=str(tmp_path),
+        benchmarks="gsm8k",
+        model="model",
+        server_type="openai",
+        server_address="http://server",
+        installation_command="producer-setup",
+        summarize_mount_paths=scorer_mount,
+        summarize_installation_command="scorer-preflight",
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["installation_command"] == "scorer-preflight"
+    assert captured[0]["cluster_config"]["mounts"] == [scorer_mount]
+    assert mount_calls == [
+        (mount_calls[0][0], None, False),
+        (mount_calls[1][0], scorer_mount, False),
+    ]
+    assert mount_calls[0][0] != mount_calls[1][0]
+
+
 def test_eval_judge_sbatch_kwargs_override(monkeypatch, tmp_path):
     def benchmark_args():
         return eval_utils.BenchmarkArgs(

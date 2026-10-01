@@ -243,7 +243,8 @@ def get_packager(extra_package_dirs: tuple[str] | None = None):
                 continue
 
             repo_path = repo_meta.path
-            if get_git_repo_path(repo_path):
+            # Forced pattern packaging also applies to nested external snapshots.
+            if not force_pattern_packager and get_git_repo_path(repo_path):
                 # Extra repos is a git repos, so we need to package only committed files
                 # but also pick up generated jsonl files that may not be committed
                 git_root = Path(get_git_repo_path(repo_path)).resolve()

@@ -506,6 +506,9 @@ class _EnglishReverseNumberNormalizer(_EnglishNumberNormalizer):
 
         def number_to_words(w: str):
             if w.isdigit():
+                # Avoid pathological generated digit strings in num2words.
+                if len(w) > 64:
+                    return w
                 num = int(w)
                 if w == "000":
                     return "thousand"

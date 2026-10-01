@@ -4,11 +4,14 @@
 import asyncio
 import json
 import typing
+from dataclasses import dataclass
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from nemo_skills.evaluation.evaluator import voice_code_bench as voice_code_bench_scorer
 from nemo_skills.evaluation.evaluator.voice_code_bench import (
     OFFICIAL_REVISION,
     VoiceCodeBenchEvaluator,
@@ -51,6 +54,127 @@ def _load_prepare_module():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_default_voice_code_bench_uses_release_verifier():
+    path = Path(__file__).parents[1] / "nemo_skills" / "dataset" / "voice-code-bench" / "__init__.py"
+    spec = spec_from_file_location("voice_code_bench_benchmark", path)
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.EVAL_ARGS.split() == [
+        "++eval_type=voice_code_bench",
+        "++eval_config.entity_verifier_mode=live-fill",
+        "++eval_config.verifier_id=openai_gpt_5_5_v1",
+        "++eval_config.verifier_provider=nvidia-inference-hub",
+    ]
+    evaluator = VoiceCodeBenchEvaluator({})
+    assert evaluator.eval_config.entity_verifier_mode == "live-fill"
+    assert evaluator.eval_config.verifier_id == "openai_gpt_5_5_v1"
+    assert evaluator.eval_config.verifier_provider == "nvidia-inference-hub"
+
+
+@dataclass(frozen=True)
+class _VerifierConfig:
+    id: str = "openai_gpt_5_5_v1"
+    model: str = "gpt-5.5"
+    endpoint_or_api: str = "https://api.openai.com/v1/chat/completions"
+
+    @property
+    def digest(self):
+        return f"{self.id}:{self.model}:{self.endpoint_or_api}"
+
+
+@pytest.mark.parametrize(
+    ("hub_key", "openai_key", "provider", "expected_id", "expected_model", "expected_endpoint", "expected_key"),
+    [
+        (
+            "hub-key", "openai-key", None, "nvidia_inference_hub_gpt_5_5_v1", "openai/openai/gpt-5.5",
+            "https://inference-api.nvidia.com/v1/chat/completions", "hub-key",
+        ),
+        (
+            "hub-key", "openai-key", "openai", "openai_gpt_5_5_v1", "gpt-5.5",
+            "https://api.openai.com/v1/chat/completions", "openai-key",
+        ),
+    ],
+)
+def test_default_voice_code_bench_scores_with_pinned_live_fill_verifier(
+    tmp_path, monkeypatch, hub_key, openai_key, provider, expected_id, expected_model, expected_endpoint, expected_key
+):
+    root = tmp_path / "voice-code-bench"
+    root.mkdir()
+    (root / "NEMO_SKILLS_REVISION").write_text(OFFICIAL_REVISION, encoding="utf-8")
+    datapoint = _phone_datapoint()
+    input_path = tmp_path / "predictions.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "audio_id": "phone",
+                "generation": "Call area code 212-555-0100 tomorrow",
+                "voice_code_bench_revision": OFFICIAL_REVISION,
+                "voice_code_bench": datapoint,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+    verifier_config = _VerifierConfig()
+
+    def verify_entity_matches(*args, **kwargs):
+        calls.append(("verify", kwargs["cache_mode"], args[2], args[3]["OPENAI_API_KEY"]))
+        return [{"present": True}]
+
+    verifier = SimpleNamespace(
+        load_verifier_config=lambda verifier_id: (
+            calls.append(("config", verifier_id)) or verifier_config
+        ),
+        VerifierCache=lambda path: (calls.append(("cache", path)) or object()),
+        verify_entity_matches=verify_entity_matches,
+    )
+    monkeypatch.setattr(
+        voice_code_bench_scorer,
+        "_load_official_package",
+        lambda data_dir: (None, verifier, str(root)),
+    )
+    monkeypatch.setenv("NVIDIA_INFERENCE_HUB_API_KEY", hub_key)
+    monkeypatch.setenv("OPENAI_API_KEY", openai_key)
+
+    config = {"input_file": str(input_path), "data_dir": str(tmp_path)}
+    if provider is not None:
+        config["verifier_provider"] = provider
+    asyncio.run(VoiceCodeBenchEvaluator(config).eval_full())
+
+    result = json.loads(input_path.read_text(encoding="utf-8"))
+    assert calls[0] == ("config", "openai_gpt_5_5_v1")
+    _, mode, config, key = calls[-1]
+    assert mode == "live-fill"
+    assert key == expected_key
+    assert config.id == expected_id
+    assert config.model == expected_model
+    assert config.endpoint_or_api == expected_endpoint
+    assert result["voice_code_verifier_id"] == expected_id
+    assert result["voice_code_verifier_config_digest"] == config.digest
+    assert result["voice_code_correct_entities"] == 1
+
+
+def test_default_voice_code_bench_requires_hub_key_even_if_openai_key_exists(tmp_path, monkeypatch):
+    root = tmp_path / "voice-code-bench"
+    root.mkdir()
+    (root / "NEMO_SKILLS_REVISION").write_text(OFFICIAL_REVISION, encoding="utf-8")
+    input_path = tmp_path / "predictions.jsonl"
+    input_path.write_text("", encoding="utf-8")
+    verifier = SimpleNamespace(
+        load_verifier_config=lambda _: _VerifierConfig(),
+        VerifierCache=lambda _: object(),
+    )
+    monkeypatch.setattr(voice_code_bench_scorer, "_load_official_package", lambda _: (None, verifier, str(root)))
+    monkeypatch.delenv("NVIDIA_INFERENCE_HUB_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    with pytest.raises(RuntimeError, match="NVIDIA_INFERENCE_HUB_API_KEY"):
+        asyncio.run(VoiceCodeBenchEvaluator({"input_file": str(input_path), "data_dir": str(tmp_path)}).eval_full())
 
 
 def test_format_invariant_wer_accepts_acoustic_and_canonical_entity_forms():

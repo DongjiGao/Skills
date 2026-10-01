@@ -58,6 +58,25 @@ def _inject_if_missing(extra_arguments: str, needle: str, insertion: str) -> str
     return f"{insertion}{extra_arguments}"
 
 
+def _resolve_server_ipv4_once(host_variables: List[str]) -> str:
+    """Resolve Slurm server hostnames before launching many HTTP clients."""
+    commands: List[str] = []
+    for variable in sorted(set(host_variables)):
+        commands.append(
+            f'_nemo_server_name="${{{variable}:-}}"; '
+            'test -n "$_nemo_server_name" || { echo "missing Slurm server hostname" >&2; exit 43; }; '
+            '_nemo_server_ip=""; '
+            'for _nemo_dns_attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do '
+            '_nemo_server_ip=$(getent ahostsv4 "$_nemo_server_name" 2>/dev/null '
+            "| awk 'NR==1 {print $1}' || true); "
+            'test -n "$_nemo_server_ip" && break; sleep 2; '
+            'done; '
+            'test -n "$_nemo_server_ip" || { echo "server IPv4 resolution failed" >&2; exit 43; }; '
+            f'export {variable}="$_nemo_server_ip"; '
+        )
+    return "".join(commands)
+
+
 def _inject_single_server_overrides(
     *,
     extra_arguments: str,
@@ -167,6 +186,13 @@ class EvalClientScript(BaseJobScript):
             else:
                 combined = _combine_cmds(cmds, self.single_node_mode)
             combined = wrap_python_path(combined)
+            if self.servers is not None:
+                host_variables = [
+                    "SLURM_MASTER_NODE" if server.het_group_index is None
+                    else f"SLURM_MASTER_NODE_HET_GROUP_{server.het_group_index}"
+                    for server in self.servers if server is not None
+                ]
+                combined = _resolve_server_ipv4_once(host_variables) + combined
             return combined, {"environment": env_vars}
 
         self.set_inline(build_cmd)
