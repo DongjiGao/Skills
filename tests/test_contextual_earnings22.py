@@ -159,7 +159,7 @@ def test_contextual_earnings22_publishes_decoded_duration_and_preserves_nominal_
     assert sample["duration"] == 14.5199375
     assert sample["source_duration"] == 15.0
     assert sample["duration_policy"] == "decoded_wav_frames_divided_by_16000"
-    assert sample["preparation_schema_version"] == 2
+    assert sample["preparation_schema_version"] == prepare.PREPARATION_SCHEMA_VERSION
     prepare._validate_samples([sample], tmp_path, require_audio=True)
 
     record = prepare.format_entry(sample, "contextless", "/data/ce22")
@@ -221,7 +221,7 @@ def test_contextual_earnings22_records_unique_mode_id_and_source_provenance(
         "revision": "59d7f94771cc197984d8038e494c83abeff87282",
         "split": "test",
         "expected_rows": 1,
-        "preparation_schema_version": 2,
+        "preparation_schema_version": 3,
         "duration_policy": "decoded_wav_frames_divided_by_16000",
     }
     assert row["messages"][0]["audio"]["path"].startswith("/data/ce22/audio/")
@@ -273,3 +273,30 @@ def test_contextual_earnings22_publication_rejects_row_count_drift(tmp_path, mon
     with pytest.raises(ValueError, match="publication row-count drift"):
         prepare.publish_manifests([_sample()], tmp_path, "/data/contextual-earnings22")
     assert not (tmp_path / prepare.PROVENANCE_FILENAME).exists()
+
+
+def test_openbench_scoring_normalizes_numbers_and_uses_transcript_reference():
+    from nemo_skills.evaluation.evaluator.contextual_earnings22 import evaluate_contextual_earnings22_sample
+
+    point = {
+        "expected_answer": "close to millions clients",  # norm_text drops digits
+        "expected_answer_cased": "close to 50 millions clie",  # text is cut mid-word
+        "reference_transcript": "close to 50 millions clients",
+        "generation": "Close to fifty millions clients.",
+        "keyword_list": ["clients"],
+    }
+    result = evaluate_contextual_earnings22_sample(point)
+    assert result["scoring"] == "openbench-v1"
+    assert result["wer_errors"] == 0
+    assert (result["keyword_tp"], result["keyword_fp"], result["keyword_fn"]) == (1, 0, 0)
+    assert result["legacy_wer_errors"] > 0
+
+
+def test_openbench_keyword_stats_counts_multiword_fp():
+    from nemo_skills.evaluation.evaluator.contextual_earnings22 import openbench_keyword_stats
+
+    tp, gt, fp = openbench_keyword_stats(
+        "we met goldman sachs today", "we met goldman sachs and goldman sachs", ["Goldman Sachs"]
+    )
+    assert (tp, gt) == (1, 1)
+    assert fp == 1

@@ -89,3 +89,16 @@ def test_apptek_callcenter_preprocess_forwards_prediction_flag():
 def test_apptek_callcenter_hesitations_override_word_mappings():
     """Hesitation removals take precedence over broader word normalisations."""
     assert preprocess_asr_text("ahh hello", mode="apptek_callcenter") == "hello"
+
+
+def test_resolve_bleu_tokenize_handles_locale_variants():
+    from nemo_skills.evaluation.evaluator.audio import resolve_bleu_tokenize
+
+    assert resolve_bleu_tokenize("zh-CN") == "zh"
+    assert resolve_bleu_tokenize("zh_TW") == "zh"
+    assert resolve_bleu_tokenize("cmn_hans_cn") == "zh"
+    assert resolve_bleu_tokenize("ja-JP") == "ja-mecab"
+    assert resolve_bleu_tokenize("ko_kr") == "ko-mecab"
+    assert resolve_bleu_tokenize("th_th") == "flores200"
+    assert resolve_bleu_tokenize("de") == "13a"
+    assert resolve_bleu_tokenize(None) == "13a"
