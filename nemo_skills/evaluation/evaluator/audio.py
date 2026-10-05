@@ -1119,14 +1119,25 @@ _BLEU_TOKENIZE_BY_LANG = {
     "cmn": "zh",
     "yue": "zh",
     "ko": "ko-mecab",
+    # Scripts written without spaces between words have no dedicated sacrebleu
+    # tokenizer; 13a would treat a whole sentence as one token. Use the FLORES-200
+    # SentencePiece model (spBLEU), the standard choice for these languages.
+    "th": "flores200",
+    "lo": "flores200",
+    "my": "flores200",
+    "km": "flores200",
 }
 
 
 def resolve_bleu_tokenize(tgt_lang: str | None) -> str:
-    """Resolve sacrebleu tokenize from a target language code."""
+    """Resolve sacrebleu tokenize from a target language code.
+
+    Accepts plain ISO codes ("zh"), FLEURS locales ("cmn_hans_cn") and BCP-47
+    style tags ("zh-CN", "zh-Hans").
+    """
     if not isinstance(tgt_lang, str):
         return "13a"
-    lang_code = tgt_lang.split("_")[0]
+    lang_code = re.split(r"[-_]", tgt_lang.strip())[0].lower()
     return _BLEU_TOKENIZE_BY_LANG.get(lang_code, "13a")
 
 

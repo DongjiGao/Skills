@@ -52,6 +52,9 @@ class TranslationMetrics(BaseMetrics):
             if tgt_lang[:2] == "ko":
                 install_packages(tgt_lang[:2])
                 tokenize = "ko-mecab"
+            if tgt_lang[:2] in ("th", "lo", "my", "km"):
+                # Unspaced scripts: FLORES-200 SentencePiece tokenization (spBLEU).
+                tokenize = "flores200"
 
             bleu_scores = []
             for i in range(num_seeds):

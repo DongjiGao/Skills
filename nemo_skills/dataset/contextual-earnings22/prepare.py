@@ -55,7 +55,7 @@ SPLIT = "test"
 SAMPLING_RATE = 16000
 EXPECTED_ROWS = 772
 MINIMUM_AUDIO_SAMPLES = 320
-PREPARATION_SCHEMA_VERSION = 2
+PREPARATION_SCHEMA_VERSION = 3  # v3: adds reference_transcript (OpenBench scoring reference)
 DURATION_POLICY = "decoded_wav_frames_divided_by_16000"
 PROVENANCE_FILENAME = "provenance.json"
 
@@ -372,6 +372,9 @@ def format_entry(sample: dict, mode: str, audio_prefix: str) -> dict:
         "messages": build_messages(prompt, audio_path, sample["duration"]),
         "expected_answer": sample["norm_text"],
         "expected_answer_cased": sample["text"],
+        # Word-level reference used by OpenBench scoring; ``text`` is cut at
+        # character boundaries and ``norm_text`` drops digits.
+        "reference_transcript": " ".join(sample["transcript_tokens"]),
         "keyword_list": eval_keywords,
         "local_keywords": local_keywords,
         "global_keywords": global_keywords,

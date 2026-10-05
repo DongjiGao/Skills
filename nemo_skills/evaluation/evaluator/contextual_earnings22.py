@@ -14,7 +14,25 @@
 
 """Contextual Earnings-22 evaluator: WER + keyword Precision / Recall / F1.
 
-Implements the metric defined in the Contextual Earnings-22 paper (Argmax,
+Scoring follows Argmax OpenBench (``earnings22-keywords``), which publishes the
+reference results for this benchmark:
+
+- WER: OpenBench's English text normalizer (vendored in
+  ``openbench_normalizer``; expands contractions, removes fillers, converts
+  spoken numbers to digits, standardizes spelling) applied to the original
+  cased reference and the hypothesis, scored with ``jiwer``.
+- Keywords: OpenBench's keyword algorithm. Reference, hypothesis and keywords
+  are normalized with Whisper's ``BasicTextNormalizer``; a keyword n-gram in the
+  reference is a TP when the aligned hypothesis words match it, and a keyword
+  n-gram in the hypothesis that is not aligned to the same reference words is
+  an FP.
+
+The legacy scoring below (``normalize_text`` + ``calculate_wer_with_alignment``)
+lowercases and strips punctuation only, and scores against the dataset's
+``norm_text``, which drops digits from the reference; it is kept for reference
+and reported under ``legacy_*`` keys.
+
+Legacy metric definition, after the Contextual Earnings-22 paper (Argmax,
 2025, Section 3):
 
 - WER: standard word error rate computed with edit-distance DP.
@@ -156,7 +174,7 @@ def _find_subseq_occurrences(tokens: list[str], pattern: list[str]) -> list[int]
     return out
 
 
-def evaluate_contextual_earnings22_sample(data_point: dict) -> dict:
+def _legacy_scores(data_point: dict) -> dict:
     """Evaluate a single Contextual Earnings-22 sample.
 
     Returns per-sample metrics with raw counts for corpus-level aggregation:
@@ -237,6 +255,188 @@ def evaluate_contextual_earnings22_sample(data_point: dict) -> dict:
         "text": norm_ref,
         "pred_text": norm_hyp,
     }
+
+
+_EPS = "<eps>"
+_OPENBENCH_NORMALIZER = None
+_BASIC_NORMALIZER = None
+
+
+def _openbench_normalize(text: str) -> list[str]:
+    global _OPENBENCH_NORMALIZER
+    if _OPENBENCH_NORMALIZER is None:
+        from nemo_skills.evaluation.evaluator.openbench_normalizer import EnglishTextNormalizer
+
+        _OPENBENCH_NORMALIZER = EnglishTextNormalizer(None)
+    return _OPENBENCH_NORMALIZER.process_transcript(text).split()
+
+
+def _basic_normalize(text: str) -> str:
+    global _BASIC_NORMALIZER
+    if _BASIC_NORMALIZER is None:
+        from transformers.models.whisper.english_normalizer import BasicTextNormalizer
+
+        _BASIC_NORMALIZER = BasicTextNormalizer()
+    return _BASIC_NORMALIZER(text)
+
+
+def align_words(ref: list[str], hyp: list[str]) -> list[tuple[str, str]]:
+    """Word alignment of two sequences as ``(ref, hyp)`` pairs, eps-padded.
+
+    Uses ``texterrors.align_texts`` (as OpenBench does) when available, which
+    makes the keyword metric identical to OpenBench. Otherwise falls back to a
+    plain Levenshtein alignment, whose tie-breaking can differ on a few
+    utterances.
+    """
+    try:
+        import texterrors
+    except ImportError:
+        texterrors = None
+    if texterrors is not None:
+        aligned_ref, aligned_hyp = texterrors.align_texts(ref, hyp)[:2]
+        return list(zip(aligned_ref, aligned_hyp))
+    return _levenshtein_align(ref, hyp)
+
+
+def _levenshtein_align(ref: list[str], hyp: list[str]) -> list[tuple[str, str]]:
+    """Fallback alignment; ties prefer matches/substitutions, then deletions."""
+    n, m = len(ref), len(hyp)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        dp[i][0] = i
+    for j in range(1, m + 1):
+        dp[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            diag = dp[i - 1][j - 1] + (0 if ref[i - 1] == hyp[j - 1] else 1)
+            dp[i][j] = min(diag, dp[i - 1][j] + 1, dp[i][j - 1] + 1)
+    pairs = []
+    i, j = n, m
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and dp[i][j] == dp[i - 1][j - 1] + (0 if ref[i - 1] == hyp[j - 1] else 1):
+            pairs.append((ref[i - 1], hyp[j - 1]))
+            i, j = i - 1, j - 1
+        elif i > 0 and dp[i][j] == dp[i - 1][j] + 1:
+            pairs.append((ref[i - 1], _EPS))
+            i -= 1
+        else:
+            pairs.append((_EPS, hyp[j - 1]))
+            j -= 1
+    return pairs[::-1]
+
+
+def _ngrams_with_positions(ali: list[tuple[str, str]], side: int, order: int):
+    """Yield sliding n-grams over the non-eps words of one side of an alignment.
+
+    Mirrors OpenBench: windows advance by one word, and each item carries the
+    alignment index of its words so the other side can be read off.
+    """
+    idx = 0
+    items: list[tuple[str, int]] = []
+    while idx < len(ali):
+        if items:
+            items = [items[1]] if order > 1 else []
+            idx = items[0][1] + 1 if items else idx
+        while len(items) != order and idx < len(ali):
+            word = ali[idx][side]
+            idx += 1
+            if word != _EPS:
+                items.append((word, idx - 1))
+        if len(items) == order:
+            yield items
+
+
+def openbench_keyword_stats(reference: str, hypothesis: str, keywords: list[str]) -> tuple[int, int, int]:
+    """Return ``(tp, ground_truth, fp)`` following OpenBench's keyword metric."""
+    ref_words = _basic_normalize(reference).split()
+    hyp_words = _basic_normalize(hypothesis).split()
+    norm_keywords = [_basic_normalize(kw) for kw in keywords]
+    norm_keywords = [kw for kw in norm_keywords if kw.strip()]
+    if not norm_keywords:
+        return 0, 0, 0
+    stats = {kw: [0, 0, 0] for kw in norm_keywords}  # [tp, gt, fp]
+    ali = align_words(ref_words, hyp_words)
+
+    for word_ref, word_hyp in ali:
+        if word_ref in stats:
+            stats[word_ref][1] += 1
+            if word_ref == word_hyp:
+                stats[word_ref][0] += 1
+        elif word_hyp in stats:
+            stats[word_hyp][2] += 1
+
+    max_order = max(len(kw.split()) for kw in norm_keywords)
+    for order in range(2, max_order + 1):
+        for items in _ngrams_with_positions(ali, 0, order):
+            phrase_ref = " ".join(w for w, _ in items)
+            phrase_hyp = " ".join(ali[k][1] for _, k in items)
+            if phrase_ref in stats:
+                stats[phrase_ref][1] += 1
+                if phrase_ref == phrase_hyp:
+                    stats[phrase_ref][0] += 1
+        for items in _ngrams_with_positions(ali, 1, order):
+            phrase_hyp = " ".join(w for w, _ in items)
+            phrase_ref = " ".join(ali[k][0] for _, k in items)
+            if phrase_hyp in stats and phrase_hyp != phrase_ref:
+                stats[phrase_hyp][2] += 1
+
+    tp = sum(v[0] for v in stats.values())
+    gt = sum(v[1] for v in stats.values())
+    fp = sum(v[2] for v in stats.values())
+    return tp, gt, fp
+
+
+def evaluate_contextual_earnings22_sample(data_point: dict) -> dict:
+    """Evaluate a single Contextual Earnings-22 sample with OpenBench scoring.
+
+    Returns raw counts for corpus-level aggregation (``wer_errors``,
+    ``wer_ref_words``, ``keyword_tp``, ``keyword_fp``, ``keyword_fn``,
+    ``keyword_total_ref``), the per-sample ``wer``, ``is_correct``
+    (= ``wer < 0.5``), the normalized ``text`` / ``pred_text``, and the legacy
+    scores under ``legacy_*`` keys.
+    """
+    import jiwer
+
+    # OpenBench scores against the word-level ``transcript`` field. Older
+    # prepared data only carries ``text`` (cut at character boundaries) and the
+    # digit-stripped ``norm_text``.
+    reference = (
+        data_point.get("reference_transcript")
+        or data_point.get("expected_answer_cased")
+        or data_point["expected_answer"]
+    )
+    generation = (data_point.get("generation") or "").strip()
+    keywords = data_point["keyword_list"]
+
+    ref_tokens = _openbench_normalize(reference)
+    hyp_tokens = _openbench_normalize(generation)
+    if ref_tokens:
+        out = jiwer.process_words(" ".join(ref_tokens), " ".join(hyp_tokens) if hyp_tokens else "")
+        wer_errors = out.substitutions + out.deletions + out.insertions
+    else:
+        wer_errors = len(hyp_tokens)
+    wer_ref_words = len(ref_tokens)
+    wer = wer_errors / wer_ref_words if wer_ref_words else float(wer_errors)
+
+    tp, gt, fp = openbench_keyword_stats(reference, generation, keywords)
+
+    legacy = _legacy_scores(data_point)
+    result = {
+        "wer": wer,
+        "wer_errors": wer_errors,
+        "wer_ref_words": wer_ref_words,
+        "keyword_tp": tp,
+        "keyword_fp": fp,
+        "keyword_fn": gt - tp,
+        "keyword_total_ref": gt,
+        "is_correct": wer < 0.5,
+        "text": " ".join(ref_tokens),
+        "pred_text": " ".join(hyp_tokens),
+        "scoring": "openbench-v1",
+    }
+    for key in ("wer", "wer_errors", "wer_ref_words", "keyword_tp", "keyword_fp", "keyword_fn", "keyword_total_ref"):
+        result[f"legacy_{key}"] = legacy[key]
+    return result
 
 
 @nested_dataclass(kw_only=True)
