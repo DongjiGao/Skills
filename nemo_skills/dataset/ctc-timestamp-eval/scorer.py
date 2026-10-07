@@ -146,6 +146,13 @@ def _find_timestamp_payload(data_point: dict[str, Any]) -> object:
     raise ValueError("Prediction has no word timestamps; expected speaker_word_timestamps, word_timestamps, or words")
 
 
+def _timestamp_error(data_point: dict[str, Any]) -> str | None:
+    """Why the serving plugin returned no word timestamps: its ``ctc_timestamps.error``, if set."""
+    payload = _decode_json(data_point.get("ctc_timestamps"))
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return str(error) if error else None
+
+
 def _prediction_words(data_point: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
     payload = _find_timestamp_payload(data_point)
     flattened = []
@@ -251,6 +258,7 @@ def evaluate_ctc_timestamp_sample(
         "start_error_seconds_sum": start_error_sum,
         "end_error_seconds_sum": end_error_sum,
         "malformed_timestamp_words": malformed,
+        "timestamp_error": _timestamp_error(data_point),
         "timestamp_tolerance_seconds": tolerance_seconds,
     }
     return result
@@ -280,6 +288,7 @@ def _empty_totals() -> dict[str, int | float]:
         "start_error_seconds_sum": 0.0,
         "end_error_seconds_sum": 0.0,
         "malformed_timestamp_words": 0,
+        "timestamp_unavailable_entries": 0,
     }
 
 
@@ -296,6 +305,7 @@ def _accumulate(totals: dict[str, int | float], prediction: dict[str, Any]) -> N
     totals["start_error_seconds_sum"] += float(prediction["start_error_seconds_sum"])
     totals["end_error_seconds_sum"] += float(prediction["end_error_seconds_sum"])
     totals["malformed_timestamp_words"] += int(prediction["malformed_timestamp_words"])
+    totals["timestamp_unavailable_entries"] += int(bool(prediction.get("timestamp_error")))
 
 
 def _reported_values(totals: dict[str, int | float], include_counts: bool) -> dict[str, float | int]:
@@ -328,6 +338,7 @@ def _reported_values(totals: dict[str, int | float], include_counts: bool) -> di
                 "timestamp_hypothesis_events": 2 * hypotheses,
                 "timestamped_word_matches": matches,
                 "malformed_timestamp_words": int(totals["malformed_timestamp_words"]),
+                "timestamp_unavailable_entries": int(totals["timestamp_unavailable_entries"]),
                 "scored_entries": int(totals["entries"]),
             }
         )
@@ -421,6 +432,7 @@ class CTCTimestampMetrics(BaseMetrics):
             "timestamp_hypothesis_events": as_int,
             "timestamped_word_matches": as_int,
             "malformed_timestamp_words": as_int,
+            "timestamp_unavailable_entries": as_int,
             "scored_entries": as_int,
             "num_entries": as_int,
         }

@@ -429,6 +429,11 @@ class BaseModel:
         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
             result["tool_calls"] = choice.message.tool_calls
         result["serialized_output"] = self._serialize_output(response)
+        # The NeMo SpeechLM vLLM plugin's ctc_serving middleware adds CTC word timestamps and
+        # diarization as a top-level response field, which litellm keeps as an attribute.
+        ctc_timestamps = getattr(response, "ctc_timestamps", None)
+        if ctc_timestamps is not None:
+            result["ctc_timestamps"] = ctc_timestamps
         if include_response:
             result["response"] = response
 
