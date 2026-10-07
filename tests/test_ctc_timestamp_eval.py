@@ -293,5 +293,32 @@ def test_scorer_rejects_missing_timestamps():
         )
 
 
+def test_plugin_results_without_word_timestamps_are_counted_as_unavailable():
+    reference_words = [{"word": "hello", "start": 0.0, "end": 0.4, "speaker": "speaker0"}]
+    served = {
+        "words": [{"word": "hello", "start": 0.0, "end": 0.4, "speaker": "0"}],
+        "diarization": [{"speaker": 0, "start": 0.0, "end": 0.4}],
+        "speaker_tag_to_diarization_speaker": {"0": 0},
+        "error": None,
+    }
+    unavailable = {**served, "words": [], "speaker_tag_to_diarization_speaker": {}, "error": "capture_unavailable"}
+    results = [
+        scorer.evaluate_ctc_timestamp_sample(
+            {"subset_for_metrics": "lsm", "reference_words": reference_words, "ctc_timestamps": payload}
+        )
+        for payload in (served, unavailable)
+    ]
+
+    assert [result["timestamp_error"] for result in results] == [None, "capture_unavailable"]
+    # A result without words still counts every reference word as missed.
+    assert [result["wer_errors"] for result in results] == [0, 1]
+    metrics = scorer.CTCTimestampMetrics(max_k=1)
+    for result in results:
+        metrics.update([result])
+    values = metrics.get_metrics()["pass@1"]
+    assert values["timestamp_unavailable_entries"] == 1
+    assert values["wer"] == 50.0
+
+
 def test_timestamp_normalization_preserves_combining_mark_tokens():
     assert scorer._normalized_word("े") == "े"

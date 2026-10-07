@@ -416,6 +416,32 @@ def test_judge_generations_with_structured_output(tmp_path):
     assert judgements[1]["correct"] in {"yes", "no"}
 
 
+def test_parse_chat_completion_response_keeps_ctc_timestamps():
+    """The NeMo SpeechLM vLLM plugin returns word timestamps as a top-level response field."""
+    model = BaseModel.__new__(BaseModel)
+    message = {"role": "assistant", "content": "<spk:0> hello"}
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=message["content"]),
+                finish_reason="stop",
+                model_dump=lambda: {"message": message},
+            )
+        ],
+        usage=SimpleNamespace(completion_tokens=3, prompt_tokens=11),
+        ctc_timestamps={
+            "words": [{"word": "hello", "start": 0.4, "end": 0.48, "speaker": "0"}],
+            "diarization": [{"speaker": 0, "start": 0.37, "end": 0.52}],
+            "speaker_tag_to_diarization_speaker": {"0": 0},
+            "error": None,
+        },
+    )
+
+    assert model._parse_chat_completion_response(response)["ctc_timestamps"] == response.ctc_timestamps
+    del response.ctc_timestamps
+    assert "ctc_timestamps" not in model._parse_chat_completion_response(response)
+
+
 def test_process_chat_chunk_never_yields_none_generation():
     """Regression test for https://github.com/NVIDIA-NeMo/Skills/issues/1267
 
