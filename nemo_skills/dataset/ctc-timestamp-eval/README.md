@@ -86,9 +86,11 @@ python nemo_skills/dataset/ctc-timestamp-eval/score_ctc_timestamps.py \
 Speaker labels are permutation-invariant. The scorer first chooses the speaker permutation with minimum word edit
 distance, then uses deterministic Levenshtein backtracing to pair exact words. It reports speaker-permuted WER,
 start/end mean absolute error, and timestamp precision/recall/F1 at one configurable tolerance. The default tolerance
-is 200 ms. A timestamp true positive requires both word boundaries to be within that tolerance. Override the default
-with `--tolerance-seconds` when using the standalone scorer; the aggregate output records the selected value as
-`timestamp_tolerance_ms`.
+is 200 ms. Start and end are scored as independent timestamp events: each exact-word match contributes one start
+event and one end event, and each event is a true positive when its absolute boundary error is within the tolerance.
+Precision and recall therefore use twice the hypothesis-word and reference-word counts as their denominators.
+Override the default with `--tolerance-seconds` when using the standalone scorer; the aggregate output records the
+selected value as `timestamp_tolerance_ms`.
 
 ## D12a language coverage
 
