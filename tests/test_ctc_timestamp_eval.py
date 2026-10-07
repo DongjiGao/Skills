@@ -209,13 +209,13 @@ def test_speaker_permutation_and_timestamp_metrics():
     }
     result = scorer.evaluate_ctc_timestamp_sample(row, tolerance_seconds=0.1)
     assert result["wer_errors"] == 0
-    assert result["timestamp_true_positives"] == 4
+    assert result["timestamp_true_positives"] == 8
     assert result["timestamped_word_matches"] == 4
     assert result["start_error_seconds_sum"] == pytest.approx(0.4)
     assert result["end_error_seconds_sum"] == pytest.approx(0.4)
 
 
-def test_timestamp_f1_is_reported_at_three_tolerances_and_averaged():
+def test_timestamp_f1_uses_single_configurable_tolerance():
     reference_words = [
         {"word": f"word{index}", "start": float(index), "end": float(index) + 0.5, "speaker": "speaker0"}
         for index in range(4)
@@ -232,18 +232,55 @@ def test_timestamp_f1_is_reported_at_three_tolerances_and_averaged():
             "timestamps": {"speaker_word_timestamps": {"speaker0": prediction_words}},
         }
     )
-    assert result["timestamp_true_positives_120ms"] == 1
-    assert result["timestamp_true_positives_240ms"] == 2
-    assert result["timestamp_true_positives_360ms"] == 4
+    assert scorer.DEFAULT_TOLERANCE_SECONDS == 0.2
+    assert result["timestamp_tolerance_seconds"] == 0.2
+    assert result["timestamp_true_positives"] == 4
 
     metrics = scorer.CTCTimestampMetrics(max_k=1)
     metrics.update([result])
     values = metrics.get_metrics()["pass@1"]
     assert values["timestamp_f1"] == 50.0
-    assert values["timestamp_f1_120ms"] == 25.0
-    assert values["timestamp_f1_240ms"] == 50.0
-    assert values["timestamp_f1_360ms"] == 100.0
-    assert values["timestamp_f1_average"] == 58.33
+    assert values["timestamp_reference_events"] == 8
+    assert values["timestamp_hypothesis_events"] == 8
+    assert values["timestamp_tolerance_ms"] == 200.0
+    assert not any(key.startswith("timestamp_f1_") for key in values)
+
+    custom_result = scorer.evaluate_ctc_timestamp_sample(
+        {
+            "subset_for_metrics": "test",
+            "reference_words": reference_words,
+            "timestamps": {"speaker_word_timestamps": {"speaker0": prediction_words}},
+        },
+        tolerance_seconds=0.3,
+    )
+    assert custom_result["timestamp_true_positives"] == 6
+
+
+def test_timestamp_f1_treats_start_and_end_as_independent_events():
+    result = scorer.evaluate_ctc_timestamp_sample(
+        {
+            "subset_for_metrics": "test",
+            "reference_words": [
+                {"word": "hello", "start": 0.0, "end": 0.5, "speaker": "speaker0"},
+                {"word": "world", "start": 1.0, "end": 1.5, "speaker": "speaker0"},
+            ],
+            "word_timestamps": [
+                {"word": "hello", "start": 0.1, "end": 0.8, "speaker": "speaker0"},
+                {"word": "world", "start": 1.3, "end": 1.6, "speaker": "speaker0"},
+            ],
+        },
+        tolerance_seconds=0.2,
+    )
+
+    assert result["timestamped_word_matches"] == 2
+    assert result["timestamp_true_positives"] == 2
+
+    metrics = scorer.CTCTimestampMetrics(max_k=1)
+    metrics.update([result])
+    values = metrics.get_metrics()["pass@1"]
+    assert values["timestamp_precision"] == 50.0
+    assert values["timestamp_recall"] == 50.0
+    assert values["timestamp_f1"] == 50.0
 
 
 def test_scorer_rejects_missing_timestamps():
