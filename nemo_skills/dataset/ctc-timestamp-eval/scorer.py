@@ -270,6 +270,9 @@ class CTCTimestampEvaluatorConfig(BaseEvaluatorConfig):
 
 
 class CTCTimestampEvaluator(BaseEvaluator):
+    def __init__(self, config: dict[str, Any], num_parallel_requests: int = 10):
+        super().__init__(CTCTimestampEvaluatorConfig(**config), num_parallel_requests)
+
     async def eval_single(self, data_point: dict[str, Any]) -> dict[str, Any]:
         return evaluate_ctc_timestamp_sample(data_point, float(self.config.tolerance_seconds))
 

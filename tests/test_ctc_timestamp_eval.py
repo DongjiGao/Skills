@@ -1,6 +1,7 @@
 # Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import importlib
 import json
 import wave
@@ -254,6 +255,30 @@ def test_timestamp_f1_uses_single_configurable_tolerance():
         tolerance_seconds=0.3,
     )
     assert custom_result["timestamp_true_positives"] == 6
+
+
+def test_evaluator_built_from_the_config_dict_skills_passes_scores_rows(tmp_path):
+    from nemo_skills.evaluation.evaluator import get_evaluator_class
+
+    common = importlib.import_module("nemo_skills.dataset.ctc-timestamp-eval._common")
+    eval_type = common.EVAL_ARGS.removeprefix("++eval_type=")
+    row = {
+        "subset_for_metrics": "test",
+        "reference_words": [{"word": "hello", "start": 0.0, "end": 0.5, "speaker": "speaker0"}],
+        "timestamps": {"speaker_word_timestamps": {"speaker0": [{"word": "hello", "start": 0.25, "end": 0.75}]}},
+    }
+
+    # Generation scores each row as it finishes; both boundaries are 0.25 s off.
+    inline = get_evaluator_class(eval_type, {"tolerance_seconds": 0.3})
+    assert asyncio.run(inline.eval_single(row))["timestamp_true_positives"] == 2
+
+    # Evaluation after generation rescores the output file in place, at the default tolerance.
+    output_file = tmp_path / "output.jsonl"
+    output_file.write_text(json.dumps(row) + "\n")
+    asyncio.run(get_evaluator_class(eval_type, {"input_file": str(output_file)}).eval_full())
+    scored = json.loads(output_file.read_text())
+    assert scored["timestamp_tolerance_seconds"] == scorer.DEFAULT_TOLERANCE_SECONDS
+    assert scored["timestamp_true_positives"] == 0
 
 
 def test_timestamp_f1_treats_start_and_end_as_independent_events():
