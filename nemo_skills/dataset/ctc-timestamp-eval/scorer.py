@@ -16,12 +16,7 @@ from nemo_skills.evaluation.evaluator.base import BaseEvaluator, BaseEvaluatorCo
 from nemo_skills.evaluation.metrics.base import BaseMetrics, as_float, as_int, as_percentage
 from nemo_skills.utils import nested_dataclass
 
-DEFAULT_TOLERANCE_SECONDS = 0.24
-TIMESTAMP_TOLERANCES_SECONDS = (0.12, 0.24, 0.36)
-
-
-def _tolerance_suffix(tolerance_seconds: float) -> str:
-    return f"{round(1000 * tolerance_seconds)}ms"
+DEFAULT_TOLERANCE_SECONDS = 0.2
 
 
 def _normalized_word(value: object) -> str:
@@ -222,7 +217,6 @@ def evaluate_ctc_timestamp_sample(
     assignment = _speaker_assignment(_by_speaker(reference), _by_speaker(hypothesis))
 
     totals = defaultdict(int)
-    threshold_true_positives = defaultdict(int)
     start_error_sum = end_error_sum = 0.0
     for ref_items, hyp_items in assignment:
         alignment = _word_alignment(
@@ -240,9 +234,6 @@ def evaluate_ctc_timestamp_sample(
             totals["timestamped_matches"] += 1
             if start_error <= tolerance_seconds + 1e-9 and end_error <= tolerance_seconds + 1e-9:
                 totals["timestamp_true_positives"] += 1
-            for threshold in TIMESTAMP_TOLERANCES_SECONDS:
-                if start_error <= threshold + 1e-9 and end_error <= threshold + 1e-9:
-                    threshold_true_positives[_tolerance_suffix(threshold)] += 1
 
     reference_count = len(reference)
     hypothesis_count = len(hypothesis)
@@ -262,12 +253,6 @@ def evaluate_ctc_timestamp_sample(
         "malformed_timestamp_words": malformed,
         "timestamp_tolerance_seconds": tolerance_seconds,
     }
-    result.update(
-        {
-            f"timestamp_true_positives_{suffix}": threshold_true_positives[suffix]
-            for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS)
-        }
-    )
     return result
 
 
@@ -282,7 +267,7 @@ class CTCTimestampEvaluator(BaseEvaluator):
 
 
 def _empty_totals() -> dict[str, int | float]:
-    totals = {
+    return {
         "entries": 0,
         "wer_errors": 0,
         "wer_substitutions": 0,
@@ -296,8 +281,6 @@ def _empty_totals() -> dict[str, int | float]:
         "end_error_seconds_sum": 0.0,
         "malformed_timestamp_words": 0,
     }
-    totals.update({f"true_positives_{suffix}": 0 for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS)})
-    return totals
 
 
 def _accumulate(totals: dict[str, int | float], prediction: dict[str, Any]) -> None:
@@ -313,8 +296,6 @@ def _accumulate(totals: dict[str, int | float], prediction: dict[str, Any]) -> N
     totals["start_error_seconds_sum"] += float(prediction["start_error_seconds_sum"])
     totals["end_error_seconds_sum"] += float(prediction["end_error_seconds_sum"])
     totals["malformed_timestamp_words"] += int(prediction["malformed_timestamp_words"])
-    for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS):
-        totals[f"true_positives_{suffix}"] += int(prediction[f"timestamp_true_positives_{suffix}"])
 
 
 def _reported_values(totals: dict[str, int | float], include_counts: bool) -> dict[str, float | int]:
@@ -330,21 +311,6 @@ def _reported_values(totals: dict[str, int | float], include_counts: bool) -> di
         "timestamp_recall": round(100.0 * recall, 2),
         "timestamp_f1": round(200.0 * precision * recall / (precision + recall), 2) if precision + recall else 0.0,
     }
-    threshold_f1 = []
-    for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS):
-        threshold_true_positives = int(totals[f"true_positives_{suffix}"])
-        threshold_precision = threshold_true_positives / hypotheses if hypotheses else 0.0
-        threshold_recall = threshold_true_positives / references if references else 0.0
-        threshold_score = (
-            2.0 * threshold_precision * threshold_recall / (threshold_precision + threshold_recall)
-            if threshold_precision + threshold_recall
-            else 0.0
-        )
-        threshold_f1.append(threshold_score)
-        values[f"timestamp_precision_{suffix}"] = round(100.0 * threshold_precision, 2)
-        values[f"timestamp_recall_{suffix}"] = round(100.0 * threshold_recall, 2)
-        values[f"timestamp_f1_{suffix}"] = round(100.0 * threshold_score, 2)
-    values["timestamp_f1_average"] = round(100.0 * sum(threshold_f1) / len(threshold_f1), 2)
     if matches:
         values["start_mae_ms"] = round(1000.0 * float(totals["start_error_seconds_sum"]) / matches, 2)
         values["end_mae_ms"] = round(1000.0 * float(totals["end_error_seconds_sum"]) / matches, 2)
@@ -363,12 +329,6 @@ def _reported_values(totals: dict[str, int | float], include_counts: bool) -> di
                 "scored_entries": int(totals["entries"]),
             }
         )
-        values.update(
-            {
-                f"timestamp_true_positives_{suffix}": int(totals[f"true_positives_{suffix}"])
-                for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS)
-            }
-        )
     return values
 
 
@@ -383,6 +343,7 @@ class CTCTimestampMetrics(BaseMetrics):
 
     def reset(self):
         super().reset()
+        self.tolerance_seconds: float | None = None
         self.corpus_totals = _empty_totals()
         self.subset_totals: dict[str, dict[str, int | float]] = defaultdict(_empty_totals)
 
@@ -407,18 +368,17 @@ class CTCTimestampMetrics(BaseMetrics):
             end_error_seconds_sum=0.0,
             malformed_timestamp_words=0,
         )
-        prediction.update(
-            {
-                f"timestamp_true_positives_{suffix}": 0
-                for suffix in map(_tolerance_suffix, TIMESTAMP_TOLERANCES_SECONDS)
-            }
-        )
         return prediction
 
     def update(self, predictions):
         if len(predictions) != 1:
             raise ValueError("CTCTimestampMetrics expects exactly one prediction per sample")
         prediction = predictions[0]
+        tolerance_seconds = float(prediction["timestamp_tolerance_seconds"])
+        if self.tolerance_seconds is None:
+            self.tolerance_seconds = tolerance_seconds
+        elif not math.isclose(self.tolerance_seconds, tolerance_seconds):
+            raise ValueError("CTCTimestampMetrics cannot aggregate predictions scored with different tolerances")
         super().update(predictions)
         _accumulate(self.corpus_totals, prediction)
         _accumulate(self.subset_totals[str(prediction.get("timestamp_subset", "unknown"))], prediction)
@@ -426,7 +386,9 @@ class CTCTimestampMetrics(BaseMetrics):
     def get_metrics(self):
         if self.total <= 0 or int(self.corpus_totals["reference_words"]) <= 0:
             raise ValueError("CTC timestamp evaluation has no reference words to score")
+        assert self.tolerance_seconds is not None
         values = _reported_values(self.corpus_totals, include_counts=True)
+        values["timestamp_tolerance_ms"] = round(1000.0 * self.tolerance_seconds, 3)
         for subset, totals in sorted(self.subset_totals.items()):
             for metric, value in _reported_values(totals, include_counts=False).items():
                 values[f"{metric}::{subset}"] = value
@@ -439,19 +401,10 @@ class CTCTimestampMetrics(BaseMetrics):
     def metrics_to_print(self):
         return {
             "wer": as_percentage,
-            "timestamp_f1_average": as_percentage,
             "timestamp_precision": as_percentage,
             "timestamp_recall": as_percentage,
             "timestamp_f1": as_percentage,
-            "timestamp_precision_120ms": as_percentage,
-            "timestamp_recall_120ms": as_percentage,
-            "timestamp_f1_120ms": as_percentage,
-            "timestamp_precision_240ms": as_percentage,
-            "timestamp_recall_240ms": as_percentage,
-            "timestamp_f1_240ms": as_percentage,
-            "timestamp_precision_360ms": as_percentage,
-            "timestamp_recall_360ms": as_percentage,
-            "timestamp_f1_360ms": as_percentage,
+            "timestamp_tolerance_ms": as_float,
             "start_mae_ms": as_float,
             "end_mae_ms": as_float,
             "wer_errors": as_int,
