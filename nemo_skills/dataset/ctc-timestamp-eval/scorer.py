@@ -232,8 +232,8 @@ def evaluate_ctc_timestamp_sample(
             start_error_sum += start_error
             end_error_sum += end_error
             totals["timestamped_matches"] += 1
-            if start_error <= tolerance_seconds + 1e-9 and end_error <= tolerance_seconds + 1e-9:
-                totals["timestamp_true_positives"] += 1
+            totals["timestamp_true_positives"] += int(start_error <= tolerance_seconds + 1e-9)
+            totals["timestamp_true_positives"] += int(end_error <= tolerance_seconds + 1e-9)
 
     reference_count = len(reference)
     hypothesis_count = len(hypothesis)
@@ -303,8 +303,8 @@ def _reported_values(totals: dict[str, int | float], include_counts: bool) -> di
     hypotheses = int(totals["hypothesis_words"])
     true_positives = int(totals["true_positives"])
     matches = int(totals["timestamped_matches"])
-    precision = true_positives / hypotheses if hypotheses else 0.0
-    recall = true_positives / references if references else 0.0
+    precision = true_positives / (2 * hypotheses) if hypotheses else 0.0
+    recall = true_positives / (2 * references) if references else 0.0
     values: dict[str, float | int] = {
         "wer": round(100.0 * int(totals["wer_errors"]) / references, 2),
         "timestamp_precision": round(100.0 * precision, 2),
@@ -324,6 +324,8 @@ def _reported_values(totals: dict[str, int | float], include_counts: bool) -> di
                 "reference_words": references,
                 "hypothesis_words": hypotheses,
                 "timestamp_true_positives": true_positives,
+                "timestamp_reference_events": 2 * references,
+                "timestamp_hypothesis_events": 2 * hypotheses,
                 "timestamped_word_matches": matches,
                 "malformed_timestamp_words": int(totals["malformed_timestamp_words"]),
                 "scored_entries": int(totals["entries"]),
@@ -349,7 +351,8 @@ class CTCTimestampMetrics(BaseMetrics):
 
     def _get_score_dict(self, prediction):
         return {
-            "timestamp_exact": prediction.get("timestamp_true_positives") == prediction.get("reference_words_count")
+            "timestamp_exact": prediction.get("timestamp_true_positives")
+            == 2 * prediction.get("reference_words_count", 0)
             and prediction.get("wer_errors") == 0
         }
 
@@ -414,6 +417,8 @@ class CTCTimestampMetrics(BaseMetrics):
             "reference_words": as_int,
             "hypothesis_words": as_int,
             "timestamp_true_positives": as_int,
+            "timestamp_reference_events": as_int,
+            "timestamp_hypothesis_events": as_int,
             "timestamped_word_matches": as_int,
             "malformed_timestamp_words": as_int,
             "scored_entries": as_int,
