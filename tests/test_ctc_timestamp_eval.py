@@ -16,33 +16,40 @@ scorer = importlib.import_module("nemo_skills.dataset.ctc-timestamp-eval.scorer"
 
 
 @pytest.mark.parametrize(
-    ("alias", "count"),
+    "alias",
     (
-        ("ch109", 10),
-        ("ami-ihm-test", 4),
-        ("lsm", 393),
-        ("d12a-ar", 409),
-        ("d12a-de", 520),
-        ("d12a-en", 280),
-        ("d12a-es", 273),
-        ("d12a-fr", 248),
-        ("d12a-hi", 676),
-        ("d12a-it", 67),
-        ("d12a-ja", 1225),
-        ("d12a-ko", 416),
-        ("d12a-pt", 948),
-        ("d12a-ru", 361),
-        ("d12a-th", 738),
-        ("d12a-tr", 842),
-        ("d12a-vi", 358),
-        ("d12a-zh", 590),
+        "ch109",
+        "ami-ihm-test",
+        "lsm",
+        "d12a-ar",
+        "d12a-de",
+        "d12a-en",
+        "d12a-es",
+        "d12a-fr",
+        "d12a-hi",
+        "d12a-it",
+        "d12a-ja",
+        "d12a-ko",
+        "d12a-pt",
+        "d12a-ru",
+        "d12a-th",
+        "d12a-tr",
+        "d12a-vi",
+        "d12a-zh",
     ),
 )
-def test_aliases_resolve(alias, count):
+def test_aliases_resolve(alias):
     module, _ = get_dataset_module(f"ctc-timestamp-eval.{alias}")
-    assert module.NUM_SAMPLES == count
     assert module.EVAL_SPLIT == "test"
     assert "CTCTimestampMetrics" in module.METRICS_TYPE
+
+
+def test_every_leaf_runs_one_greedy_pass():
+    # Skills reads NUM_SAMPLES as sampled passes per prompt (temperature 0.7), not as a row count.
+    group, _ = get_dataset_module("ctc-timestamp-eval")
+    for benchmark, overrides in group.BENCHMARKS.items():
+        module, _ = get_dataset_module(benchmark)
+        assert overrides.get("NUM_SAMPLES", getattr(module, "NUM_SAMPLES", 0)) == 0, benchmark
 
 
 def test_lsm_selection_is_balanced_and_deterministic():
